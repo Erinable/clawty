@@ -14,21 +14,35 @@ function printHelp() {
       "Usage:",
       "  clawty chat",
       "  clawty run \"your task\"",
+      "  clawty config show",
       "  clawty --help",
       "",
       "Equivalent local commands:",
       "  node src/index.js chat",
       "  node src/index.js run \"your task\"",
+      "  node src/index.js config show",
       "",
       "Environment:",
       "  OPENAI_API_KEY         Required",
       "  CLAWTY_MODEL           Optional (default: gpt-4.1-mini)",
       "  OPENAI_BASE_URL        Optional (default: https://api.openai.com/v1)",
       "  CLAWTY_WORKSPACE_ROOT  Optional (default: current directory)",
+      "  CLAWTY_INDEX_MAX_FILES Optional (default: 3000)",
+      "  CLAWTY_INDEX_MAX_FILE_SIZE_KB Optional (default: 512)",
       "  CLAWTY_LSP_ENABLED     Optional (default: true)",
-      "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)"
+      "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)",
+      "",
+      "Config files:",
+      "  clawty.config.json or .clawty/config.json"
     ].join("\n")
   );
+}
+
+function redactConfig(config) {
+  return {
+    ...config,
+    apiKey: config.apiKey ? `${config.apiKey.slice(0, 6)}***` : null
+  };
 }
 
 async function runTask(config, state, task) {
@@ -77,6 +91,16 @@ async function main() {
 
   if (!first || first === "--help" || first === "-h" || first === "help") {
     printHelp();
+    return;
+  }
+
+  if (first === "config") {
+    const sub = args[1] || "show";
+    if (sub !== "show") {
+      throw new Error('Unknown config command. Use: node src/index.js config show');
+    }
+    const config = loadConfig({ allowMissingApiKey: true });
+    console.log(JSON.stringify(redactConfig(config), null, 2));
     return;
   }
 

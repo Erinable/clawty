@@ -49,6 +49,7 @@ node src/index.js run "读取 package.json 并总结这个项目"
 ```bash
 node src/index.js chat
 node src/index.js run "your task"
+node src/index.js config show
 node src/index.js --help
 npm test
 npm run test:coverage
@@ -104,6 +105,28 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_LSP_TIMEOUT_MS`：默认 `5000`
 - `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
 - `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
+
+## 配置系统
+
+支持两种配置输入：
+
+1. 配置文件：`clawty.config.json`（或 `.clawty/config.json`）  
+2. 环境变量：`.env` 和系统环境变量
+
+优先级（高 -> 低）：
+
+1. 系统环境变量
+2. `.env`
+3. `clawty.config.json` / `.clawty/config.json`
+4. 内置默认值
+
+你可以通过下面命令查看最终生效配置（API Key 会脱敏）：
+
+```bash
+node src/index.js config show
+```
+
+可参考示例文件：`clawty.config.example.json`。
 
 ## 说明
 

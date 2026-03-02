@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+clawty.config.json
+.clawty/config.json
 
 # Build outputs
 dist/

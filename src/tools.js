@@ -485,7 +485,17 @@ async function applyPatchTool(args, context) {
 }
 
 async function buildCodeIndexTool(args, context) {
-  return buildCodeIndex(context.workspaceRoot, args);
+  const mergedArgs = { ...(args || {}) };
+  if (mergedArgs.max_files === undefined && Number.isFinite(context?.index?.maxFiles)) {
+    mergedArgs.max_files = context.index.maxFiles;
+  }
+  if (
+    mergedArgs.max_file_size_kb === undefined &&
+    Number.isFinite(context?.index?.maxFileSizeKb)
+  ) {
+    mergedArgs.max_file_size_kb = context.index.maxFileSizeKb;
+  }
+  return buildCodeIndex(context.workspaceRoot, mergedArgs);
 }
 
 async function queryCodeIndexTool(args, context) {
@@ -493,7 +503,17 @@ async function queryCodeIndexTool(args, context) {
 }
 
 async function refreshCodeIndexTool(args, context) {
-  return refreshCodeIndex(context.workspaceRoot, args);
+  const mergedArgs = { ...(args || {}) };
+  if (mergedArgs.max_files === undefined && Number.isFinite(context?.index?.maxFiles)) {
+    mergedArgs.max_files = context.index.maxFiles;
+  }
+  if (
+    mergedArgs.max_file_size_kb === undefined &&
+    Number.isFinite(context?.index?.maxFileSizeKb)
+  ) {
+    mergedArgs.max_file_size_kb = context.index.maxFileSizeKb;
+  }
+  return refreshCodeIndex(context.workspaceRoot, mergedArgs);
 }
 
 async function getIndexStatsTool(args, context) {

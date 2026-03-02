@@ -11,6 +11,7 @@ This repository is a Node.js ESM CLI project.
 - `tests/`: automated tests (`*.test.js`)
 - `src/openai.js`: OpenAI Responses API client
 - `src/config.js`: `.env` loading and runtime config
+- `clawty.config.example.json`: sample file-based config schema
 - `README.md`: usage documentation
 - `.env.example`: required environment variable template
 

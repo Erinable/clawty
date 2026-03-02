@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const CONFIG_FILE_CANDIDATES = ["clawty.config.json", path.join(".clawty", "config.json")];
+
 function parseDotEnv(content) {
   const result = {};
   const lines = content.split(/\r?\n/);
@@ -26,38 +28,63 @@ function parseDotEnv(content) {
   return result;
 }
 
-function loadDotEnvIfExists(rootDir) {
+function loadDotEnv(rootDir) {
   const envPath = path.join(rootDir, ".env");
   if (!fs.existsSync(envPath)) {
-    return;
+    return { values: {}, path: null };
   }
   const content = fs.readFileSync(envPath, "utf8");
-  const parsed = parseDotEnv(content);
-  for (const [key, value] of Object.entries(parsed)) {
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
+  return {
+    values: parseDotEnv(content),
+    path: envPath
+  };
+}
+
+function findConfigFile(rootDir) {
+  for (const candidate of CONFIG_FILE_CANDIDATES) {
+    const absolutePath = path.join(rootDir, candidate);
+    if (!fs.existsSync(absolutePath)) {
+      continue;
     }
+    const raw = fs.readFileSync(absolutePath, "utf8");
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`Invalid JSON in ${candidate}: ${error.message || String(error)}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Invalid config in ${candidate}: root must be a JSON object`);
+    }
+    return {
+      path: absolutePath,
+      relativePath: candidate,
+      data: parsed
+    };
   }
+  return {
+    path: null,
+    relativePath: null,
+    data: {}
+  };
 }
 
-function readInt(name, fallback) {
-  const value = process.env[name];
-  if (!value) {
-    return fallback;
-  }
+function readInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
   const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) {
+  if (!Number.isFinite(n) || n < min) {
     return fallback;
   }
-  return Math.floor(n);
+  return Math.min(max, Math.floor(n));
 }
 
-function readBoolean(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined) {
+function readBoolean(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === undefined || value === null) {
     return fallback;
   }
-  const normalized = String(raw).trim().toLowerCase();
+  const normalized = String(value).trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) {
     return true;
   }
@@ -67,35 +94,129 @@ function readBoolean(name, fallback) {
   return fallback;
 }
 
-export function loadConfig() {
-  const cwd = process.cwd();
-  loadDotEnvIfExists(cwd);
+function readString(value, fallback) {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
+}
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+function deepPick(object, pathList) {
+  let current = object;
+  for (const key of pathList) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function resolveWorkspaceRoot(rootDir, fileConfig, env) {
+  const fromEnv = readString(env.CLAWTY_WORKSPACE_ROOT, null);
+  if (fromEnv) {
+    return path.resolve(rootDir, fromEnv);
+  }
+  const fromFile = readString(fileConfig.workspaceRoot, null);
+  if (fromFile) {
+    return path.resolve(rootDir, fromFile);
+  }
+  return rootDir;
+}
+
+export function loadConfig(options = {}) {
+  const rootDir = path.resolve(options.cwd || process.cwd());
+  const allowMissingApiKey = Boolean(options.allowMissingApiKey);
+  const runtimeEnv = options.env && typeof options.env === "object" ? options.env : process.env;
+
+  const dotEnv = loadDotEnv(rootDir);
+  const fileConfig = findConfigFile(rootDir);
+  const env = {
+    ...dotEnv.values,
+    ...runtimeEnv
+  };
+
+  const apiKey =
+    readString(env.OPENAI_API_KEY, null) ||
+    readString(deepPick(fileConfig.data, ["openai", "apiKey"]), null);
+  if (!apiKey && !allowMissingApiKey) {
     throw new Error(
-      "Missing OPENAI_API_KEY. Create .env from .env.example or export OPENAI_API_KEY."
+      "Missing OPENAI_API_KEY. Set env var, put it in .env, or set openai.apiKey in clawty.config.json."
     );
   }
 
-  const workspaceRoot = path.resolve(process.env.CLAWTY_WORKSPACE_ROOT || cwd);
-  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(
-    /\/$/,
-    ""
+  const baseUrl = readString(
+    env.OPENAI_BASE_URL,
+    readString(deepPick(fileConfig.data, ["openai", "baseUrl"]), "https://api.openai.com/v1")
+  ).replace(/\/$/, "");
+
+  const model = readString(env.CLAWTY_MODEL, readString(fileConfig.data.model, "gpt-4.1-mini"));
+
+  const toolTimeoutMs = readInt(
+    env.CLAWTY_TOOL_TIMEOUT_MS ?? deepPick(fileConfig.data, ["tools", "timeoutMs"]),
+    120_000,
+    1000,
+    300_000
   );
 
+  const maxToolIterations = readInt(
+    env.CLAWTY_MAX_TOOL_ITERATIONS ?? deepPick(fileConfig.data, ["tools", "maxIterations"]),
+    8,
+    1,
+    100
+  );
+
+  const lsp = {
+    enabled: readBoolean(
+      env.CLAWTY_LSP_ENABLED ?? deepPick(fileConfig.data, ["lsp", "enabled"]),
+      true
+    ),
+    timeoutMs: readInt(
+      env.CLAWTY_LSP_TIMEOUT_MS ?? deepPick(fileConfig.data, ["lsp", "timeoutMs"]),
+      5000,
+      1000,
+      60_000
+    ),
+    maxResults: readInt(
+      env.CLAWTY_LSP_MAX_RESULTS ?? deepPick(fileConfig.data, ["lsp", "maxResults"]),
+      100,
+      1,
+      1000
+    ),
+    tsCommand: readString(
+      env.CLAWTY_LSP_TS_CMD,
+      readString(deepPick(fileConfig.data, ["lsp", "tsCommand"]), "typescript-language-server --stdio")
+    )
+  };
+
+  const index = {
+    maxFiles: readInt(
+      env.CLAWTY_INDEX_MAX_FILES ?? deepPick(fileConfig.data, ["index", "maxFiles"]),
+      3000,
+      1,
+      20_000
+    ),
+    maxFileSizeKb: readInt(
+      env.CLAWTY_INDEX_MAX_FILE_SIZE_KB ?? deepPick(fileConfig.data, ["index", "maxFileSizeKb"]),
+      512,
+      1,
+      8192
+    )
+  };
+
   return {
-    apiKey,
+    apiKey: apiKey || null,
     baseUrl,
-    model: process.env.CLAWTY_MODEL || "gpt-4.1-mini",
-    workspaceRoot,
-    toolTimeoutMs: readInt("CLAWTY_TOOL_TIMEOUT_MS", 120_000),
-    maxToolIterations: readInt("CLAWTY_MAX_TOOL_ITERATIONS", 8),
-    lsp: {
-      enabled: readBoolean("CLAWTY_LSP_ENABLED", true),
-      timeoutMs: readInt("CLAWTY_LSP_TIMEOUT_MS", 5000),
-      maxResults: readInt("CLAWTY_LSP_MAX_RESULTS", 100),
-      tsCommand: process.env.CLAWTY_LSP_TS_CMD || "typescript-language-server --stdio"
+    model,
+    workspaceRoot: resolveWorkspaceRoot(rootDir, fileConfig.data, env),
+    toolTimeoutMs,
+    maxToolIterations,
+    lsp,
+    index,
+    sources: {
+      cwd: rootDir,
+      configFile: fileConfig.path,
+      dotEnvFile: dotEnv.path
     }
   };
 }

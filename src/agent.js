@@ -94,7 +94,8 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
         result = await runTool(call.name, args, {
           workspaceRoot: config.workspaceRoot,
           defaultTimeoutMs: config.toolTimeoutMs,
-          lsp: config.lsp
+          lsp: config.lsp,
+          index: config.index
         });
       } catch (error) {
         result = {
