@@ -26,6 +26,11 @@
   - `query_semantic_graph`
   - `query_hybrid_index`
   - `get_semantic_graph_stats`
+  - `build_vector_index`
+  - `refresh_vector_index`
+  - `query_vector_index`
+  - `get_vector_index_stats`
+  - `merge_vector_delta`
   - `lsp_definition`
   - `lsp_references`
   - `lsp_workspace_symbols`
@@ -129,6 +134,9 @@ npm run precise:check:fixture
 - “代码改完后刷新 semantic graph（changed_paths/deleted_paths）再查多跳邻居”
 - “用 `query_hybrid_index` 融合 semantic/syntax/index，返回重排后的 Top5”
 - “启用 `query_hybrid_index` 的 embedding rerank（enable_embedding=true）再返回 Top5”
+- “先构建 vector index（layer=base），再查询语义近邻代码块”
+- “代码改完后刷新 vector index（changed_paths/deleted_paths, layer=delta）”
+- “合并 vector delta 到 base 后，再做 query_hybrid_index”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
@@ -148,9 +156,12 @@ npm run precise:check:fixture
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
 `query_semantic_graph` 返回 `language_distribution`（`scanned_candidates` / `deduped_candidates` / `returned_seeds`），用于观察召回语言偏置。
-`query_hybrid_index` 会联合 `semantic + syntax + index` 候选并做轻量重排，支持 `path_prefix` 与 `explain`。
+`query_hybrid_index` 会联合 `semantic + vector + syntax + index` 候选并做轻量重排，支持 `path_prefix`、`language`、`include_vector` 与 `explain`。
 可选启用 embedding 第二阶段重排（`enable_embedding` / `embedding_top_k` / `embedding_weight` / `embedding_model`），默认关闭。
 返回 `sources.embedding` 观测字段（`status_code` / `error_code` / `latency_ms` / `rank_shift_count` / `top1_changed`），便于稳定性与效果追踪。
+`build_vector_index` / `refresh_vector_index` 会将代码 chunk 生成 embedding 并写入离线向量层（`base` / `delta`），`merge_vector_delta` 可周期性合并增量层。
+`query_vector_index` 支持 `path_prefix`、`language`、`layers`、`max_candidates`，用于语义召回候选。
+`get_vector_index_stats` 返回向量层覆盖率与最近一次构建/刷新记录。
 `query_semantic_graph` 支持 `max_hops`（默认 `1`）与 `per_hop_limit`，当 `max_hops > 1` 时每个 seed 会返回 `multi_hop` 路径展开结果（含 `path_score` 与质量因子）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
 `query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
@@ -164,6 +175,7 @@ npm run precise:check:fixture
 1. `refresh_code_index`
 2. `refresh_syntax_index`（可关闭）
 3. `refresh_semantic_graph`（可关闭）
+4. `refresh_vector_index`（可选，默认关闭）
 
 常用命令：
 
@@ -171,6 +183,7 @@ npm run precise:check:fixture
 node src/index.js watch-index
 node src/index.js watch-index --interval-ms 1000 --max-batch-size 200
 node src/index.js watch-index --debounce-ms 500 --hash-init-max-files 3000
+node src/index.js watch-index --include-vector true --vector-layer delta
 node src/index.js watch-index --no-semantic --quiet
 npm run watch:index
 ```
@@ -187,6 +200,9 @@ npm run watch:index
 - `--no-hash-skip`：关闭 hash skip
 - `--no-syntax`：关闭 syntax 刷新
 - `--no-semantic`：关闭 semantic 刷新
+- `--include-vector <bool>`：开启/关闭 vector 刷新
+- `--vector-layer <base|delta>`：vector 刷新写入层
+- `--no-vector`：关闭 vector 刷新
 - `--quiet`：关闭日志输出
 
 watch 结果会返回 `watch_metrics`（如 `queue_depth`、`index_lag_ms`、`dropped_by_hash`）用于观测增量调度效果。
@@ -239,6 +255,8 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_WATCH_BUILD_ON_START`：watch 启动时是否先全量构建，默认 `true`
 - `CLAWTY_WATCH_INCLUDE_SYNTAX`：watch 是否刷新 syntax index，默认 `true`
 - `CLAWTY_WATCH_INCLUDE_SEMANTIC`：watch 是否刷新 semantic graph，默认 `true`
+- `CLAWTY_WATCH_INCLUDE_VECTOR`：watch 是否刷新 vector index，默认 `false`
+- `CLAWTY_WATCH_VECTOR_LAYER`：watch vector 写入层（`base`/`delta`），默认 `delta`
 - `CLAWTY_WATCH_SEMANTIC_INCLUDE_DEFINITIONS`：watch 语义刷新是否包含 definition，默认 `false`
 - `CLAWTY_WATCH_SEMANTIC_INCLUDE_REFERENCES`：watch 语义刷新是否包含 references，默认 `false`
 - `CLAWTY_WATCH_QUIET`：watch 是否静默模式，默认 `false`

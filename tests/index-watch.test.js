@@ -17,11 +17,24 @@ import {
 import { buildCodeIndex, queryCodeIndex } from "../src/code-index.js";
 import { buildSyntaxIndex, querySyntaxIndex } from "../src/syntax-index.js";
 import { buildSemanticGraph, querySemanticGraph } from "../src/semantic-graph.js";
+import { queryVectorIndex } from "../src/vector-index.js";
 import {
   createWorkspace,
   removeWorkspace,
   writeWorkspaceFile
 } from "./helpers/workspace.js";
+
+function createMockVectorEmbeddingClient() {
+  return async ({ input }) =>
+    input.map((text) => {
+      const normalized = String(text || "").toLowerCase();
+      return [
+        normalized.includes("watchvectornewtoken") ? 1 : 0,
+        normalized.includes("watchvectoroldtoken") ? 1 : 0,
+        0.05
+      ];
+    });
+}
 
 test("shouldTrackPath filters ignored directories and unsupported extensions", () => {
   assert.equal(shouldTrackPath("src/main.ts"), true);
@@ -43,6 +56,10 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
     "--debounce-ms",
     "650",
     "--no-hash-skip",
+    "--include-vector",
+    "true",
+    "--vector-layer",
+    "base",
     "--no-semantic",
     "--quiet",
     "--help"
@@ -53,6 +70,8 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
   assert.equal(parsed.max_batch_size, 40);
   assert.equal(parsed.debounce_ms, 650);
   assert.equal(parsed.hash_skip_enabled, false);
+  assert.equal(parsed.include_vector, true);
+  assert.equal(parsed.vector_layer, "base");
   assert.equal(parsed.include_semantic, false);
   assert.equal(parsed.quiet, true);
   assert.equal(parsed.help, true);
@@ -246,4 +265,56 @@ test("refreshIndexesForChanges updates code/syntax/semantic indexes in event mod
   });
   assert.equal(skipped.ok, true);
   assert.equal(skipped.skipped, true);
+});
+
+test("refreshIndexesForChanges can refresh vector index in delta layer", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/watch-vector.ts",
+    "export function watchVectorOldToken() { return true; }\n"
+  );
+  const builtCode = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(builtCode.ok, true);
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/watch-vector.ts",
+    "export function watchVectorNewToken() { return true; }\n"
+  );
+
+  const embedding = {
+    model: "mock-watch-vector-model",
+    client: createMockVectorEmbeddingClient()
+  };
+  const refreshed = await refreshIndexesForChanges(workspaceRoot, {
+    changed_paths: ["src/watch-vector.ts"],
+    deleted_paths: [],
+    include_syntax: false,
+    include_semantic: false,
+    include_vector: true,
+    vector_layer: "delta",
+    embedding
+  });
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.vector_index?.ok, true);
+  assert.equal(refreshed.vector_index?.layer, "delta");
+  assert.ok(refreshed.vector_index?.processed_chunks >= 1);
+
+  const queried = await queryVectorIndex(
+    workspaceRoot,
+    {
+      query: "watchVectorNewToken",
+      top_k: 3,
+      layers: ["delta"],
+      model: "mock-watch-vector-model"
+    },
+    { embedding }
+  );
+  assert.equal(queried.ok, true);
+  assert.ok(queried.results.some((item) => item.path === "src/watch-vector.ts"));
 });

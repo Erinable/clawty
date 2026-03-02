@@ -11,12 +11,14 @@
 - P3 混合检索与轻量重排：`38024a7`
 - P4 监听器与实时刷新回路（watch-index）：`20a2448`
 - P5-A 可选 embedding 重排 + 降级可观测：`bcb091d`、`ca1fc5a`
+- P5-B 事件调度工程化（dirty queue + debounce + hash skip）：`fea9600`
+- P6 离线向量索引（base+delta + watch 可选增量 + 混合检索接入）：已完成
 
 当前主要缺口：
 
-- `watch-index` 仍缺 dirty queue/debounce/hash skip，突发变更下可能重复刷新。
-- embedding 仍以在线重排为主，缺离线向量资产层（base+delta）。
 - 查询层缺 `freshness_score` 主特征，stale 降权策略不完整。
+- Agent 侧“增量上下文优先”（`changed_paths + git diff`）尚未系统化接入。
+- 大仓库扩展能力（分片 + 快照原子切换）仍未落地。
 
 ## 核心原则
 
@@ -41,7 +43,7 @@
 
 ## 后续阶段与优先级
 
-### P5-B（最高优先）事件调度工程化
+### P5-B（已完成）事件调度工程化
 
 目标：让 `watch-index` 在高频改动下稳定、去重、低抖动。
 
@@ -56,7 +58,7 @@
 - 高频编辑压测下无明显重复刷新风暴。
 - `code_index_lag_ms` P95 达到 SLO。
 
-### P6 离线向量索引（base+delta）
+### P6（已完成）离线向量索引（base+delta）
 
 目标：把 embedding 从“在线重排”为主升级为“离线召回资产”。
 
@@ -71,7 +73,7 @@
 - 在线 embedding 调用量显著下降，查询延迟更稳定。
 - embedding lag 受控在 SLO 内。
 
-### P7 查询侧新鲜度融合与增量上下文
+### P7（当前最高优先）查询侧新鲜度融合与增量上下文
 
 目标：让 LLM 在索引未完全收敛时仍能优先拿到“最新证据”。
 

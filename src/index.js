@@ -52,6 +52,8 @@ function printHelp() {
       "  CLAWTY_WATCH_BUILD_ON_START Optional (default: true)",
       "  CLAWTY_WATCH_INCLUDE_SYNTAX Optional (default: true)",
       "  CLAWTY_WATCH_INCLUDE_SEMANTIC Optional (default: true)",
+      "  CLAWTY_WATCH_INCLUDE_VECTOR Optional (default: false)",
+      "  CLAWTY_WATCH_VECTOR_LAYER Optional (default: delta)",
       "",
       "Config files:",
       "  clawty.config.json or .clawty/config.json"
@@ -81,6 +83,9 @@ function printWatchHelp() {
       "  --no-syntax                      Disable syntax index refresh",
       "  --include-semantic <bool>        Include semantic graph refresh",
       "  --no-semantic                    Disable semantic graph refresh",
+      "  --include-vector <bool>          Include vector index refresh",
+      "  --no-vector                      Disable vector index refresh",
+      "  --vector-layer <base|delta>      Target vector layer for refresh",
       "  --semantic-include-definitions <bool>",
       "  --semantic-include-references <bool>",
       "  --quiet                          Disable loop logs",
@@ -96,6 +101,8 @@ function printWatchHelp() {
       "  CLAWTY_WATCH_BUILD_ON_START",
       "  CLAWTY_WATCH_INCLUDE_SYNTAX",
       "  CLAWTY_WATCH_INCLUDE_SEMANTIC",
+      "  CLAWTY_WATCH_INCLUDE_VECTOR",
+      "  CLAWTY_WATCH_VECTOR_LAYER",
       "  CLAWTY_WATCH_SEMANTIC_INCLUDE_DEFINITIONS",
       "  CLAWTY_WATCH_SEMANTIC_INCLUDE_REFERENCES",
       "  CLAWTY_WATCH_QUIET",
@@ -185,7 +192,10 @@ async function main() {
       return;
     }
     const config = loadConfig({ allowMissingApiKey: true });
-    const result = await runIndexWatchLoop(config.workspaceRoot, watchArgs);
+    const result = await runIndexWatchLoop(config.workspaceRoot, {
+      ...watchArgs,
+      embedding: config.embedding
+    });
     if (!result?.ok) {
       throw new Error(result?.error || "watch-index failed");
     }

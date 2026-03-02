@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { buildCodeIndex, refreshCodeIndex } from "./code-index.js";
 import { buildSyntaxIndex, refreshSyntaxIndex } from "./syntax-index.js";
 import { buildSemanticGraph, refreshSemanticGraph } from "./semantic-graph.js";
+import { buildVectorIndex, refreshVectorIndex } from "./vector-index.js";
 
 const DEFAULT_WATCH_INTERVAL_MS = 2000;
 const DEFAULT_WATCH_MAX_FILES = 20_000;
@@ -80,6 +81,14 @@ function parseBoolean(value, fallback = false) {
     }
   }
   return fallback;
+}
+
+function parseString(value, fallback = null) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
 }
 
 function toPosixPath(inputPath) {
@@ -159,6 +168,11 @@ export function resolveWatchConfig(args = {}) {
       args.include_semantic ?? process.env.CLAWTY_WATCH_INCLUDE_SEMANTIC,
       true
     ),
+    include_vector: parseBoolean(
+      args.include_vector ?? process.env.CLAWTY_WATCH_INCLUDE_VECTOR,
+      false
+    ),
+    vector_layer: parseString(args.vector_layer ?? process.env.CLAWTY_WATCH_VECTOR_LAYER, "delta"),
     semantic_include_definitions: parseBoolean(
       args.semantic_include_definitions ?? process.env.CLAWTY_WATCH_SEMANTIC_INCLUDE_DEFINITIONS,
       false
@@ -167,7 +181,8 @@ export function resolveWatchConfig(args = {}) {
       args.semantic_include_references ?? process.env.CLAWTY_WATCH_SEMANTIC_INCLUDE_REFERENCES,
       false
     ),
-    quiet: parseBoolean(args.quiet ?? process.env.CLAWTY_WATCH_QUIET, false)
+    quiet: parseBoolean(args.quiet ?? process.env.CLAWTY_WATCH_QUIET, false),
+    embedding: args.embedding && typeof args.embedding === "object" ? args.embedding : {}
   };
 }
 
@@ -207,6 +222,10 @@ export function parseWatchCliArgs(argv = []) {
     }
     if (arg === "--no-semantic") {
       parsed.include_semantic = false;
+      continue;
+    }
+    if (arg === "--no-vector") {
+      parsed.include_vector = false;
       continue;
     }
     if (arg === "--no-hash-skip") {
@@ -607,11 +626,32 @@ async function ensureIndexes(workspaceRoot, config) {
     }
   }
 
+  let vectorIndex = null;
+  if (config.include_vector) {
+    vectorIndex = await buildVectorIndex(
+      workspaceRoot,
+      {
+        layer: "base"
+      },
+      {
+        embedding: config.embedding || {}
+      }
+    );
+    if (!vectorIndex?.ok) {
+      return {
+        ok: false,
+        stage: "build_vector_index",
+        result: vectorIndex
+      };
+    }
+  }
+
   return {
     ok: true,
     code_index: codeIndex,
     syntax_index: syntaxIndex,
-    semantic_graph: semanticGraph
+    semantic_graph: semanticGraph,
+    vector_index: vectorIndex
   };
 }
 
@@ -699,6 +739,34 @@ export async function refreshIndexesForChanges(workspaceRoot, args = {}) {
     }
   }
 
+  let vectorRefresh = null;
+  if (config.include_vector) {
+    vectorRefresh = await refreshVectorIndex(
+      workspaceRoot,
+      {
+        changed_paths: changedPaths,
+        deleted_paths: deletedPaths,
+        layer: parseString(config.vector_layer, "delta")
+      },
+      {
+        embedding: config.embedding || {}
+      }
+    );
+    if (!vectorRefresh?.ok) {
+      return {
+        ok: false,
+        stage: "refresh_vector_index",
+        changed_paths: changedPaths,
+        deleted_paths: deletedPaths,
+        error: vectorRefresh?.error || "refresh_vector_index failed",
+        code_index: codeRefresh,
+        syntax_index: syntaxRefresh,
+        semantic_graph: semanticRefresh,
+        vector_index: vectorRefresh
+      };
+    }
+  }
+
   return {
     ok: true,
     skipped: false,
@@ -706,7 +774,8 @@ export async function refreshIndexesForChanges(workspaceRoot, args = {}) {
     deleted_paths: deletedPaths,
     code_index: codeRefresh,
     syntax_index: syntaxRefresh,
-    semantic_graph: semanticRefresh
+    semantic_graph: semanticRefresh,
+    vector_index: vectorRefresh
   };
 }
 

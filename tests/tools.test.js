@@ -17,6 +17,19 @@ function createContext(workspaceRoot) {
   };
 }
 
+function createMockVectorEmbeddingClient() {
+  return async ({ input }) =>
+    input.map((text) => {
+      const normalized = String(text || "").toLowerCase();
+      return [
+        normalized.includes("alpha") ? 1 : 0,
+        normalized.includes("beta") ? 1 : 0,
+        normalized.includes("newtoken") ? 1 : 0,
+        0.05
+      ];
+    });
+}
+
 test("read_file and write_file work inside workspace", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {
@@ -245,6 +258,106 @@ test("syntax index tools are callable through runTool", async (t) => {
   assert.equal(refreshedSyntax.ok, true);
   assert.equal(refreshedSyntax.mode, "event");
   assert.ok(refreshedSyntax.parsed_files >= 1);
+});
+
+test("vector index tools are callable through runTool", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/vector-alpha.js",
+    "export function alphaToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/vector-beta.js",
+    "export function betaToken() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    embedding: {
+      model: "mock-vector-model",
+      client: createMockVectorEmbeddingClient()
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const builtVector = await runTool(
+    "build_vector_index",
+    { layer: "base", batch_size: 8, model: "mock-vector-model" },
+    context
+  );
+  assert.equal(builtVector.ok, true);
+  assert.equal(builtVector.layer, "base");
+  assert.ok(builtVector.processed_chunks >= 2);
+
+  const queriedVector = await runTool(
+    "query_vector_index",
+    {
+      query: "alphaToken",
+      top_k: 3,
+      layers: ["base"],
+      model: "mock-vector-model"
+    },
+    context
+  );
+  assert.equal(queriedVector.ok, true);
+  assert.ok(queriedVector.results.length >= 1);
+  assert.equal(queriedVector.results[0].path, "src/vector-alpha.js");
+
+  const hybrid = await runTool(
+    "query_hybrid_index",
+    {
+      query: "betaToken",
+      include_vector: true,
+      vector_layers: ["base"],
+      vector_max_candidates: 200
+    },
+    context
+  );
+  assert.equal(hybrid.ok, true);
+  assert.equal(hybrid.sources.vector.enabled, true);
+  assert.equal(hybrid.sources.vector.ok, true);
+  assert.ok(hybrid.sources.vector.candidates >= 1);
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/vector-alpha.js",
+    "export function newToken() { return true; }\n"
+  );
+
+  const refreshedIndex = await runTool(
+    "refresh_code_index",
+    { changed_paths: ["src/vector-alpha.js"] },
+    context
+  );
+  assert.equal(refreshedIndex.ok, true);
+
+  const refreshedVector = await runTool(
+    "refresh_vector_index",
+    {
+      layer: "delta",
+      changed_paths: ["src/vector-alpha.js"],
+      model: "mock-vector-model"
+    },
+    context
+  );
+  assert.equal(refreshedVector.ok, true);
+  assert.equal(refreshedVector.layer, "delta");
+
+  const mergedVector = await runTool("merge_vector_delta", {}, context);
+  assert.equal(mergedVector.ok, true);
+  assert.ok(mergedVector.merged_files >= 1);
+
+  const stats = await runTool("get_vector_index_stats", {}, context);
+  assert.equal(stats.ok, true);
+  assert.ok(stats.counts.chunks.base >= 1);
 });
 
 test("semantic graph tools are callable through runTool", async (t) => {

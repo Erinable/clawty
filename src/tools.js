@@ -23,6 +23,13 @@ import {
   getSyntaxIndexStats
 } from "./syntax-index.js";
 import {
+  buildVectorIndex,
+  refreshVectorIndex,
+  queryVectorIndex,
+  getVectorIndexStats,
+  mergeVectorDelta
+} from "./vector-index.js";
+import {
   lspDefinition,
   lspHealth,
   lspReferences,
@@ -645,6 +652,25 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           description: "Optional path prefix preference during fusion ranking."
         },
+        language: {
+          type: "string",
+          description: "Optional language filter shared by index/vector retrieval."
+        },
+        include_vector: {
+          type: "boolean",
+          description: "Enable offline vector source during hybrid retrieval."
+        },
+        vector_max_candidates: {
+          type: "integer",
+          description: "Maximum vector chunk candidates scanned before ranking.",
+          minimum: 1,
+          maximum: 20000
+        },
+        vector_layers: {
+          type: "array",
+          description: "Vector layers included in retrieval (base and/or delta).",
+          items: { type: "string", enum: ["base", "delta"] }
+        },
         explain: {
           type: "boolean",
           description: "Include score feature breakdown for each returned candidate."
@@ -823,6 +849,175 @@ export const TOOL_DEFINITIONS = [
           maximum: 50
         }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "build_vector_index",
+    description:
+      "Build offline vector index from code chunks. Writes vectors into base or delta layer in SQLite.",
+    parameters: {
+      type: "object",
+      properties: {
+        layer: {
+          type: "string",
+          description: "Target layer: base (default) or delta.",
+          enum: ["base", "delta"]
+        },
+        max_chunks: {
+          type: "integer",
+          description: "Maximum chunk rows embedded per build run.",
+          minimum: 1,
+          maximum: 20000
+        },
+        batch_size: {
+          type: "integer",
+          description: "Embedding batch size.",
+          minimum: 1,
+          maximum: 128
+        },
+        model: {
+          type: "string",
+          description: "Embedding model override, e.g. text-embedding-3-small."
+        },
+        timeout_ms: {
+          type: "integer",
+          description: "Embedding request timeout.",
+          minimum: 1000,
+          maximum: 120000
+        },
+        source_revision: {
+          type: "string",
+          description: "Optional source revision label for traceability."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "refresh_vector_index",
+    description:
+      "Incrementally refresh vector index for changed/deleted paths. Falls back to full build if event paths are missing.",
+    parameters: {
+      type: "object",
+      properties: {
+        layer: {
+          type: "string",
+          description: "Target layer for refresh. Defaults to delta.",
+          enum: ["base", "delta"]
+        },
+        changed_paths: {
+          type: "array",
+          description: "Changed file paths relative to workspace root.",
+          items: { type: "string" }
+        },
+        deleted_paths: {
+          type: "array",
+          description: "Deleted file paths relative to workspace root.",
+          items: { type: "string" }
+        },
+        max_chunks: {
+          type: "integer",
+          description: "Maximum changed chunk rows embedded per refresh run.",
+          minimum: 1,
+          maximum: 20000
+        },
+        batch_size: {
+          type: "integer",
+          description: "Embedding batch size.",
+          minimum: 1,
+          maximum: 128
+        },
+        model: {
+          type: "string",
+          description: "Embedding model override."
+        },
+        timeout_ms: {
+          type: "integer",
+          description: "Embedding request timeout.",
+          minimum: 1000,
+          maximum: 120000
+        },
+        source_revision: {
+          type: "string",
+          description: "Optional source revision label for traceability."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "query_vector_index",
+    description:
+      "Query offline vector index using semantic similarity against chunk embeddings.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Natural language or code query."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum vector hits returned.",
+          minimum: 1,
+          maximum: 100
+        },
+        max_candidates: {
+          type: "integer",
+          description: "Maximum candidate chunk vectors scanned before ranking.",
+          minimum: 1,
+          maximum: 20000
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter."
+        },
+        language: {
+          type: "string",
+          description: "Optional language filter."
+        },
+        layers: {
+          type: "array",
+          description: "Layer filter. Defaults to [base, delta].",
+          items: { type: "string", enum: ["base", "delta"] }
+        },
+        model: {
+          type: "string",
+          description: "Embedding model override."
+        },
+        timeout_ms: {
+          type: "integer",
+          description: "Embedding request timeout.",
+          minimum: 1000,
+          maximum: 120000
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "get_vector_index_stats",
+    description: "Return offline vector index coverage and latest run stats.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "merge_vector_delta",
+    description:
+      "Merge delta layer vectors into base layer and clear merged delta rows.",
+    parameters: {
+      type: "object",
+      properties: {},
       additionalProperties: false
     }
   },
@@ -1202,6 +1397,7 @@ const HYBRID_SOURCE_SCORE = Object.freeze({
   scip: 1,
   lsif: 0.96,
   lsp: 0.88,
+  vector: 0.84,
   syntax: 0.78,
   index_seed: 0.7,
   lsp_anchor: 0.62,
@@ -1484,6 +1680,23 @@ function mapIndexResultToHybridSeed(item) {
     source: "index",
     outgoing: [],
     incoming: []
+  };
+}
+
+function mapVectorResultToHybridSeed(item) {
+  const filePath = String(item?.path || "");
+  return {
+    path: filePath,
+    name: path.basename(filePath || ""),
+    kind: "chunk",
+    line: Number(item?.start_line || 1),
+    column: 1,
+    lang: item?.language || null,
+    source: "vector",
+    outgoing: [],
+    incoming: [],
+    vector_score: Number(item?.score || 0),
+    vector_layer: item?.layer || null
   };
 }
 
@@ -1874,6 +2087,7 @@ async function queryHybridIndexTool(args, context) {
     ? Math.max(1, Math.min(30, Math.floor(Number(args.top_k))))
     : 5;
   const scanTopK = Math.max(topK * 3, 10);
+  const vectorEnabled = parseHybridBoolean(args?.include_vector, true);
   const semanticArgs = {
     query,
     top_k: Math.min(30, scanTopK),
@@ -1884,7 +2098,29 @@ async function queryHybridIndexTool(args, context) {
     path_prefix: args?.path_prefix
   };
 
-  const [semanticResult, syntaxResult, indexResult] = await Promise.all([
+  const vectorQueryPromise = vectorEnabled
+    ? queryVectorIndex(
+        context.workspaceRoot,
+        {
+          query,
+          top_k: Math.min(100, Math.max(scanTopK, topK * 4)),
+          max_candidates: args?.vector_max_candidates,
+          path_prefix: args?.path_prefix,
+          language: args?.language,
+          layers: args?.vector_layers,
+          model: args?.embedding_model
+        },
+        {
+          embedding: context.embedding || {}
+        }
+      )
+    : Promise.resolve({
+        ok: false,
+        skipped: true,
+        error: "vector source disabled"
+      });
+
+  const [semanticResult, syntaxResult, indexResult, vectorResult] = await Promise.all([
     querySemanticGraph(context.workspaceRoot, semanticArgs),
     querySyntaxIndex(context.workspaceRoot, {
       query,
@@ -1895,8 +2131,10 @@ async function queryHybridIndexTool(args, context) {
     queryCodeIndex(context.workspaceRoot, {
       query,
       top_k: Math.min(50, Math.max(scanTopK, 20)),
-      path_prefix: args?.path_prefix
-    })
+      path_prefix: args?.path_prefix,
+      language: args?.language
+    }),
+    vectorQueryPromise
   ]);
 
   const scannedCandidates = [];
@@ -1922,6 +2160,14 @@ async function queryHybridIndexTool(args, context) {
       const mapped = mapIndexResultToHybridSeed(item);
       scannedCandidates.push(mapped);
       addHybridCandidate(deduped, mapped, "index");
+    }
+  }
+
+  if (vectorResult?.ok && Array.isArray(vectorResult.results)) {
+    for (const item of vectorResult.results) {
+      const mapped = mapVectorResultToHybridSeed(item);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "vector");
     }
   }
 
@@ -1961,6 +2207,7 @@ async function queryHybridIndexTool(args, context) {
     filters: {
       edge_type: args?.edge_type || null,
       path_prefix: args?.path_prefix || null,
+      language: args?.language || null,
       max_hops: Number.isFinite(Number(args?.max_hops))
         ? Math.max(1, Math.floor(Number(args.max_hops)))
         : 1,
@@ -1994,6 +2241,13 @@ async function queryHybridIndexTool(args, context) {
         candidates: Array.isArray(indexResult?.results) ? indexResult.results.length : 0,
         error: indexResult?.ok ? null : indexResult?.error || null
       },
+      vector: {
+        enabled: vectorEnabled,
+        ok: Boolean(vectorResult?.ok),
+        candidates: Array.isArray(vectorResult?.results) ? vectorResult.results.length : 0,
+        skipped: Boolean(vectorResult?.skipped),
+        error: vectorResult?.ok ? null : vectorResult?.error || null
+      },
       embedding: {
         enabled: Boolean(embeddingSource.enabled),
         attempted: Boolean(embeddingSource.attempted),
@@ -2012,8 +2266,8 @@ async function queryHybridIndexTool(args, context) {
     },
     priority_policy:
       embeddingSource.ok
-        ? ["semantic", "syntax", "index", "embedding_rerank"]
-        : ["semantic", "syntax", "index"],
+        ? ["semantic", "vector", "syntax", "index", "embedding_rerank"]
+        : ["semantic", "vector", "syntax", "index"],
     total_seeds: seeds.length,
     scanned_candidates: scannedCandidates.length,
     deduped_candidates: deduped.size,
@@ -2046,6 +2300,32 @@ async function querySyntaxIndexTool(args, context) {
 
 async function getSyntaxIndexStatsTool(args, context) {
   return getSyntaxIndexStats(context.workspaceRoot, args);
+}
+
+async function buildVectorIndexTool(args, context) {
+  return buildVectorIndex(context.workspaceRoot, args, {
+    embedding: context.embedding || {}
+  });
+}
+
+async function refreshVectorIndexTool(args, context) {
+  return refreshVectorIndex(context.workspaceRoot, args, {
+    embedding: context.embedding || {}
+  });
+}
+
+async function queryVectorIndexTool(args, context) {
+  return queryVectorIndex(context.workspaceRoot, args, {
+    embedding: context.embedding || {}
+  });
+}
+
+async function getVectorIndexStatsTool(context) {
+  return getVectorIndexStats(context.workspaceRoot);
+}
+
+async function mergeVectorDeltaTool(context) {
+  return mergeVectorDelta(context.workspaceRoot);
 }
 
 async function lspDefinitionTool(args, context) {
@@ -2118,6 +2398,21 @@ export async function runTool(name, args, context) {
   }
   if (name === "get_syntax_index_stats") {
     return getSyntaxIndexStatsTool(args, context);
+  }
+  if (name === "build_vector_index") {
+    return buildVectorIndexTool(args, context);
+  }
+  if (name === "refresh_vector_index") {
+    return refreshVectorIndexTool(args, context);
+  }
+  if (name === "query_vector_index") {
+    return queryVectorIndexTool(args, context);
+  }
+  if (name === "get_vector_index_stats") {
+    return getVectorIndexStatsTool(context);
+  }
+  if (name === "merge_vector_delta") {
+    return mergeVectorDeltaTool(context);
   }
   if (name === "lsp_definition") {
     return lspDefinitionTool(args, context);
