@@ -20,6 +20,7 @@ const QUERY_CACHE_TTL_MS = 10_000;
 const QUERY_CACHE_MAX_ENTRIES = 200;
 const DEFAULT_INDEX_PREPARE_CONCURRENCY = 6;
 const MAX_INDEX_PREPARE_CONCURRENCY = 16;
+const MAX_SYMBOL_TERMS_PER_SYMBOL = 8;
 const QUERY_SLOW_THRESHOLD_MS = 60;
 const QUERY_METRICS_MAX_SLOW_QUERIES = 20;
 
@@ -280,6 +281,42 @@ function tokenize(text) {
 
 function uniqueTokens(tokens) {
   return Array.from(new Set(tokens));
+}
+
+function extractSymbolTerms(symbolName) {
+  if (typeof symbolName !== "string" || symbolName.length === 0) {
+    return [];
+  }
+
+  const expanded = symbolName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ");
+
+  const parts = expanded.split(/[^A-Za-z0-9]+/);
+  const terms = [];
+  const seen = new Set();
+
+  for (const part of parts) {
+    const term = part.toLowerCase();
+    if (term.length < 3 || term.length > 64) {
+      continue;
+    }
+    if (/^\d+$/.test(term)) {
+      continue;
+    }
+    if (seen.has(term)) {
+      continue;
+    }
+
+    seen.add(term);
+    terms.push(term);
+    if (terms.length >= MAX_SYMBOL_TERMS_PER_SYMBOL) {
+      break;
+    }
+  }
+
+  return terms;
 }
 
 function isProbablyText(content) {
@@ -680,11 +717,33 @@ function openIndexDb(workspaceRoot) {
     CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
     CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
     CREATE INDEX IF NOT EXISTS idx_symbols_name_lc ON symbols(name_lc);
+
+    CREATE TABLE IF NOT EXISTS symbol_terms (
+      symbol_id INTEGER NOT NULL,
+      term TEXT NOT NULL,
+      PRIMARY KEY(symbol_id, term),
+      FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_symbol_terms_term ON symbol_terms(term);
+    CREATE INDEX IF NOT EXISTS idx_symbol_terms_symbol_id ON symbol_terms(symbol_id);
   `);
 
-  ensureSymbolNameLowercaseColumn(db);
+  ensureSchemaMigration(db);
 
   return db;
+}
+
+function upsertMetaValue(db, key, value) {
+  db
+    .prepare(
+      `
+      INSERT INTO meta(key, value)
+      VALUES(?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `
+    )
+    .run(key, value);
 }
 
 function ensureSymbolNameLowercaseColumn(db) {
@@ -696,6 +755,57 @@ function ensureSymbolNameLowercaseColumn(db) {
 
   db.exec("UPDATE symbols SET name_lc = lower(name) WHERE name_lc IS NULL OR name_lc = '';");
   db.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_lc ON symbols(name_lc);");
+}
+
+function backfillSymbolTerms(db) {
+  const missingRow = db
+    .prepare(
+      `
+      SELECT EXISTS (
+        SELECT 1
+        FROM symbols s
+        LEFT JOIN symbol_terms st ON st.symbol_id = s.id
+        WHERE st.symbol_id IS NULL
+        LIMIT 1
+      ) AS missing
+    `
+    )
+    .get();
+
+  if (Number(missingRow?.missing || 0) === 0) {
+    return;
+  }
+
+  const rows = db.prepare("SELECT id, name FROM symbols").all();
+  const insertTerm = db.prepare(`
+    INSERT OR IGNORE INTO symbol_terms(symbol_id, term)
+    VALUES(?, ?)
+  `);
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    for (const row of rows) {
+      const symbolId = Number(row.id || 0);
+      if (symbolId <= 0) {
+        continue;
+      }
+
+      const terms = extractSymbolTerms(String(row.name || ""));
+      for (const term of terms) {
+        insertTerm.run(symbolId, term);
+      }
+    }
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+function ensureSchemaMigration(db) {
+  ensureSymbolNameLowercaseColumn(db);
+  backfillSymbolTerms(db);
+  upsertMetaValue(db, "schema_version", "3");
 }
 
 function clearAllIndexData(db) {
@@ -732,6 +842,9 @@ function buildSqlStatements(db) {
     countSymbols: db.prepare(`
       SELECT COUNT(*) AS count FROM symbols
     `),
+    countSymbolTerms: db.prepare(`
+      SELECT COUNT(*) AS count FROM symbol_terms
+    `),
     selectLanguageCounts: db.prepare(`
       SELECT lang, COUNT(*) AS count
       FROM files
@@ -767,6 +880,10 @@ function buildSqlStatements(db) {
     insertSymbol: db.prepare(`
       INSERT INTO symbols(file_path, name, name_lc, kind, start_line, end_line, signature)
       VALUES(?, ?, ?, ?, ?, ?, ?)
+    `),
+    insertSymbolTerm: db.prepare(`
+      INSERT OR IGNORE INTO symbol_terms(symbol_id, term)
+      VALUES(?, ?)
     `),
     deleteFileByPath: db.prepare(`
       DELETE FROM files WHERE path = ?
@@ -947,7 +1064,7 @@ function indexFileContent(relativePath, readResult, symbols, statements) {
     if (!symbolName) {
       continue;
     }
-    statements.insertSymbol.run(
+    const insertResult = statements.insertSymbol.run(
       relativePath,
       symbolName,
       symbolName.toLowerCase(),
@@ -956,11 +1073,21 @@ function indexFileContent(relativePath, readResult, symbols, statements) {
       symbol.end_line,
       symbol.signature
     );
+
+    const symbolId = Number(insertResult?.lastInsertRowid || 0);
+    if (symbolId <= 0) {
+      continue;
+    }
+
+    const symbolTerms = extractSymbolTerms(symbolName);
+    for (const term of symbolTerms) {
+      statements.insertSymbolTerm.run(symbolId, term);
+    }
   }
 }
 
 function writeIndexMeta(statements, config) {
-  statements.setMeta.run("schema_version", "2");
+  statements.setMeta.run("schema_version", "3");
   statements.setMeta.run("engine", "sqlite_fts5");
   statements.setMeta.run("config", JSON.stringify(config));
   statements.setMeta.run("updated_at", new Date().toISOString());
@@ -991,12 +1118,14 @@ function collectDbStats(db, statements) {
   const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
   const chunkCount = Number(statements.countChunks.get().count || 0);
   const symbolCount = Number(statements.countSymbols.get().count || 0);
+  const symbolTermCount = Number(statements.countSymbolTerms.get().count || 0);
   const uniqueTokens = countUniqueTokens(db);
 
   return {
     indexed_files: indexedFiles,
     chunk_count: chunkCount,
     symbol_count: symbolCount,
+    symbol_term_count: symbolTermCount,
     unique_tokens: uniqueTokens
   };
 }
@@ -1492,6 +1621,9 @@ function querySymbols(db, tokens, filters = {}) {
     return [];
   }
 
+  const limit = parsePositiveInt(filters.limit, 2000, 1, 5000);
+  const pathLike = filters.pathPrefix ? `${filters.pathPrefix}%` : null;
+
   const clauses = [];
   const params = [];
   for (const token of tokens) {
@@ -1501,8 +1633,8 @@ function querySymbols(db, tokens, filters = {}) {
     params.push(`${token}%`);
   }
 
-  const sql = `
-    SELECT s.file_path, s.name, s.kind, s.start_line, s.end_line
+  const byNameSql = `
+    SELECT s.id AS symbol_id, s.file_path, s.name, s.kind, s.start_line, s.end_line
     FROM symbols s
     JOIN files f ON f.path = s.file_path
     WHERE (${clauses.join(" OR ")})
@@ -1511,11 +1643,68 @@ function querySymbols(db, tokens, filters = {}) {
     LIMIT ?
   `;
 
-  const pathLike = filters.pathPrefix ? `${filters.pathPrefix}%` : null;
-  const limit = parsePositiveInt(filters.limit, 2000, 1, 5000);
-  return db
-    .prepare(sql)
-    .all(...params, filters.pathPrefix, pathLike, filters.language, filters.language, limit);
+  const byNameRows = db
+    .prepare(byNameSql)
+    .all(
+      ...params,
+      filters.pathPrefix,
+      pathLike,
+      filters.language,
+      filters.language,
+      Math.max(40, Math.floor(limit * 0.8))
+    );
+
+  const termTokens = tokens.filter((token) => token.length >= 3);
+  let byTermRows = [];
+  const shouldRunTermQuery = termTokens.length > 0 && (tokens.length > 1 || byNameRows.length === 0);
+  if (shouldRunTermQuery) {
+    const termClauses = [];
+    const termParams = [];
+    for (const token of termTokens) {
+      termClauses.push("st.term = ?");
+      termParams.push(token);
+    }
+
+    const byTermSql = `
+      SELECT s.id AS symbol_id, s.file_path, s.name, s.kind, s.start_line, s.end_line
+      FROM symbol_terms st
+      JOIN symbols s ON s.id = st.symbol_id
+      JOIN files f ON f.path = s.file_path
+      WHERE (${termClauses.join(" OR ")})
+        AND (? IS NULL OR s.file_path LIKE ?)
+        AND (? IS NULL OR f.lang = ?)
+      GROUP BY s.id
+      LIMIT ?
+    `;
+
+    byTermRows = db
+      .prepare(byTermSql)
+      .all(
+        ...termParams,
+        filters.pathPrefix,
+        pathLike,
+        filters.language,
+        filters.language,
+        Math.max(30, Math.floor(limit * 0.6))
+      );
+  }
+
+  const merged = [];
+  const seen = new Set();
+  for (const row of [...byNameRows, ...byTermRows]) {
+    const symbolId = Number(row.symbol_id || 0);
+    if (symbolId > 0 && seen.has(symbolId)) {
+      continue;
+    }
+    if (symbolId > 0) {
+      seen.add(symbolId);
+    }
+    merged.push(row);
+    if (merged.length >= limit) {
+      break;
+    }
+  }
+  return merged;
 }
 
 function buildFileRanking({ chunkRows, symbolRows, tokens, explain = false }) {
@@ -1583,6 +1772,10 @@ function buildFileRanking({ chunkRows, symbolRows, tokens, explain = false }) {
       } else if (nameLower.startsWith(token)) {
         current.score += 2;
         current.score_breakdown.symbol_score += 2;
+        current.matched_tokens.add(token);
+      } else if (token.length >= 3 && nameLower.includes(token)) {
+        current.score += 1;
+        current.score_breakdown.symbol_score += 1;
         current.matched_tokens.add(token);
       }
     }
@@ -1693,6 +1886,7 @@ export async function getIndexStats(workspaceRoot, args = {}) {
         files: aggregates.indexed_files,
         chunks: aggregates.chunk_count,
         symbols: aggregates.symbol_count,
+        symbol_terms: aggregates.symbol_term_count,
         unique_tokens: aggregates.unique_tokens
       },
       query_metrics: buildQueryMetricsSnapshot(workspaceRoot),

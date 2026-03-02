@@ -125,6 +125,84 @@ test("queryCodeIndex supports path/language filters and explain mode", async (t)
   assert.ok(typeof explained.results[0].explain.score_breakdown.chunk_score === "number");
 });
 
+test("queryCodeIndex supports split symbol-term matching for camelCase and snake_case", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/user-service.js",
+    "export function createUserProfile(payload) { return payload; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "scripts/user_worker.py",
+    "def sync_user_profile(payload):\n    return payload\n"
+  );
+
+  await buildCodeIndex(workspaceRoot, {});
+
+  const jsQuery = await queryCodeIndex(workspaceRoot, {
+    query: "user profile",
+    language: "javascript",
+    top_k: 5
+  });
+  assert.equal(jsQuery.ok, true);
+  assert.ok(jsQuery.total_hits >= 1);
+  assert.ok(jsQuery.results.some((item) => item.path === "src/user-service.js"));
+
+  const pyQuery = await queryCodeIndex(workspaceRoot, {
+    query: "user profile",
+    language: "python",
+    top_k: 5
+  });
+  assert.equal(pyQuery.ok, true);
+  assert.ok(pyQuery.total_hits >= 1);
+  assert.ok(pyQuery.results.some((item) => item.path === "scripts/user_worker.py"));
+
+  const stats = await getIndexStats(workspaceRoot, {});
+  assert.equal(stats.ok, true);
+  assert.ok(Number(stats.counts.symbol_terms || 0) >= 4);
+});
+
+test("queryCodeIndex backfills symbol terms for legacy schema_version index", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/legacy-user.js",
+    "export function createUserProfile(input) { return input; }\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const indexPath = path.join(workspaceRoot, ".clawty/index.db");
+  const db = new DatabaseSync(indexPath);
+  db.exec("DELETE FROM symbol_terms;");
+  db.prepare("UPDATE meta SET value = ? WHERE key = ?").run("2", "schema_version");
+  db.close();
+
+  const query = await queryCodeIndex(workspaceRoot, {
+    query: "user profile",
+    language: "javascript",
+    top_k: 5
+  });
+  assert.equal(query.ok, true);
+  assert.ok(query.results.some((item) => item.path === "src/legacy-user.js"));
+
+  const verifyDb = new DatabaseSync(indexPath);
+  const schemaRow = verifyDb.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
+  const termCountRow = verifyDb.prepare("SELECT COUNT(*) AS count FROM symbol_terms").get();
+  verifyDb.close();
+
+  assert.equal(schemaRow.value, "3");
+  assert.ok(Number(termCountRow.count || 0) > 0);
+});
+
 test("refreshCodeIndex performs incremental update for changed and deleted files", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {
