@@ -38,5 +38,10 @@
     "incrementalContextMaxPaths": 40,
     "incrementalContextMaxDiffChars": 12000,
     "incrementalContextTimeoutMs": 3000
+  },
+  "metrics": {
+    "enabled": true,
+    "persistHybrid": true,
+    "queryPreviewChars": 160
   }
 }

@@ -330,6 +330,25 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const metrics = {
+    enabled: readBoolean(
+      env.CLAWTY_METRICS_ENABLED ?? deepPick(fileConfig.data, ["metrics", "enabled"]),
+      true
+    ),
+    persistHybrid: readBoolean(
+      env.CLAWTY_METRICS_PERSIST_HYBRID ??
+        deepPick(fileConfig.data, ["metrics", "persistHybrid"]),
+      true
+    ),
+    queryPreviewChars: readInt(
+      env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS ??
+        deepPick(fileConfig.data, ["metrics", "queryPreviewChars"]),
+      160,
+      32,
+      1000
+    )
+  };
+
   return {
     apiKey: apiKey || null,
     baseUrl,
@@ -341,6 +360,7 @@ export function loadConfig(options = {}) {
     index,
     embedding,
     agentContext,
+    metrics,
     sources: {
       cwd: rootDir,
       configFile: fileConfig.path,

@@ -420,7 +420,8 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
           defaultTimeoutMs: config.toolTimeoutMs,
           lsp: config.lsp,
           index: config.index,
-          embedding: config.embedding
+          embedding: config.embedding,
+          metrics: config.metrics
         });
       } catch (error) {
         result = {

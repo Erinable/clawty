@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 import {
   buildCodeIndex,
   getIndexStats,
@@ -40,6 +41,11 @@ import { createEmbeddings, EmbeddingError } from "./embedding-client.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_TOOL_TEXT = 100_000;
+const METRICS_SUBDIR = path.join(".clawty", "metrics");
+const HYBRID_QUERY_METRICS_FILE = "hybrid-query.jsonl";
+const DEFAULT_METRICS_ENABLED = true;
+const DEFAULT_METRICS_PERSIST_HYBRID = true;
+const DEFAULT_METRICS_QUERY_PREVIEW_CHARS = 160;
 
 const BLOCKED_COMMAND_PATTERNS = [
   /\brm\s+-rf\b/i,
@@ -1578,6 +1584,93 @@ function resolveHybridFreshnessConfig(args, context) {
   };
 }
 
+function resolveMetricsConfig(context = {}) {
+  const metrics = context?.metrics || {};
+  return {
+    enabled: parseHybridBoolean(
+      metrics.enabled ?? process.env.CLAWTY_METRICS_ENABLED,
+      DEFAULT_METRICS_ENABLED
+    ),
+    persist_hybrid: parseHybridBoolean(
+      metrics.persistHybrid ?? process.env.CLAWTY_METRICS_PERSIST_HYBRID,
+      DEFAULT_METRICS_PERSIST_HYBRID
+    ),
+    query_preview_chars: parseHybridInt(
+      metrics.queryPreviewChars ?? process.env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS,
+      DEFAULT_METRICS_QUERY_PREVIEW_CHARS,
+      32,
+      1000
+    )
+  };
+}
+
+function buildQueryPreview(query, maxChars) {
+  const source = typeof query === "string" ? query.trim() : "";
+  if (source.length <= maxChars) {
+    return source;
+  }
+  return `${source.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function roundHybridMs(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Number(numeric.toFixed(3));
+}
+
+function buildHybridDegradationSummary(embeddingSource, freshnessSource) {
+  const attemptedSources = [];
+  const failedSources = [];
+  if (embeddingSource?.attempted) {
+    attemptedSources.push("embedding");
+    if (!embeddingSource?.ok) {
+      failedSources.push("embedding");
+    }
+  }
+  if (freshnessSource?.attempted) {
+    attemptedSources.push("freshness");
+    if (!freshnessSource?.ok) {
+      failedSources.push("freshness");
+    }
+  }
+  const degraded = failedSources.length > 0;
+  return {
+    attempted_sources: attemptedSources,
+    failed_sources: failedSources,
+    degraded,
+    degrade_rate_sample: degraded ? 1 : 0
+  };
+}
+
+async function appendHybridQueryMetricEvent(workspaceRoot, event, context = {}) {
+  const metricsConfig = resolveMetricsConfig(context);
+  if (!metricsConfig.enabled || !metricsConfig.persist_hybrid) {
+    return {
+      logged: false,
+      reason: "metrics_disabled"
+    };
+  }
+
+  try {
+    const metricsDir = resolveSafePath(workspaceRoot, METRICS_SUBDIR);
+    await fs.mkdir(metricsDir, { recursive: true });
+    const outputPath = path.join(metricsDir, HYBRID_QUERY_METRICS_FILE);
+    await fs.appendFile(outputPath, `${JSON.stringify(event)}\n`, "utf8");
+    return {
+      logged: true,
+      reason: null
+    };
+  } catch (error) {
+    return {
+      logged: false,
+      reason: "metrics_write_failed",
+      error: error.message || String(error)
+    };
+  }
+}
+
 function normalizeHybridSource(source) {
   if (typeof source !== "string") {
     return "unknown";
@@ -2371,6 +2464,7 @@ async function queryHybridIndexTool(args, context) {
       error: "query must be a non-empty string"
     };
   }
+  const queryStartedAt = performance.now();
 
   const topK = Number.isFinite(Number(args?.top_k))
     ? Math.max(1, Math.min(30, Math.floor(Number(args.top_k))))
@@ -2528,11 +2622,67 @@ async function queryHybridIndexTool(args, context) {
   if (freshnessSource.attempted) {
     priorityPolicy.push("freshness_rerank");
   }
+  const degradation = buildHybridDegradationSummary(
+    embeddingSource,
+    freshnessSource
+  );
+  const queryTotalMs = roundHybridMs(performance.now() - queryStartedAt);
+  const metricsConfig = resolveMetricsConfig(context);
+  const metricsWrite = await appendHybridQueryMetricEvent(
+    context.workspaceRoot,
+    {
+      timestamp: new Date().toISOString(),
+      event_type: "hybrid_query",
+      query_preview: buildQueryPreview(query, metricsConfig.query_preview_chars),
+      query_chars: query.length,
+      query_total_ms: queryTotalMs,
+      top_k: topK,
+      scanned_candidates: scannedCandidates.length,
+      deduped_candidates: deduped.size,
+      total_seeds: seeds.length,
+      filters: {
+        path_prefix: args?.path_prefix || null,
+        language: args?.language || null
+      },
+      sources: {
+        semantic_ok: Boolean(semanticResult?.ok),
+        syntax_ok: Boolean(syntaxResult?.ok),
+        index_ok: Boolean(indexResult?.ok),
+        vector: {
+          enabled: vectorEnabled,
+          ok: Boolean(vectorResult?.ok),
+          candidates: Array.isArray(vectorResult?.results)
+            ? vectorResult.results.length
+            : 0
+        },
+        embedding: {
+          enabled: Boolean(embeddingSource.enabled),
+          attempted: Boolean(embeddingSource.attempted),
+          ok: Boolean(embeddingSource.ok),
+          status_code: embeddingSource.status_code || null,
+          latency_ms: Number(embeddingSource.latency_ms || 0)
+        },
+        freshness: {
+          enabled: Boolean(freshnessSource.enabled),
+          attempted: Boolean(freshnessSource.attempted),
+          ok: Boolean(freshnessSource.ok),
+          status_code: freshnessSource.status_code || null,
+          stale_hit_rate: Number(freshnessSource.stale_hit_rate || 0),
+          stale_vector_candidates: Number(
+            freshnessSource.stale_vector_candidates || 0
+          )
+        }
+      },
+      degradation
+    },
+    context
+  );
 
   return {
     ok: true,
     provider: "hybrid",
     query,
+    query_total_ms: queryTotalMs,
     filters: {
       edge_type: args?.edge_type || null,
       path_prefix: args?.path_prefix || null,
@@ -2618,6 +2768,12 @@ async function queryHybridIndexTool(args, context) {
         status_code: freshnessSource.status_code || null,
         error: freshnessSource.error || null
       }
+    },
+    degradation,
+    observability: {
+      metrics_logged: Boolean(metricsWrite.logged),
+      metrics_reason: metricsWrite.reason || null,
+      metrics_error: metricsWrite.error || null
     },
     priority_policy: priorityPolicy,
     total_seeds: seeds.length,

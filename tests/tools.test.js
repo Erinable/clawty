@@ -639,6 +639,10 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   );
   assert.equal(query.ok, true);
   assert.equal(query.provider, "hybrid");
+  assert.equal(typeof query.query_total_ms, "number");
+  assert.ok(query.query_total_ms >= 0);
+  assert.ok(query.degradation);
+  assert.equal(query.degradation.degraded, false);
   assert.ok(query.total_seeds >= 1);
   assert.ok(query.sources.semantic.ok);
   assert.ok(query.sources.syntax.ok);
@@ -652,6 +656,21 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   assert.equal(typeof query.seeds[0].hybrid_score, "number");
   assert.ok(query.seeds[0].hybrid_explain);
   assert.ok(query.language_distribution);
+
+  const metricsFile = path.join(workspaceRoot, ".clawty/metrics/hybrid-query.jsonl");
+  const metricsContent = await fs.readFile(metricsFile, "utf8");
+  const latestLine = metricsContent
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .pop();
+  assert.ok(latestLine);
+  const parsedMetric = JSON.parse(latestLine);
+  assert.equal(parsedMetric.event_type, "hybrid_query");
+  assert.equal(parsedMetric.query_preview, "hybridSignal");
+  assert.equal(typeof parsedMetric.query_total_ms, "number");
+  assert.ok(parsedMetric.query_total_ms >= 0);
+  assert.equal(parsedMetric.degradation.degraded, false);
 });
 
 test("query_hybrid_index still returns candidates when semantic graph is empty", async (t) => {
@@ -869,6 +888,9 @@ test("query_hybrid_index classifies embedding timeout errors and keeps fallback 
   assert.equal(query.sources.embedding.error_code, "EMBEDDING_REQUEST_TIMEOUT");
   assert.equal(query.sources.embedding.retryable, true);
   assert.ok(query.sources.embedding.latency_ms >= 0);
+  assert.equal(query.degradation.degraded, true);
+  assert.ok(query.degradation.failed_sources.includes("embedding"));
+  assert.equal(typeof query.query_total_ms, "number");
   assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-embed-timeout.ts"));
 });
 
