@@ -45,7 +45,17 @@ node src/index.js run "读取 package.json 并总结这个项目"
 node src/index.js chat
 node src/index.js run "your task"
 node src/index.js --help
+npm test
+npm run test:coverage
 ```
+
+## 测试
+
+- `npm test`：运行全部自动化测试（Node test runner）
+- `npm run test:watch`：监听模式，边改边测
+- `npm run test:coverage`：生成覆盖率报告（实验特性）
+
+测试文件位于 `tests/`，命名为 `*.test.js`。
 
 ## 代码索引使用建议
 

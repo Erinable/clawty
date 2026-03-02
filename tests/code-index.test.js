@@ -1,0 +1,112 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import fs from "node:fs/promises";
+import { buildCodeIndex, queryCodeIndex, refreshCodeIndex } from "../src/code-index.js";
+import {
+  createWorkspace,
+  removeWorkspace,
+  writeWorkspaceFile
+} from "./helpers/workspace.js";
+
+test("buildCodeIndex builds index and queryCodeIndex returns ranked matches", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/main.js",
+    "function applyPatch() { return 'ok'; }\nconst refreshIndex = true;\n"
+  );
+  await writeWorkspaceFile(workspaceRoot, "docs/guide.md", "Refresh index documentation.\n");
+  await writeWorkspaceFile(workspaceRoot, "src/binary.js", "abc\0def");
+  await writeWorkspaceFile(workspaceRoot, "src/big.js", "x".repeat(2048));
+  await writeWorkspaceFile(workspaceRoot, "node_modules/pkg/index.js", "ignored = true;\n");
+
+  const build = await buildCodeIndex(workspaceRoot, {
+    max_files: 100,
+    max_file_size_kb: 1
+  });
+
+  assert.equal(build.ok, true);
+  assert.equal(build.mode, "full");
+  assert.equal(build.discovered_files, 4);
+  assert.equal(build.indexed_files, 2);
+  assert.equal(build.skipped_large_files, 1);
+  assert.equal(build.skipped_binary_files, 1);
+  assert.match(build.index_path, /^\.clawty\/code-index\.json$/);
+
+  const indexPath = path.join(workspaceRoot, build.index_path);
+  const indexContent = JSON.parse(await fs.readFile(indexPath, "utf8"));
+  assert.equal(indexContent.version, 2);
+  assert.ok(indexContent.file_tokens["src/main.js"]);
+
+  const query = await queryCodeIndex(workspaceRoot, {
+    query: "applyPatch refreshIndex",
+    top_k: 5
+  });
+
+  assert.equal(query.ok, true);
+  assert.ok(query.total_hits >= 1);
+  assert.equal(query.results[0].path, "src/main.js");
+  assert.match(query.results[0].snippet, /^\d+:/m);
+});
+
+test("refreshCodeIndex performs incremental update for changed and deleted files", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/a.js", "const alpha = 1;\n");
+  await writeWorkspaceFile(workspaceRoot, "src/b.js", "const beta = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const noChange = await refreshCodeIndex(workspaceRoot, {});
+  assert.equal(noChange.mode, "incremental");
+  assert.equal(noChange.reused_files, 2);
+  assert.equal(noChange.reindexed_files, 0);
+  assert.equal(noChange.removed_files, 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await writeWorkspaceFile(workspaceRoot, "src/a.js", "const alpha = 42;\nconst changed = true;\n");
+
+  const changed = await refreshCodeIndex(workspaceRoot, {});
+  assert.equal(changed.mode, "incremental");
+  assert.equal(changed.reused_files, 1);
+  assert.equal(changed.reindexed_files, 1);
+  assert.equal(changed.removed_files, 0);
+
+  await fs.rm(path.join(workspaceRoot, "src/b.js"), { force: true });
+  const deleted = await refreshCodeIndex(workspaceRoot, {});
+  assert.equal(deleted.mode, "incremental");
+  assert.equal(deleted.removed_files, 1);
+});
+
+test("refreshCodeIndex falls back to full build when index is missing", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/new.js", "export const value = 1;\n");
+  const refreshed = await refreshCodeIndex(workspaceRoot, {});
+
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.mode, "full");
+  assert.equal(refreshed.fallback_full_rebuild, true);
+  assert.equal(refreshed.indexed_files, 1);
+});
+
+test("queryCodeIndex returns clear error when index is missing", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const query = await queryCodeIndex(workspaceRoot, { query: "anything" });
+  assert.equal(query.ok, false);
+  assert.match(query.error, /build_code_index/);
+});

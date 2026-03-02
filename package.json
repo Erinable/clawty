@@ -11,6 +11,9 @@
     "start": "node src/index.js",
     "chat": "node src/index.js chat",
     "run": "node src/index.js run",
-    "help": "node src/index.js --help"
+    "help": "node src/index.js --help",
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "test:coverage": "node --test --experimental-test-coverage"
   }
 }

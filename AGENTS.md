@@ -7,12 +7,13 @@ This repository is a Node.js ESM CLI project.
 - `src/agent.js`: agent loop and tool-calling orchestration
 - `src/tools.js`: local tool implementations (`read_file`, `write_file`, `run_shell`, `apply_patch`, `build_code_index`, `refresh_code_index`, `query_code_index`)
 - `src/code-index.js`: code index build/query engine
+- `tests/`: automated tests (`*.test.js`)
 - `src/openai.js`: OpenAI Responses API client
 - `src/config.js`: `.env` loading and runtime config
 - `README.md`: usage documentation
 - `.env.example`: required environment variable template
 
-Keep new runtime modules in `src/`. If tests are added, place them in `tests/`.
+Keep new runtime modules in `src/`. Place automated tests in `tests/`.
 
 ## Build, Test, and Development Commands
 - `node src/index.js --help`: show CLI usage and env requirements.
@@ -20,6 +21,9 @@ Keep new runtime modules in `src/`. If tests are added, place them in `tests/`.
 - `node src/index.js run "your task"`: execute a single task.
 - `npm run start`: alias for `node src/index.js`.
 - `npm run chat` / `npm run run -- "task"`: npm-script variants.
+- `npm test`: run all automated tests.
+- `npm run test:watch`: run tests in watch mode.
+- `npm run test:coverage`: run tests with coverage report.
 
 There is no separate build step yet (plain JavaScript runtime).
 
@@ -31,16 +35,14 @@ There is no separate build step yet (plain JavaScript runtime).
 - Keep comments minimal and only for non-obvious logic.
 
 ## Testing Guidelines
-Automated tests are not set up yet. Until then, run smoke checks:
-
-1. `node src/index.js --help`
-2. `node src/index.js chat`
-3. `node src/index.js run "read README.md and summarize"`
-
-When adding tests, use Node’s built-in test runner with files named `*.test.js` under `tests/`.
+This project uses Node’s built-in test runner.
+- Put tests under `tests/` and name files `*.test.js`.
+- Use isolated temporary workspaces for filesystem-heavy tests.
+- Keep tests deterministic; avoid real network calls.
+- Before opening a PR, run at least `npm test`.
 
 ## Commit & Pull Request Guidelines
-No project Git history is available yet; follow Conventional Commits going forward:
+Follow Conventional Commits:
 - `feat: add patch-based file editing tool`
 - `fix: handle network error in openai client`
 
