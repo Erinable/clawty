@@ -49,6 +49,12 @@ const PRECISE_INDEX_DEFAULT_CANDIDATES = Object.freeze([
   ".clawty/scip.normalized.json",
   "scip.normalized.json"
 ]);
+const EDGE_TYPE_QUALITY = Object.freeze({
+  definition: 1,
+  import: 0.85,
+  call: 0.7,
+  reference: 0.5
+});
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -843,6 +849,58 @@ function dedupeNeighborRows(rows) {
   });
 }
 
+function roundMetric4(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Number(numeric.toFixed(4));
+}
+
+function edgeTypeQuality(edgeType) {
+  const key = String(edgeType || "").trim().toLowerCase();
+  if (EDGE_TYPE_QUALITY[key]) {
+    return EDGE_TYPE_QUALITY[key];
+  }
+  return 0.6;
+}
+
+function sourceStrength(source) {
+  const rank = sourcePriority(source);
+  if (rank >= SOURCE_PRIORITY_ORDER.length) {
+    return 0;
+  }
+  return (SOURCE_PRIORITY_ORDER.length - rank) / SOURCE_PRIORITY_ORDER.length;
+}
+
+function computePathQuality(pathSteps, cumulativeWeight) {
+  const steps = Array.isArray(pathSteps) ? pathSteps : [];
+  const hop = Math.max(1, steps.length);
+
+  let sourceScoreTotal = 0;
+  let edgeTypeScoreTotal = 0;
+  for (const step of steps) {
+    sourceScoreTotal += sourceStrength(step?.edge_source);
+    edgeTypeScoreTotal += edgeTypeQuality(step?.edge_type);
+  }
+
+  const avgSourceScore = sourceScoreTotal / hop;
+  const avgEdgeTypeScore = edgeTypeScoreTotal / hop;
+  const weightDensity = Math.min(1, Number(cumulativeWeight || 0) / (hop * 4));
+  const compactness = 1 / hop;
+  const score = roundMetric4(
+    avgSourceScore * 0.45 + avgEdgeTypeScore * 0.3 + weightDensity * 0.2 + compactness * 0.05
+  );
+
+  return {
+    score,
+    avg_source: roundMetric4(avgSourceScore),
+    avg_edge_type: roundMetric4(avgEdgeTypeScore),
+    weight_density: roundMetric4(weightDensity),
+    compactness: roundMetric4(compactness)
+  };
+}
+
 function multiHopItemKey(item) {
   return [
     Number(item.hop || 0),
@@ -862,6 +920,15 @@ function terminalStep(item) {
 }
 
 function pickPreferredMultiHopItem(existing, candidate) {
+  const existingScore = Number(existing.path_score || 0);
+  const candidateScore = Number(candidate.path_score || 0);
+  if (candidateScore > existingScore) {
+    return candidate;
+  }
+  if (candidateScore < existingScore) {
+    return existing;
+  }
+
   const existingTerminal = terminalStep(existing);
   const candidateTerminal = terminalStep(candidate);
   const existingEdgeSourceRank = sourcePriority(existingTerminal?.edge_source);
@@ -879,6 +946,12 @@ function pickPreferredMultiHopItem(existing, candidate) {
 }
 
 function sortMultiHopItems(a, b) {
+  const scoreA = Number(a.path_score || 0);
+  const scoreB = Number(b.path_score || 0);
+  if (scoreA !== scoreB) {
+    return scoreB - scoreA;
+  }
+
   const hopA = Number(a.hop || 0);
   const hopB = Number(b.hop || 0);
   if (hopA !== hopB) {
@@ -922,7 +995,7 @@ function expandMultiHopDirection({
       path: []
     }
   ];
-  const visitedHopByNode = new Map();
+  const bestFrontierScoreByNodeHop = new Map();
   const multiHopByKey = new Map();
 
   while (queue.length > 0) {
@@ -941,15 +1014,17 @@ function expandMultiHopDirection({
       }
 
       const nextHop = current.hop + 1;
-      const seenHop = visitedHopByNode.get(nodeId);
-      if (typeof seenHop === "number" && seenHop <= nextHop) {
-        continue;
-      }
-      visitedHopByNode.set(nodeId, nextHop);
-
       const step = toNeighbor(row);
       const nextPath = current.path.concat(step);
       const cumulativeWeight = Number(current.cumulative_weight || 0) + Number(step.weight || 0);
+      const quality = computePathQuality(nextPath, cumulativeWeight);
+      const frontierKey = `${nodeId}:${nextHop}`;
+      const bestKnownScore = bestFrontierScoreByNodeHop.get(frontierKey);
+      if (typeof bestKnownScore === "number" && bestKnownScore >= quality.score) {
+        continue;
+      }
+      bestFrontierScoreByNodeHop.set(frontierKey, quality.score);
+
       if (nextHop < maxHops) {
         queue.push({
           node_id: nodeId,
@@ -967,6 +1042,8 @@ function expandMultiHopDirection({
         direction,
         hop: nextHop,
         cumulative_weight: Number(cumulativeWeight.toFixed(4)),
+        path_score: quality.score,
+        quality,
         node: step.node,
         path: nextPath
       };

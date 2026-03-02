@@ -437,9 +437,138 @@ test("querySemanticGraph supports multi-hop expansion when max_hops > 1", async 
     (item) => item.hop === 2 && item.node.name === "hopC"
   );
   assert.ok(hop2);
+  assert.equal(typeof hop2.path_score, "number");
+  assert.ok(hop2.path_score > 0);
+  assert.equal(typeof hop2.quality?.avg_source, "number");
+  assert.equal(typeof hop2.quality?.avg_edge_type, "number");
   assert.equal(hop2.path.length, 2);
   assert.equal(hop2.path[0].node.name, "hopB");
   assert.equal(hop2.path[1].node.name, "hopC");
+});
+
+test("querySemanticGraph multi-hop keeps higher-quality path for same endpoint", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/quality-a.ts",
+    "export function qualityA() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/quality-b-weak.ts",
+    "export function qualityBWeak() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/quality-b-strong.ts",
+    "export function qualityBStrong() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/quality-terminal.ts",
+    "export function qualityTerminal() { return true; }\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const payload = {
+    format: "scip-normalized/v1",
+    nodes: [
+      {
+        symbol: "quality a",
+        path: "src/quality-a.ts",
+        name: "qualityA",
+        kind: "function",
+        line: 1,
+        column: 1
+      },
+      {
+        symbol: "quality b weak",
+        path: "src/quality-b-weak.ts",
+        name: "qualityBWeak",
+        kind: "function",
+        line: 1,
+        column: 1
+      },
+      {
+        symbol: "quality b strong",
+        path: "src/quality-b-strong.ts",
+        name: "qualityBStrong",
+        kind: "function",
+        line: 1,
+        column: 1
+      },
+      {
+        symbol: "quality terminal",
+        path: "src/quality-terminal.ts",
+        name: "qualityTerminal",
+        kind: "function",
+        line: 1,
+        column: 1
+      }
+    ],
+    edges: [
+      {
+        from: "quality a",
+        to: "quality b weak",
+        edge_type: "call",
+        weight: 2
+      },
+      {
+        from: "quality b weak",
+        to: "quality terminal",
+        edge_type: "reference",
+        weight: 1
+      },
+      {
+        from: "quality a",
+        to: "quality b strong",
+        edge_type: "call",
+        weight: 2
+      },
+      {
+        from: "quality b strong",
+        to: "quality terminal",
+        edge_type: "call",
+        weight: 1
+      }
+    ]
+  };
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip-quality-paths.json",
+    `${JSON.stringify(payload, null, 2)}\n`
+  );
+  const imported = await importPreciseIndex(workspaceRoot, {
+    path: "artifacts/scip-quality-paths.json",
+    mode: "replace",
+    source: "scip"
+  });
+  assert.equal(imported.ok, true);
+  assert.equal(imported.imported.inserted_edges, 4);
+
+  const query = await querySemanticGraph(workspaceRoot, {
+    query: "qualityA",
+    top_k: 2,
+    max_neighbors: 10,
+    max_hops: 3,
+    per_hop_limit: 10
+  });
+  assert.equal(query.ok, true);
+  const seed = query.seeds.find((item) => item.name === "qualityA");
+  assert.ok(seed);
+  const hop2 = seed.multi_hop?.outgoing?.find(
+    (item) => item.hop === 2 && item.node.name === "qualityTerminal"
+  );
+  assert.ok(hop2);
+  assert.equal(hop2.path.length, 2);
+  assert.equal(hop2.path[0].node.name, "qualityBStrong");
+  assert.equal(hop2.path[1].node.name, "qualityTerminal");
+  assert.equal(hop2.path[1].edge_type, "call");
 });
 
 test("querySemanticGraph deduplicates seeds and prefers SCIP over index source", async (t) => {
