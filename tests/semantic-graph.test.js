@@ -336,3 +336,78 @@ test("querySemanticGraph deduplicates seeds and prefers SCIP over index source",
   assert.ok(query.scanned_candidates >= 2);
   assert.ok(query.deduped_candidates >= 1);
 });
+
+test("buildSemanticGraph prefers precise import when SCIP file is present", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/precise.ts",
+    "export function preciseAutoToken() { return true; }\n"
+  );
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const precisePayload = {
+    format: "scip-normalized/v1",
+    nodes: [
+      {
+        symbol: "scip precise auto",
+        path: "src/precise.ts",
+        name: "preciseAutoToken",
+        kind: "function",
+        line: 1,
+        column: 1
+      }
+    ],
+    edges: []
+  };
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip.normalized.json",
+    `${JSON.stringify(precisePayload, null, 2)}\n`
+  );
+
+  const built = await buildSemanticGraph(workspaceRoot, {}, { enabled: false });
+  assert.equal(built.ok, true);
+  assert.equal(built.strategy?.mode, "precise_import");
+  assert.equal(built.imported?.inserted_nodes, 1);
+
+  const query = await querySemanticGraph(workspaceRoot, {
+    query: "preciseAutoToken",
+    top_k: 3
+  });
+  assert.equal(query.ok, true);
+  assert.equal(query.seeds.length, 1);
+  assert.equal(query.seeds[0].source, "scip");
+});
+
+test("buildSemanticGraph fails when precise_required is true and file is missing", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/required.ts",
+    "export const requiredToken = 1;\n"
+  );
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      precise_required: true,
+      precise_index_paths: ["artifacts/not-found.json"]
+    },
+    { enabled: false }
+  );
+  assert.equal(built.ok, false);
+  assert.match(String(built.error), /precise index file not found/i);
+  assert.equal(built.strategy?.mode, "precise_required_missing");
+});

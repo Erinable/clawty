@@ -272,3 +272,35 @@ test("semantic graph tools are callable through runTool", async (t) => {
   assert.equal(query.ok, true);
   assert.ok(query.total_seeds >= 1);
 });
+
+test("query_semantic_graph falls back to index when semantic graph is empty", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/fallback.ts",
+    "export function fallbackToken() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const query = await runTool(
+    "query_semantic_graph",
+    { query: "fallbackToken", top_k: 3 },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.fallback, true);
+  assert.equal(query.provider, "index");
+  assert.ok(Array.isArray(query.seeds));
+  assert.ok(query.seeds.length >= 1);
+});

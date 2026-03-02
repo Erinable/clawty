@@ -2,6 +2,13 @@
 
 `import_precise_index` 用于把精确索引事实（推荐：SCIP 归一化 JSON）写入语义图。
 
+默认情况下，`build_semantic_graph` 会按以下候选路径自动尝试精确导入（精确优先模式）：
+- `artifacts/scip.normalized.json`
+- `.clawty/scip.normalized.json`
+- `scip.normalized.json`
+
+可通过 `precise_index_path` / `precise_index_paths` 覆盖候选列表。
+
 ## 导入前置
 
 1. 先构建代码索引：`build_code_index`

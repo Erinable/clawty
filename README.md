@@ -102,6 +102,8 @@ npm run bench:semantic:check
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsp > index_seed`）。
+`build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
+`query_semantic_graph` 在语义图为空时会自动回退到 `query_code_index`，保证可用性。
 精确索引导入格式见 `docs/precise-index-import.md`。
 
 ## LSP 语义检索（TS/JS）

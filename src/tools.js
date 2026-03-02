@@ -326,6 +326,44 @@ export const TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Fail build if LSP is unavailable."
         },
+        precise_preferred: {
+          type: "boolean",
+          description: "Prefer precise index import (SCIP) before LSP/index graph build."
+        },
+        precise_required: {
+          type: "boolean",
+          description: "Fail build when precise index is unavailable or import fails."
+        },
+        precise_index_path: {
+          type: "string",
+          description: "Optional primary precise index path."
+        },
+        precise_index_paths: {
+          type: "array",
+          description: "Optional precise index candidate paths, checked in order.",
+          items: { type: "string" }
+        },
+        precise_mode: {
+          type: "string",
+          description: "Precise import mode when precise index is found.",
+          enum: ["merge", "replace"]
+        },
+        precise_source: {
+          type: "string",
+          description: "Precise source label, default scip."
+        },
+        precise_max_nodes: {
+          type: "integer",
+          description: "Maximum precise nodes imported in preferred mode.",
+          minimum: 1,
+          maximum: 500000
+        },
+        precise_max_edges: {
+          type: "integer",
+          description: "Maximum precise edges imported in preferred mode.",
+          minimum: 1,
+          maximum: 1000000
+        },
         max_lsp_errors: {
           type: "integer",
           description: "Abort LSP enrichment after this many request errors.",
@@ -378,7 +416,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     name: "query_semantic_graph",
     description:
-      "Query semantic graph seeds and return incoming/outgoing neighbors for semantic reasoning.",
+      "Query semantic graph seeds and return incoming/outgoing neighbors. Falls back to code index when graph is empty.",
     parameters: {
       type: "object",
       properties: {
@@ -674,7 +712,51 @@ async function importPreciseIndexTool(args, context) {
 }
 
 async function querySemanticGraphTool(args, context) {
-  return querySemanticGraph(context.workspaceRoot, args);
+  const semanticResult = await querySemanticGraph(context.workspaceRoot, args);
+  if (semanticResult.ok) {
+    return semanticResult;
+  }
+
+  if (!/semantic graph is empty/i.test(String(semanticResult.error || ""))) {
+    return semanticResult;
+  }
+
+  const indexResult = await queryCodeIndex(context.workspaceRoot, {
+    query: args?.query,
+    top_k: args?.top_k
+  });
+  if (!indexResult.ok) {
+    return semanticResult;
+  }
+
+  const fallbackSeeds = (indexResult.results || []).map((item) => ({
+    path: item.path,
+    name: item.path,
+    kind: "file",
+    line: Number(item.hit_line || 1),
+    column: 1,
+    lang: null,
+    source: "index_fallback",
+    outgoing: [],
+    incoming: []
+  }));
+
+  return {
+    ok: true,
+    provider: "index",
+    fallback: true,
+    warning: "semantic graph is empty, returned index-based fallback results",
+    query: indexResult.query,
+    filters: {
+      edge_type: args?.edge_type || null,
+      path_prefix: args?.path_prefix || null
+    },
+    priority_policy: ["index_fallback"],
+    total_seeds: fallbackSeeds.length,
+    scanned_candidates: Number(indexResult.total_hits || fallbackSeeds.length),
+    deduped_candidates: fallbackSeeds.length,
+    seeds: fallbackSeeds
+  };
 }
 
 async function getSemanticGraphStatsTool(context) {

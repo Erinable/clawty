@@ -24,6 +24,11 @@ const SOURCE_PRIORITY_ORDER = Object.freeze([
   "index_seed",
   "lsp_anchor"
 ]);
+const PRECISE_INDEX_DEFAULT_CANDIDATES = Object.freeze([
+  "artifacts/scip.normalized.json",
+  ".clawty/scip.normalized.json",
+  "scip.normalized.json"
+]);
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -78,6 +83,27 @@ function indexDbPath(workspaceRoot) {
 }
 
 function resolveConfig(args = {}) {
+  const precisePathCandidates = [];
+  const addCandidate = (value) => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return;
+    }
+    const normalized = toPosixPath(value.trim());
+    if (!precisePathCandidates.includes(normalized)) {
+      precisePathCandidates.push(normalized);
+    }
+  };
+
+  addCandidate(args.precise_index_path);
+  if (Array.isArray(args.precise_index_paths)) {
+    for (const item of args.precise_index_paths) {
+      addCandidate(item);
+    }
+  }
+  for (const candidate of PRECISE_INDEX_DEFAULT_CANDIDATES) {
+    addCandidate(candidate);
+  }
+
   return {
     max_symbols: parsePositiveInt(args.max_symbols, DEFAULT_MAX_SYMBOLS, 1, MAX_MAX_SYMBOLS),
     max_references_per_symbol: parsePositiveInt(
@@ -94,7 +120,27 @@ function resolveConfig(args = {}) {
     ),
     include_definitions: parseBoolean(args.include_definitions, true),
     include_references: parseBoolean(args.include_references, true),
-    lsp_required: parseBoolean(args.lsp_required, false)
+    lsp_required: parseBoolean(args.lsp_required, false),
+    precise_preferred: parseBoolean(args.precise_preferred, true),
+    precise_required: parseBoolean(args.precise_required, false),
+    precise_source:
+      typeof args.precise_source === "string" && args.precise_source.trim().length > 0
+        ? args.precise_source.trim().toLowerCase()
+        : "scip",
+    precise_mode: args.precise_mode === "merge" ? "merge" : "replace",
+    precise_max_nodes: parsePositiveInt(
+      args.precise_max_nodes,
+      DEFAULT_MAX_IMPORT_NODES,
+      1,
+      MAX_IMPORT_NODES
+    ),
+    precise_max_edges: parsePositiveInt(
+      args.precise_max_edges,
+      DEFAULT_MAX_IMPORT_EDGES,
+      1,
+      MAX_IMPORT_EDGES
+    ),
+    precise_index_paths: precisePathCandidates
   };
 }
 
@@ -579,6 +625,37 @@ async function checkIndexExists(workspaceRoot) {
     .catch(() => false);
 }
 
+async function resolvePreferredPrecisePath(workspaceRoot, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.trim().length === 0) {
+      continue;
+    }
+
+    let fullPath;
+    try {
+      fullPath = resolveSafePath(workspaceRoot, candidate);
+    } catch {
+      continue;
+    }
+
+    const exists = await fs
+      .access(fullPath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      continue;
+    }
+
+    return toPosixPath(path.relative(workspaceRoot, fullPath));
+  }
+
+  return null;
+}
+
 function resolveLspAvailability(health) {
   return Boolean(
     health?.ok === true &&
@@ -603,6 +680,75 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
     lspDefinition: internal?.lspApi?.lspDefinition || lspDefinition,
     lspReferences: internal?.lspApi?.lspReferences || lspReferences
   };
+  const preciseAttempt = {
+    preferred: config.precise_preferred,
+    required: config.precise_required,
+    path: null,
+    source: config.precise_source,
+    mode: config.precise_mode,
+    used: false,
+    error: null
+  };
+
+  if (config.precise_preferred || config.precise_required) {
+    const preferredPrecisePath = await resolvePreferredPrecisePath(
+      workspaceRoot,
+      config.precise_index_paths
+    );
+    preciseAttempt.path = preferredPrecisePath;
+
+    if (preferredPrecisePath) {
+      const preciseImportResult = await importPreciseIndex(workspaceRoot, {
+        path: preferredPrecisePath,
+        mode: config.precise_mode,
+        source: config.precise_source,
+        max_nodes: config.precise_max_nodes,
+        max_edges: config.precise_max_edges
+      });
+      if (preciseImportResult.ok) {
+        preciseAttempt.used = true;
+        return {
+          ...preciseImportResult,
+          strategy: {
+            mode: "precise_import",
+            fallback_used: false,
+            precise: {
+              preferred: true,
+              required: config.precise_required,
+              path: preferredPrecisePath,
+              source: config.precise_source,
+              mode: config.precise_mode,
+              used: true,
+              error: null
+            }
+          }
+        };
+      }
+
+      preciseAttempt.error = preciseImportResult.error || "precise import failed";
+      if (config.precise_required) {
+        return {
+          ok: false,
+          error: `precise index import failed: ${preciseAttempt.error}`,
+          strategy: {
+            mode: "precise_required_failed",
+            fallback_used: false,
+            precise: preciseAttempt
+          }
+        };
+      }
+    } else if (config.precise_required) {
+      return {
+        ok: false,
+        error: "precise index file not found",
+        strategy: {
+          mode: "precise_required_missing",
+          fallback_used: false,
+          precise: preciseAttempt
+        }
+      };
+    }
+  }
 
   const startedAt = new Date().toISOString();
   const db = openDb(workspaceRoot);
@@ -625,6 +771,11 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
     return {
       ok: false,
       error: "LSP is required but unavailable",
+      strategy: {
+        mode: "lsp_required_failed",
+        fallback_used: false,
+        precise: preciseAttempt
+      },
       lsp: {
         available: false,
         health: lspHealthSnapshot
@@ -883,6 +1034,11 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
         error_count: lspErrorCount,
         health: lspHealthSnapshot
       },
+      strategy: {
+        mode: "lsp_index_fallback",
+        fallback_used: true,
+        precise: preciseAttempt
+      },
       config
     };
   } catch (error) {
@@ -905,7 +1061,12 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
     );
     return {
       ok: false,
-      error: error.message || String(error)
+      error: error.message || String(error),
+      strategy: {
+        mode: "lsp_index_fallback",
+        fallback_used: true,
+        precise: preciseAttempt
+      }
     };
   } finally {
     db.close();
