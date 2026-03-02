@@ -170,6 +170,7 @@ npm run precise:check:fixture
 ```bash
 node src/index.js watch-index
 node src/index.js watch-index --interval-ms 1000 --max-batch-size 200
+node src/index.js watch-index --debounce-ms 500 --hash-init-max-files 3000
 node src/index.js watch-index --no-semantic --quiet
 npm run watch:index
 ```
@@ -179,10 +180,16 @@ npm run watch:index
 - `--interval-ms <n>`：轮询间隔（毫秒）
 - `--max-files <n>`：最大跟踪文件数
 - `--max-batch-size <n>`：单次增量刷新批大小
+- `--debounce-ms <n>`：事件抖动合并窗口（毫秒）
+- `--hash-skip-enabled <bool>`：内容 hash 不变时跳过刷新
+- `--hash-init-max-files <n>`：启动时初始化 hash 缓存的文件上限
 - `--no-build-on-start`：跳过启动时全量构建
+- `--no-hash-skip`：关闭 hash skip
 - `--no-syntax`：关闭 syntax 刷新
 - `--no-semantic`：关闭 semantic 刷新
 - `--quiet`：关闭日志输出
+
+watch 结果会返回 `watch_metrics`（如 `queue_depth`、`index_lag_ms`、`dropped_by_hash`）用于观测增量调度效果。
 
 ## LSP 语义检索（TS/JS）
 
@@ -226,6 +233,9 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`
 - `CLAWTY_WATCH_MAX_BATCH_SIZE`：watch 增量批大小，默认 `300`
+- `CLAWTY_WATCH_DEBOUNCE_MS`：watch 队列防抖窗口（毫秒），默认 `500`
+- `CLAWTY_WATCH_HASH_SKIP_ENABLED`：watch 是否启用 hash skip，默认 `true`
+- `CLAWTY_WATCH_HASH_INIT_MAX_FILES`：watch 启动 hash 缓存文件上限，默认 `2000`
 - `CLAWTY_WATCH_BUILD_ON_START`：watch 启动时是否先全量构建，默认 `true`
 - `CLAWTY_WATCH_INCLUDE_SYNTAX`：watch 是否刷新 syntax index，默认 `true`
 - `CLAWTY_WATCH_INCLUDE_SEMANTIC`：watch 是否刷新 semantic graph，默认 `true`

@@ -6,6 +6,12 @@ import {
   shouldTrackPath,
   parseWatchCliArgs,
   diffTrackedFiles,
+  createDirtyQueueState,
+  enqueueDirtyQueue,
+  shouldFlushDirtyQueue,
+  takeDirtyQueueBatch,
+  seedHashCacheFromSnapshot,
+  filterChangedPathsByHash,
   refreshIndexesForChanges
 } from "../src/index-watch.js";
 import { buildCodeIndex, queryCodeIndex } from "../src/code-index.js";
@@ -34,6 +40,9 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
     "--max-files=100",
     "--max-batch-size",
     "40",
+    "--debounce-ms",
+    "650",
+    "--no-hash-skip",
     "--no-semantic",
     "--quiet",
     "--help"
@@ -42,6 +51,8 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
   assert.equal(parsed.interval_ms, 1200);
   assert.equal(parsed.max_files, 100);
   assert.equal(parsed.max_batch_size, 40);
+  assert.equal(parsed.debounce_ms, 650);
+  assert.equal(parsed.hash_skip_enabled, false);
   assert.equal(parsed.include_semantic, false);
   assert.equal(parsed.quiet, true);
   assert.equal(parsed.help, true);
@@ -62,6 +73,76 @@ test("diffTrackedFiles returns sorted changed/deleted path lists", () => {
   const diff = diffTrackedFiles(previous, current, { mtime_epsilon_ms: 1 });
   assert.deepEqual(diff.changed_paths, ["src/b.ts", "src/d.ts"]);
   assert.deepEqual(diff.deleted_paths, ["src/c.ts"]);
+});
+
+test("dirty queue deduplicates paths and flushes by debounce/batch rules", () => {
+  const queue = createDirtyQueueState();
+  const enqueued = enqueueDirtyQueue(
+    queue,
+    {
+      changed_paths: ["src/a.ts", "src/a.ts", "src/b.ts"],
+      deleted_paths: ["src/c.ts"]
+    },
+    1000
+  );
+  assert.equal(enqueued.added_changed, 2);
+  assert.equal(enqueued.added_deleted, 1);
+  assert.equal(enqueued.queue_depth, 3);
+
+  const noFlushYet = shouldFlushDirtyQueue(queue, 1200, 500, 10, false);
+  assert.equal(noFlushYet, false);
+  const flushByDebounce = shouldFlushDirtyQueue(queue, 1605, 500, 10, false);
+  assert.equal(flushByDebounce, true);
+
+  const batch = takeDirtyQueueBatch(queue, 2, 1700);
+  assert.equal(batch.batch_size, 3);
+  assert.ok(batch.changed_paths.length >= 1);
+  assert.ok(batch.deleted_paths.length >= 1);
+  assert.ok(batch.index_lag_ms >= 700);
+  assert.equal(batch.queue_depth_before, 3);
+  assert.equal(batch.queue_depth_after, 0);
+});
+
+test("hash skip filters unchanged files after cache seed", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/hash-a.ts", "export const a = 1;\n");
+  await writeWorkspaceFile(workspaceRoot, "src/hash-b.ts", "export const b = 1;\n");
+
+  const snapshot = new Map([
+    ["src/hash-a.ts", { mtime_ms: 1, size: 1 }],
+    ["src/hash-b.ts", { mtime_ms: 1, size: 1 }]
+  ]);
+  const hashCache = new Map();
+  const seeded = await seedHashCacheFromSnapshot(workspaceRoot, snapshot, hashCache, {
+    hash_skip_enabled: true,
+    hash_init_max_files: 10
+  });
+  assert.equal(seeded.hashed_files, 2);
+
+  const unchanged = await filterChangedPathsByHash(
+    workspaceRoot,
+    ["src/hash-a.ts"],
+    hashCache,
+    { hash_skip_enabled: true }
+  );
+  assert.deepEqual(unchanged.changed_paths, []);
+  assert.deepEqual(unchanged.skipped_paths, ["src/hash-a.ts"]);
+  assert.equal(unchanged.hashed_paths, 1);
+
+  await writeWorkspaceFile(workspaceRoot, "src/hash-a.ts", "export const a = 2;\n");
+  const changed = await filterChangedPathsByHash(
+    workspaceRoot,
+    ["src/hash-a.ts"],
+    hashCache,
+    { hash_skip_enabled: true }
+  );
+  assert.deepEqual(changed.changed_paths, ["src/hash-a.ts"]);
+  assert.deepEqual(changed.skipped_paths, []);
+  assert.equal(changed.hashed_paths, 1);
 });
 
 test("refreshIndexesForChanges updates code/syntax/semantic indexes in event mode", async (t) => {

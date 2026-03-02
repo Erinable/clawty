@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { buildCodeIndex, refreshCodeIndex } from "./code-index.js";
 import { buildSyntaxIndex, refreshSyntaxIndex } from "./syntax-index.js";
 import { buildSemanticGraph, refreshSemanticGraph } from "./semantic-graph.js";
@@ -7,8 +8,11 @@ import { buildSemanticGraph, refreshSemanticGraph } from "./semantic-graph.js";
 const DEFAULT_WATCH_INTERVAL_MS = 2000;
 const DEFAULT_WATCH_MAX_FILES = 20_000;
 const DEFAULT_WATCH_MAX_BATCH_SIZE = 300;
+const DEFAULT_WATCH_DEBOUNCE_MS = 500;
+const DEFAULT_WATCH_HASH_INIT_MAX_FILES = 2000;
 const MAX_WATCH_MAX_FILES = 50_000;
 const MAX_WATCH_MAX_BATCH_SIZE = 5000;
+const MAX_WATCH_HASH_INIT_MAX_FILES = 100_000;
 const MTIME_EPSILON_MS = 1;
 
 const IGNORED_DIRS = new Set([
@@ -127,6 +131,22 @@ export function resolveWatchConfig(args = {}) {
       1,
       MAX_WATCH_MAX_BATCH_SIZE
     ),
+    debounce_ms: parsePositiveInt(
+      args.debounce_ms ?? process.env.CLAWTY_WATCH_DEBOUNCE_MS,
+      DEFAULT_WATCH_DEBOUNCE_MS,
+      100,
+      10_000
+    ),
+    hash_skip_enabled: parseBoolean(
+      args.hash_skip_enabled ?? process.env.CLAWTY_WATCH_HASH_SKIP_ENABLED,
+      true
+    ),
+    hash_init_max_files: parsePositiveInt(
+      args.hash_init_max_files ?? process.env.CLAWTY_WATCH_HASH_INIT_MAX_FILES,
+      DEFAULT_WATCH_HASH_INIT_MAX_FILES,
+      0,
+      MAX_WATCH_HASH_INIT_MAX_FILES
+    ),
     build_on_start: parseBoolean(
       args.build_on_start ?? process.env.CLAWTY_WATCH_BUILD_ON_START,
       true
@@ -187,6 +207,10 @@ export function parseWatchCliArgs(argv = []) {
     }
     if (arg === "--no-semantic") {
       parsed.include_semantic = false;
+      continue;
+    }
+    if (arg === "--no-hash-skip") {
+      parsed.hash_skip_enabled = false;
       continue;
     }
     if (arg.startsWith("--") && arg.includes("=")) {
@@ -300,6 +324,211 @@ export function diffTrackedFiles(previousSnapshot, currentSnapshot, args = {}) {
   return {
     changed_paths: changed,
     deleted_paths: deleted
+  };
+}
+
+function normalizeWatchPathList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? toPosixPath(item.trim()) : ""))
+        .filter((item) => item.length > 0)
+    )
+  );
+}
+
+export function createDirtyQueueState() {
+  return {
+    changed_paths: new Set(),
+    deleted_paths: new Set(),
+    first_enqueued_at_ms: 0,
+    last_enqueued_at_ms: 0
+  };
+}
+
+export function getDirtyQueueDepth(queueState) {
+  const changedDepth = queueState?.changed_paths instanceof Set ? queueState.changed_paths.size : 0;
+  const deletedDepth = queueState?.deleted_paths instanceof Set ? queueState.deleted_paths.size : 0;
+  return changedDepth + deletedDepth;
+}
+
+function touchQueueTimestamps(queueState, nowMs) {
+  const depth = getDirtyQueueDepth(queueState);
+  if (depth <= 0) {
+    queueState.first_enqueued_at_ms = 0;
+    queueState.last_enqueued_at_ms = 0;
+    return;
+  }
+  if (!queueState.first_enqueued_at_ms) {
+    queueState.first_enqueued_at_ms = nowMs;
+  }
+  queueState.last_enqueued_at_ms = nowMs;
+}
+
+export function enqueueDirtyQueue(queueState, diff = {}, nowMs = Date.now()) {
+  const changedPaths = normalizeWatchPathList(diff.changed_paths);
+  const deletedPaths = normalizeWatchPathList(diff.deleted_paths);
+  let addedChanged = 0;
+  let addedDeleted = 0;
+
+  for (const filePath of changedPaths) {
+    queueState.deleted_paths.delete(filePath);
+    if (queueState.changed_paths.has(filePath)) {
+      continue;
+    }
+    queueState.changed_paths.add(filePath);
+    addedChanged += 1;
+  }
+
+  for (const filePath of deletedPaths) {
+    queueState.changed_paths.delete(filePath);
+    if (queueState.deleted_paths.has(filePath)) {
+      continue;
+    }
+    queueState.deleted_paths.add(filePath);
+    addedDeleted += 1;
+  }
+
+  const addedTotal = addedChanged + addedDeleted;
+  if (addedTotal > 0) {
+    touchQueueTimestamps(queueState, nowMs);
+  } else {
+    touchQueueTimestamps(queueState, queueState.last_enqueued_at_ms || nowMs);
+  }
+  return {
+    added_changed: addedChanged,
+    added_deleted: addedDeleted,
+    queue_depth: getDirtyQueueDepth(queueState)
+  };
+}
+
+export function shouldFlushDirtyQueue(
+  queueState,
+  nowMs,
+  debounceMs,
+  maxBatchSize,
+  force = false
+) {
+  const depth = getDirtyQueueDepth(queueState);
+  if (depth <= 0) {
+    return false;
+  }
+  if (force) {
+    return true;
+  }
+  if (depth >= Math.max(1, Number(maxBatchSize) || 1)) {
+    return true;
+  }
+  if (!queueState.last_enqueued_at_ms) {
+    return true;
+  }
+  return nowMs - queueState.last_enqueued_at_ms >= Math.max(100, Number(debounceMs) || 100);
+}
+
+export function takeDirtyQueueBatch(queueState, maxBatchSize, nowMs = Date.now()) {
+  const changed = [];
+  const deleted = [];
+  const depthBefore = getDirtyQueueDepth(queueState);
+  const size = Math.max(1, Number(maxBatchSize) || 1);
+  const firstQueuedAt = Number(queueState.first_enqueued_at_ms || 0);
+
+  for (const filePath of Array.from(queueState.changed_paths.values()).sort().slice(0, size)) {
+    queueState.changed_paths.delete(filePath);
+    changed.push(filePath);
+  }
+  for (const filePath of Array.from(queueState.deleted_paths.values()).sort().slice(0, size)) {
+    queueState.deleted_paths.delete(filePath);
+    deleted.push(filePath);
+  }
+
+  const depthAfter = getDirtyQueueDepth(queueState);
+  if (depthAfter <= 0) {
+    queueState.first_enqueued_at_ms = 0;
+    queueState.last_enqueued_at_ms = 0;
+  }
+  return {
+    changed_paths: changed,
+    deleted_paths: deleted,
+    batch_size: changed.length + deleted.length,
+    queue_depth_before: depthBefore,
+    queue_depth_after: depthAfter,
+    index_lag_ms: firstQueuedAt ? Math.max(0, nowMs - firstQueuedAt) : 0
+  };
+}
+
+export async function hashTrackedFile(workspaceRoot, relativePath) {
+  const absolutePath = path.resolve(workspaceRoot, relativePath);
+  let content;
+  try {
+    content = await fs.readFile(absolutePath);
+  } catch {
+    return null;
+  }
+  return createHash("sha1").update(content).digest("hex");
+}
+
+export async function seedHashCacheFromSnapshot(workspaceRoot, snapshot, hashCache, args = {}) {
+  const config = resolveWatchConfig(args);
+  if (!config.hash_skip_enabled || !(snapshot instanceof Map) || config.hash_init_max_files <= 0) {
+    return {
+      hashed_files: 0
+    };
+  }
+
+  const candidates = Array.from(snapshot.keys()).sort().slice(0, config.hash_init_max_files);
+  let hashedFiles = 0;
+  for (const relativePath of candidates) {
+    const hash = await hashTrackedFile(workspaceRoot, relativePath);
+    if (!hash) {
+      continue;
+    }
+    hashCache.set(relativePath, hash);
+    hashedFiles += 1;
+  }
+  return {
+    hashed_files: hashedFiles
+  };
+}
+
+export async function filterChangedPathsByHash(workspaceRoot, changedPaths, hashCache, args = {}) {
+  const config = resolveWatchConfig(args);
+  const normalizedChanged = normalizeWatchPathList(changedPaths);
+  if (!config.hash_skip_enabled) {
+    return {
+      changed_paths: normalizedChanged,
+      skipped_paths: [],
+      hashed_paths: 0
+    };
+  }
+
+  const kept = [];
+  const skipped = [];
+  let hashedPaths = 0;
+  for (const relativePath of normalizedChanged) {
+    const nextHash = await hashTrackedFile(workspaceRoot, relativePath);
+    if (!nextHash) {
+      hashCache.delete(relativePath);
+      kept.push(relativePath);
+      continue;
+    }
+
+    hashedPaths += 1;
+    const previousHash = hashCache.get(relativePath);
+    hashCache.set(relativePath, nextHash);
+    if (previousHash && previousHash === nextHash) {
+      skipped.push(relativePath);
+      continue;
+    }
+    kept.push(relativePath);
+  }
+
+  return {
+    changed_paths: kept,
+    skipped_paths: skipped,
+    hashed_paths: hashedPaths
   };
 }
 
@@ -495,9 +724,111 @@ async function sleep(ms) {
   });
 }
 
+async function flushDirtyQueue(workspaceRoot, config, queueState, metrics, options = {}) {
+  const force = Boolean(options.force);
+  while (
+    shouldFlushDirtyQueue(
+      queueState,
+      Date.now(),
+      config.debounce_ms,
+      config.max_batch_size,
+      force
+    )
+  ) {
+    const batch = takeDirtyQueueBatch(queueState, config.max_batch_size, Date.now());
+    if (batch.batch_size <= 0) {
+      break;
+    }
+
+    metrics.last_batch_size = batch.batch_size;
+    metrics.last_index_lag_ms = batch.index_lag_ms;
+    metrics.queue_depth = batch.queue_depth_after;
+    metrics.max_queue_depth = Math.max(metrics.max_queue_depth, batch.queue_depth_before);
+
+    const refreshStart = Date.now();
+    const refreshed = await refreshIndexesForChanges(workspaceRoot, {
+      ...config,
+      changed_paths: batch.changed_paths,
+      deleted_paths: batch.deleted_paths
+    });
+    const refreshMs = Date.now() - refreshStart;
+
+    if (!refreshed.ok) {
+      metrics.failed_flush_count += 1;
+      enqueueDirtyQueue(
+        queueState,
+        {
+          changed_paths: batch.changed_paths,
+          deleted_paths: batch.deleted_paths
+        },
+        Date.now()
+      );
+      metrics.queue_depth = getDirtyQueueDepth(queueState);
+      formatLoopMessage(
+        [
+          `refresh failed at ${refreshed.stage}: ${refreshed.error || "unknown error"}`,
+          `queue_depth=${metrics.queue_depth}`,
+          `batch_size=${batch.batch_size}`
+        ].join(" "),
+        config
+      );
+      break;
+    }
+
+    metrics.flush_count += 1;
+    metrics.last_flush_duration_ms = refreshMs;
+    metrics.refreshed_changed += batch.changed_paths.length;
+    metrics.refreshed_deleted += batch.deleted_paths.length;
+    metrics.queue_depth = batch.queue_depth_after;
+
+    formatLoopMessage(
+      [
+        `refreshed changed=${batch.changed_paths.length}`,
+        `deleted=${batch.deleted_paths.length}`,
+        `queue_depth=${batch.queue_depth_after}`,
+        `batch_size=${batch.batch_size}`,
+        `index_lag_ms=${batch.index_lag_ms}`,
+        `refresh_ms=${refreshMs}`
+      ].join(" "),
+      config
+    );
+
+    if (
+      !force &&
+      !shouldFlushDirtyQueue(
+        queueState,
+        Date.now(),
+        config.debounce_ms,
+        config.max_batch_size,
+        false
+      )
+    ) {
+      break;
+    }
+  }
+}
+
 export async function runIndexWatchLoop(workspaceRoot, args = {}) {
   const config = resolveWatchConfig(args);
   const root = path.resolve(workspaceRoot);
+  const queueState = createDirtyQueueState();
+  const contentHashCache = new Map();
+  const metrics = {
+    poll_count: 0,
+    enqueue_count: 0,
+    flush_count: 0,
+    failed_flush_count: 0,
+    queue_depth: 0,
+    max_queue_depth: 0,
+    last_batch_size: 0,
+    last_index_lag_ms: 0,
+    last_flush_duration_ms: 0,
+    dropped_by_hash: 0,
+    hashed_paths: 0,
+    hash_seeded_files: 0,
+    refreshed_changed: 0,
+    refreshed_deleted: 0
+  };
 
   const stopState = {
     stopped: false,
@@ -526,6 +857,8 @@ export async function runIndexWatchLoop(workspaceRoot, args = {}) {
     }
 
     let previousSnapshot = await collectTrackedFiles(root, config);
+    const seededHashes = await seedHashCacheFromSnapshot(root, previousSnapshot, contentHashCache, config);
+    metrics.hash_seeded_files = Number(seededHashes.hashed_files || 0);
     formatLoopMessage(`watch started (tracked files: ${previousSnapshot.size})`, config);
 
     while (!stopState.stopped) {
@@ -537,31 +870,51 @@ export async function runIndexWatchLoop(workspaceRoot, args = {}) {
       const currentSnapshot = await collectTrackedFiles(root, config);
       const diff = diffTrackedFiles(previousSnapshot, currentSnapshot);
       previousSnapshot = currentSnapshot;
+      metrics.poll_count += 1;
 
       if (diff.changed_paths.length === 0 && diff.deleted_paths.length === 0) {
         continue;
       }
 
-      const cycleStart = Date.now();
-      const refreshed = await refreshIndexesForChanges(root, {
-        ...config,
-        changed_paths: diff.changed_paths,
-        deleted_paths: diff.deleted_paths
-      });
-
-      if (!refreshed.ok) {
-        formatLoopMessage(
-          `refresh failed at ${refreshed.stage}: ${refreshed.error || "unknown error"}`,
-          config
-        );
-        continue;
+      for (const deletedPath of diff.deleted_paths) {
+        contentHashCache.delete(deletedPath);
       }
 
-      const cycleMs = Date.now() - cycleStart;
-      formatLoopMessage(
-        `refreshed changed=${diff.changed_paths.length} deleted=${diff.deleted_paths.length} (${cycleMs}ms)`,
+      const changedAfterHash = await filterChangedPathsByHash(
+        root,
+        diff.changed_paths,
+        contentHashCache,
         config
       );
+      metrics.hashed_paths += Number(changedAfterHash.hashed_paths || 0);
+      metrics.dropped_by_hash += Number(changedAfterHash.skipped_paths?.length || 0);
+
+      const enqueued = enqueueDirtyQueue(
+        queueState,
+        {
+          changed_paths: changedAfterHash.changed_paths,
+          deleted_paths: diff.deleted_paths
+        },
+        Date.now()
+      );
+      metrics.enqueue_count += Number(enqueued.added_changed || 0) + Number(enqueued.added_deleted || 0);
+      metrics.queue_depth = Number(enqueued.queue_depth || 0);
+      metrics.max_queue_depth = Math.max(metrics.max_queue_depth, metrics.queue_depth);
+
+      if (metrics.queue_depth <= 0) {
+        continue;
+      }
+      await flushDirtyQueue(root, config, queueState, metrics);
+      metrics.queue_depth = getDirtyQueueDepth(queueState);
+    }
+
+    if (getDirtyQueueDepth(queueState) > 0) {
+      formatLoopMessage(
+        `draining pending queue (depth=${getDirtyQueueDepth(queueState)}) before exit`,
+        config
+      );
+      await flushDirtyQueue(root, config, queueState, metrics, { force: true });
+      metrics.queue_depth = getDirtyQueueDepth(queueState);
     }
 
     formatLoopMessage("watch stopped", config);
@@ -569,7 +922,8 @@ export async function runIndexWatchLoop(workspaceRoot, args = {}) {
       ok: true,
       stopped_by_signal: Boolean(stopState.signal),
       signal: stopState.signal,
-      config
+      config,
+      watch_metrics: metrics
     };
   } finally {
     process.off("SIGINT", stopHandler);
