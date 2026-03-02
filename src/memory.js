@@ -11,10 +11,17 @@ const DEFAULT_TOP_K = 5;
 const MAX_TOP_K = 50;
 const DEFAULT_MAX_CHARS = 2400;
 const MAX_QUERY_TOKENS = 12;
+const DEFAULT_MIN_LESSON_CHARS = 80;
+const DEFAULT_QUARANTINE_THRESHOLD = 3;
+const ALLOWED_FEEDBACK_REASONS = new Set(["wrong", "stale", "unsafe", "irrelevant", "good"]);
 
 function isFiniteNumber(value) {
   const n = Number(value);
   return Number.isFinite(n);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function clampInt(value, fallback, min, max) {
@@ -160,6 +167,67 @@ function clipText(input, maxChars) {
   return `${text.slice(0, keep)} ...[truncated]`;
 }
 
+function normalizeFeedbackReason(reason) {
+  if (typeof reason !== "string") {
+    return null;
+  }
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return ALLOWED_FEEDBACK_REASONS.has(normalized) ? normalized : null;
+}
+
+function estimateLessonQuality(lessonText, queryText = "", refs = []) {
+  const lesson = String(lessonText || "").trim();
+  const query = String(queryText || "").trim();
+  if (!lesson) {
+    return 0;
+  }
+
+  let score = 0.25;
+  if (lesson.length >= 80) {
+    score += 0.25;
+  }
+  if (query.length >= 8) {
+    score += 0.15;
+  }
+  if (Array.isArray(refs) && refs.length > 0) {
+    score += 0.1;
+  }
+  if (/\b(fix|update|retry|patch|refactor|handle|run|test|build|validate|guard|avoid|use)\b/i.test(lesson)) {
+    score += 0.15;
+  }
+  if (/\b(success|failed|resolved|works|error|warning|pass|improved|result)\b/i.test(lesson)) {
+    score += 0.1;
+  }
+
+  return clampFloat(score, 0.5, 0, 1);
+}
+
+function mergeTags(existingTags, incomingTags) {
+  const dedup = new Set([...parseTags(existingTags), ...parseTags(incomingTags)]);
+  return Array.from(dedup).slice(0, 12);
+}
+
+function mergeLessonText(existingText, incomingText) {
+  const base = String(existingText || "").trim();
+  const incoming = String(incomingText || "").trim();
+  if (!base) {
+    return clipText(incoming, 8_000);
+  }
+  if (!incoming || incoming === base) {
+    return clipText(base, 8_000);
+  }
+  if (base.includes(incoming)) {
+    return clipText(base, 8_000);
+  }
+  if (incoming.includes(base)) {
+    return clipText(incoming, 8_000);
+  }
+  return clipText(`${base}\n\nUpdate:\n${incoming}`, 8_000);
+}
+
 async function ensureMemoryDir(dbPath) {
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
 }
@@ -201,7 +269,11 @@ function openDb(dbPath) {
       tags TEXT,
       confidence REAL NOT NULL DEFAULT 0.5,
       success_rate REAL NOT NULL DEFAULT 0.5,
+      quality_score REAL NOT NULL DEFAULT 0.5,
       use_count INTEGER NOT NULL DEFAULT 0,
+      quarantined INTEGER NOT NULL DEFAULT 0,
+      last_negative_feedback_at TEXT,
+      merged_from_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -237,6 +309,7 @@ function openDb(dbPath) {
       lesson_id INTEGER NOT NULL,
       vote INTEGER NOT NULL,
       note TEXT,
+      reason TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(lesson_id) REFERENCES memory_lessons(id) ON DELETE CASCADE
     );
@@ -244,6 +317,27 @@ function openDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_memory_feedback_lesson_id ON memory_feedback(lesson_id);
     CREATE INDEX IF NOT EXISTS idx_memory_feedback_created_at ON memory_feedback(created_at);
   `);
+
+  // Schema migration for existing databases.
+  const alterStatements = [
+    "ALTER TABLE memory_lessons ADD COLUMN quality_score REAL NOT NULL DEFAULT 0.5;",
+    "ALTER TABLE memory_lessons ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE memory_lessons ADD COLUMN last_negative_feedback_at TEXT;",
+    "ALTER TABLE memory_lessons ADD COLUMN merged_from_count INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE memory_feedback ADD COLUMN reason TEXT;"
+  ];
+  for (const sql of alterStatements) {
+    try {
+      db.exec(sql);
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes("duplicate column name")) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memory_lessons_quarantined ON memory_lessons(quarantined);");
 
   db
     .prepare(
@@ -253,7 +347,7 @@ function openDb(dbPath) {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `
     )
-    .run("schema_version", "1");
+    .run("schema_version", "2");
 
   return db;
 }
@@ -492,43 +586,136 @@ export async function recordLesson(workspaceRoot, payload = {}, options = {}) {
 
     const tags = parseTags(payload.tags);
     const refs = parseRefs(payload.refs, normalizedRoot);
+    const dedupeEnabled = options.dedupeEnabled !== false && payload.disable_dedupe !== true;
+    const incomingQuality = estimateLessonQuality(lesson, payload.source_query || payload.user_query || "", refs);
 
     db.exec("BEGIN IMMEDIATE;");
     try {
-      const insertLesson = db.prepare(`
-        INSERT INTO memory_lessons(
-          workspace_root,
-          workspace_hash,
+      let lessonId = 0;
+      let merged = false;
+      let mergedFromCount = 0;
+
+      if (dedupeEnabled) {
+        const existing = db
+          .prepare(
+            `
+            SELECT
+              id,
+              lesson,
+              tags,
+              confidence,
+              success_rate,
+              quality_score,
+              merged_from_count
+            FROM memory_lessons
+            WHERE workspace_hash = ?
+              AND LOWER(title) = LOWER(?)
+              AND COALESCE(quarantined, 0) = 0
+            ORDER BY updated_at DESC
+            LIMIT 1
+          `
+          )
+          .get(workspaceHash, title);
+
+        if (existing) {
+          lessonId = Number(existing.id || 0);
+          merged = true;
+          mergedFromCount = Number(existing.merged_from_count || 0) + 1;
+          const nextTags = mergeTags(existing.tags, tags);
+          const nextLesson = mergeLessonText(existing.lesson, lesson);
+          const nextConfidence = clampFloat(
+            Math.max(Number(existing.confidence || 0), clampFloat(payload.confidence, 0.6, 0, 1)),
+            0.6,
+            0,
+            1
+          );
+          const nextSuccessRate = clampFloat(
+            Math.max(Number(existing.success_rate || 0), clampFloat(payload.success_rate, 0.7, 0, 1)),
+            0.7,
+            0,
+            1
+          );
+          const nextQuality = clampFloat(
+            Math.max(Number(existing.quality_score || 0), incomingQuality),
+            0.5,
+            0,
+            1
+          );
+
+          db.prepare(`
+            UPDATE memory_lessons
+            SET
+              lesson = ?,
+              tags = ?,
+              confidence = ?,
+              success_rate = ?,
+              quality_score = ?,
+              merged_from_count = ?,
+              updated_at = ?
+            WHERE id = ?
+          `).run(
+            nextLesson,
+            JSON.stringify(nextTags),
+            nextConfidence,
+            nextSuccessRate,
+            nextQuality,
+            mergedFromCount,
+            updatedAt,
+            lessonId
+          );
+
+          db.prepare("DELETE FROM memory_lessons_fts WHERE lesson_id = ?").run(lessonId);
+          db.prepare(`
+            INSERT INTO memory_lessons_fts(lesson_id, title, lesson, tags)
+            VALUES(?, ?, ?, ?)
+          `).run(lessonId, title, nextLesson, nextTags.join(" "));
+        }
+      }
+
+      if (lessonId <= 0) {
+        const insertLesson = db.prepare(`
+          INSERT INTO memory_lessons(
+            workspace_root,
+            workspace_hash,
+            title,
+            lesson,
+            tags,
+            confidence,
+            success_rate,
+            quality_score,
+            use_count,
+            quarantined,
+            last_negative_feedback_at,
+            merged_from_count,
+            created_at,
+            updated_at
+          )
+          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const insertResult = insertLesson.run(
+          normalizedRoot,
+          workspaceHash,
           title,
           lesson,
-          tags,
-          confidence,
-          success_rate,
-          use_count,
-          created_at,
-          updated_at
-        )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+          JSON.stringify(tags),
+          clampFloat(payload.confidence, 0.6, 0, 1),
+          clampFloat(payload.success_rate, 0.7, 0, 1),
+          incomingQuality,
+          clampInt(payload.use_count, 0, 0, 1_000_000),
+          0,
+          null,
+          0,
+          createdAt,
+          updatedAt
+        );
 
-      const insertResult = insertLesson.run(
-        normalizedRoot,
-        workspaceHash,
-        title,
-        lesson,
-        JSON.stringify(tags),
-        clampFloat(payload.confidence, 0.6, 0, 1),
-        clampFloat(payload.success_rate, 0.7, 0, 1),
-        clampInt(payload.use_count, 0, 0, 1_000_000),
-        createdAt,
-        updatedAt
-      );
-
-      const lessonId = Number(insertResult.lastInsertRowid || 0);
-      db.prepare(`
-        INSERT INTO memory_lessons_fts(lesson_id, title, lesson, tags)
-        VALUES(?, ?, ?, ?)
-      `).run(lessonId, title, lesson, tags.join(" "));
+        lessonId = Number(insertResult.lastInsertRowid || 0);
+        db.prepare(`
+          INSERT INTO memory_lessons_fts(lesson_id, title, lesson, tags)
+          VALUES(?, ?, ?, ?)
+        `).run(lessonId, title, lesson, tags.join(" "));
+      }
 
       const insertRef = db.prepare(`
         INSERT OR IGNORE INTO memory_refs(
@@ -559,6 +746,9 @@ export async function recordLesson(workspaceRoot, payload = {}, options = {}) {
       return {
         ok: true,
         id: lessonId,
+        merged,
+        merged_from_count: mergedFromCount,
+        quality_score: Number(incomingQuality.toFixed(4)),
         refs_inserted: refs.length,
         db_path: dbPath,
         workspace_hash: workspaceHash
@@ -600,6 +790,8 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
             ml.tags,
             ml.confidence,
             ml.success_rate,
+            ml.quality_score,
+            ml.quarantined,
             ml.use_count,
             ml.updated_at,
             bm25(memory_lessons_fts) AS bm25
@@ -607,6 +799,7 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
           JOIN memory_lessons ml ON ml.id = memory_lessons_fts.lesson_id
           WHERE memory_lessons_fts MATCH ?
             AND ${scopeWhere}
+            AND COALESCE(ml.quarantined, 0) = 0
           ORDER BY bm25 ASC
           LIMIT 200
         `
@@ -627,11 +820,14 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
             tags,
             confidence,
             success_rate,
+            quality_score,
+            quarantined,
             use_count,
             updated_at,
             0 AS bm25
           FROM memory_lessons
           WHERE ${scopeWhere}
+            AND COALESCE(quarantined, 0) = 0
           ORDER BY updated_at DESC
           LIMIT 200
         `
@@ -646,7 +842,12 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
       ? db
           .prepare(
             `
-            SELECT lesson_id, COALESCE(SUM(vote), 0) AS score, COUNT(*) AS count
+            SELECT
+              lesson_id,
+              COALESCE(SUM(vote), 0) AS score,
+              COUNT(*) AS count,
+              SUM(CASE WHEN vote < 0 THEN 1 ELSE 0 END) AS down_count,
+              MAX(CASE WHEN vote < 0 THEN created_at ELSE NULL END) AS last_down_at
             FROM memory_feedback
             WHERE lesson_id IN (${ids.map(() => "?").join(",")})
             GROUP BY lesson_id
@@ -659,7 +860,9 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
     for (const row of feedbackRows) {
       feedbackMap.set(Number(row.lesson_id || 0), {
         score: Number(row.score || 0),
-        count: Number(row.count || 0)
+        count: Number(row.count || 0),
+        down_count: Number(row.down_count || 0),
+        last_down_at: row.last_down_at || null
       });
     }
 
@@ -668,20 +871,31 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
         const id = Number(row.id || 0);
         const refs = refsByLesson.get(id) || [];
         const isProject = String(row.workspace_hash || "") === workspaceHash;
-        const feedback = feedbackMap.get(id) || { score: 0, count: 0 };
+        const feedback = feedbackMap.get(id) || {
+          score: 0,
+          count: 0,
+          down_count: 0,
+          last_down_at: null
+        };
 
         const bm25Score = scoreFromBm25(row.bm25);
         const recency = recencyScore(row.updated_at);
         const confidence = clampFloat(row.confidence, 0.5, 0, 1);
         const successRate = clampFloat(row.success_rate, 0.5, 0, 1);
+        const qualityScore = clampFloat(row.quality_score, 0.5, 0, 1);
         const feedbackScore = clampFloat((feedback.score + 5) / 10, 0.5, 0, 1);
+        const downCount = Math.max(0, Number(feedback.down_count || 0));
+        const recentNegativePenalty = downCount > 0 && recencyScore(feedback.last_down_at) >= 0.55 ? 0.18 : 0;
+        const negativePenalty = Math.min(0.3, downCount * 0.06 + recentNegativePenalty);
         const workspaceBoost = isProject ? 1 : 0.35;
         const score =
-          bm25Score * 0.42 +
-          recency * 0.2 +
+          bm25Score * 0.34 +
+          recency * 0.16 +
           confidence * 0.12 +
           successRate * 0.12 +
-          feedbackScore * 0.14;
+          qualityScore * 0.14 +
+          feedbackScore * 0.12 -
+          negativePenalty;
 
         return {
           id,
@@ -692,6 +906,7 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
           tags: parseTags(row.tags),
           confidence,
           success_rate: successRate,
+          quality_score: qualityScore,
           use_count: clampInt(row.use_count, 0, 0, 1_000_000),
           updated_at: row.updated_at,
           refs: refs.slice(0, 12),
@@ -699,7 +914,9 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
           components: {
             bm25: Number(bm25Score.toFixed(6)),
             recency: Number(recency.toFixed(6)),
+            quality: Number(qualityScore.toFixed(6)),
             feedback: Number(feedbackScore.toFixed(6)),
+            negative_penalty: Number(negativePenalty.toFixed(6)),
             workspace_boost: Number(workspaceBoost.toFixed(6))
           }
         };
@@ -772,7 +989,14 @@ export function formatMemoryContextForPrompt(context, options = {}) {
   return lines.join("\n");
 }
 
-export async function recordFeedback(workspaceRoot, lessonId, vote, note = null, options = {}) {
+export async function recordFeedback(
+  workspaceRoot,
+  lessonId,
+  vote,
+  note = null,
+  reasonOrOptions = null,
+  maybeOptions = {}
+) {
   const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
   const targetLessonId = clampInt(lessonId, 0, 1, Number.MAX_SAFE_INTEGER);
   const normalizedVote = typeof vote === "string" ? vote.trim().toLowerCase() : vote;
@@ -790,8 +1014,31 @@ export async function recordFeedback(workspaceRoot, lessonId, vote, note = null,
     };
   }
 
+  let reason = null;
+  let options = {};
+  if (isPlainObject(reasonOrOptions) && !isPlainObject(maybeOptions)) {
+    options = reasonOrOptions;
+  } else if (
+    isPlainObject(reasonOrOptions) &&
+    isPlainObject(maybeOptions) &&
+    Object.keys(maybeOptions).length === 0
+  ) {
+    options = reasonOrOptions;
+  } else {
+    reason = normalizeFeedbackReason(reasonOrOptions);
+    options = isPlainObject(maybeOptions) ? maybeOptions : {};
+  }
+  if (!reason && typeof reasonOrOptions === "string" && reasonOrOptions.trim()) {
+    return {
+      ok: false,
+      error: `invalid feedback reason: ${reasonOrOptions}`
+    };
+  }
+
   return withDb(options, async (db) => {
-    const exists = db.prepare("SELECT id FROM memory_lessons WHERE id = ?").get(targetLessonId);
+    const exists = db
+      .prepare("SELECT id, quality_score FROM memory_lessons WHERE id = ?")
+      .get(targetLessonId);
     if (!exists) {
       return {
         ok: false,
@@ -803,16 +1050,24 @@ export async function recordFeedback(workspaceRoot, lessonId, vote, note = null,
     db.exec("BEGIN IMMEDIATE;");
     try {
       db.prepare(`
-        INSERT INTO memory_feedback(lesson_id, vote, note, created_at)
-        VALUES(?, ?, ?, ?)
-      `).run(targetLessonId, voteValue, note ? String(note).slice(0, 1000) : null, createdAt);
+        INSERT INTO memory_feedback(lesson_id, vote, note, reason, created_at)
+        VALUES(?, ?, ?, ?, ?)
+      `).run(
+        targetLessonId,
+        voteValue,
+        note ? String(note).slice(0, 1000) : null,
+        reason,
+        createdAt
+      );
 
       const agg = db
         .prepare(
           `
           SELECT
             COUNT(*) AS total,
-            SUM(CASE WHEN vote > 0 THEN 1 ELSE 0 END) AS up_count
+            SUM(CASE WHEN vote > 0 THEN 1 ELSE 0 END) AS up_count,
+            SUM(CASE WHEN vote < 0 THEN 1 ELSE 0 END) AS down_count,
+            MAX(CASE WHEN vote < 0 THEN created_at ELSE NULL END) AS last_down_at
           FROM memory_feedback
           WHERE lesson_id = ?
         `
@@ -821,26 +1076,56 @@ export async function recordFeedback(workspaceRoot, lessonId, vote, note = null,
 
       const total = Number(agg?.total || 0);
       const upCount = Number(agg?.up_count || 0);
+      const downCount = Number(agg?.down_count || 0);
       const successRate = total > 0 ? upCount / total : 0.5;
       const confidence = clampFloat(0.5 + Math.min(0.4, total * 0.04), 0.5, 0, 1);
+      const quarantineThreshold = clampInt(
+        options.quarantineThreshold,
+        DEFAULT_QUARANTINE_THRESHOLD,
+        1,
+        20
+      );
+      const quarantined = downCount >= quarantineThreshold ? 1 : 0;
+      const baseQuality = clampFloat(exists.quality_score, 0.5, 0, 1);
+      const qualityScore = clampFloat(baseQuality * 0.75 + successRate * 0.25, 0.5, 0, 1);
 
       db.prepare(`
         UPDATE memory_lessons
         SET
           success_rate = ?,
           confidence = ?,
+          quality_score = ?,
+          quarantined = ?,
+          last_negative_feedback_at = CASE
+            WHEN ? IS NOT NULL THEN ?
+            ELSE last_negative_feedback_at
+          END,
           updated_at = ?
         WHERE id = ?
-      `).run(successRate, confidence, createdAt, targetLessonId);
+      `).run(
+        successRate,
+        confidence,
+        qualityScore,
+        quarantined,
+        agg?.last_down_at || null,
+        agg?.last_down_at || null,
+        createdAt,
+        targetLessonId
+      );
 
       db.exec("COMMIT;");
       return {
         ok: true,
         lesson_id: targetLessonId,
         vote: voteValue,
+        reason,
         total_feedback: total,
+        down_feedback: downCount,
         success_rate: Number(successRate.toFixed(4)),
         confidence: Number(confidence.toFixed(4)),
+        quality_score: Number(qualityScore.toFixed(4)),
+        quarantined: quarantined === 1,
+        quarantine_threshold: quarantineThreshold,
         workspace_root: normalizedRoot
       };
     } catch (error) {
@@ -864,6 +1149,9 @@ export async function getMemoryStats(workspaceRoot, options = {}) {
 
     const lessonCount = db
       .prepare(`SELECT COUNT(*) AS count FROM memory_lessons WHERE ${scopeWhere}`)
+      .get(...scopeArgs);
+    const quarantinedCount = db
+      .prepare(`SELECT COUNT(*) AS count FROM memory_lessons WHERE ${scopeWhere} AND COALESCE(quarantined, 0) = 1`)
       .get(...scopeArgs);
     const episodeCount = db
       .prepare(`SELECT COUNT(*) AS count FROM memory_episodes WHERE ${scopeWhere}`)
@@ -931,6 +1219,7 @@ export async function getMemoryStats(workspaceRoot, options = {}) {
       workspace_root: normalizedRoot,
       counts: {
         lessons: Number(lessonCount?.count || 0),
+        quarantined_lessons: Number(quarantinedCount?.count || 0),
         episodes: Number(episodeCount?.count || 0),
         feedback: Number(feedbackCount?.count || 0)
       },
@@ -994,6 +1283,195 @@ export async function searchMemory(workspaceRoot, query, options = {}) {
   };
 }
 
+export async function inspectMemoryLesson(workspaceRoot, lessonId, options = {}) {
+  const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
+  const workspaceHash = hashWorkspaceRoot(normalizedRoot);
+  const targetLessonId = clampInt(lessonId, 0, 1, Number.MAX_SAFE_INTEGER);
+  const scopeFlags = resolveScopeFlags(options.scope);
+
+  return withDb(options, async (db, dbPath) => {
+    const scopeWhere = buildScopeWhereClause(scopeFlags);
+    const scopeArgs = buildScopeArgs(scopeFlags, workspaceHash);
+    const lesson = db
+      .prepare(
+        `
+        SELECT
+          id,
+          workspace_root,
+          workspace_hash,
+          title,
+          lesson,
+          tags,
+          confidence,
+          success_rate,
+          quality_score,
+          use_count,
+          quarantined,
+          last_negative_feedback_at,
+          merged_from_count,
+          created_at,
+          updated_at
+        FROM memory_lessons
+        WHERE id = ?
+          AND ${scopeWhere}
+        LIMIT 1
+      `
+      )
+      .get(targetLessonId, ...scopeArgs);
+
+    if (!lesson) {
+      return {
+        ok: false,
+        error: `lesson not found: ${targetLessonId}`
+      };
+    }
+
+    const refs = db
+      .prepare(
+        `
+        SELECT file_path, symbol_name, line_start, line_end, ref_weight
+        FROM memory_refs
+        WHERE lesson_id = ?
+        ORDER BY ref_weight DESC, file_path ASC
+      `
+      )
+      .all(targetLessonId)
+      .map((row) => ({
+        file_path: row.file_path || null,
+        symbol_name: row.symbol_name || null,
+        line_start: isFiniteNumber(row.line_start) ? Number(row.line_start) : null,
+        line_end: isFiniteNumber(row.line_end) ? Number(row.line_end) : null,
+        ref_weight: clampFloat(row.ref_weight, 1, 0, 3)
+      }));
+
+    const feedbackRows = db
+      .prepare(
+        `
+        SELECT vote, note, reason, created_at
+        FROM memory_feedback
+        WHERE lesson_id = ?
+        ORDER BY created_at DESC
+        LIMIT 200
+      `
+      )
+      .all(targetLessonId);
+    const feedbackSummary = {
+      total: feedbackRows.length,
+      up: feedbackRows.filter((item) => Number(item.vote) > 0).length,
+      down: feedbackRows.filter((item) => Number(item.vote) < 0).length
+    };
+    const reasonCounts = new Map();
+    for (const item of feedbackRows) {
+      const reason = normalizeFeedbackReason(item.reason);
+      if (!reason) {
+        continue;
+      }
+      reasonCounts.set(reason, Number(reasonCounts.get(reason) || 0) + 1);
+    }
+
+    return {
+      ok: true,
+      db_path: dbPath,
+      scope: scopeFlags.scope,
+      lesson: {
+        id: Number(lesson.id || 0),
+        workspace_root: lesson.workspace_root || null,
+        workspace_match: String(lesson.workspace_hash || "") === workspaceHash,
+        title: String(lesson.title || ""),
+        lesson: String(lesson.lesson || ""),
+        tags: parseTags(lesson.tags),
+        confidence: clampFloat(lesson.confidence, 0.5, 0, 1),
+        success_rate: clampFloat(lesson.success_rate, 0.5, 0, 1),
+        quality_score: clampFloat(lesson.quality_score, 0.5, 0, 1),
+        use_count: clampInt(lesson.use_count, 0, 0, 1_000_000),
+        quarantined: Number(lesson.quarantined || 0) === 1,
+        last_negative_feedback_at: lesson.last_negative_feedback_at || null,
+        merged_from_count: clampInt(lesson.merged_from_count, 0, 0, 1_000_000),
+        created_at: lesson.created_at || null,
+        updated_at: lesson.updated_at || null,
+        refs,
+        feedback: {
+          ...feedbackSummary,
+          reasons: Array.from(reasonCounts.entries())
+            .map(([reason, count]) => ({ reason, count }))
+            .sort((a, b) => b.count - a.count)
+        }
+      }
+    };
+  });
+}
+
+export async function reindexMemory(workspaceRoot, options = {}) {
+  const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
+  const workspaceHash = hashWorkspaceRoot(normalizedRoot);
+  const scopeFlags = resolveScopeFlags(options.scope);
+
+  return withDb(options, async (db) => {
+    const scopeWhere = buildScopeWhereClause(scopeFlags);
+    const scopeArgs = buildScopeArgs(scopeFlags, workspaceHash);
+    const rows = db
+      .prepare(
+        `
+        SELECT id, title, lesson, tags, quality_score, updated_at
+        FROM memory_lessons
+        WHERE ${scopeWhere}
+        ORDER BY id ASC
+      `
+      )
+      .all(...scopeArgs);
+
+    const updateLesson = db.prepare(`
+      UPDATE memory_lessons
+      SET tags = ?, quality_score = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    const deleteFts = db.prepare("DELETE FROM memory_lessons_fts WHERE lesson_id = ?");
+    const insertFts = db.prepare(`
+      INSERT INTO memory_lessons_fts(lesson_id, title, lesson, tags)
+      VALUES(?, ?, ?, ?)
+    `);
+
+    let updatedTags = 0;
+    let updatedQuality = 0;
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      for (const row of rows) {
+        const lessonId = Number(row.id || 0);
+        if (lessonId <= 0) {
+          continue;
+        }
+        const tags = parseTags(row.tags);
+        const tagsJson = JSON.stringify(tags);
+        const qualityScore = estimateLessonQuality(row.lesson || "", row.title || "", []);
+        if (String(row.tags || "") !== tagsJson) {
+          updatedTags += 1;
+        }
+        if (Math.abs(Number(row.quality_score || 0) - qualityScore) > 0.0001) {
+          updatedQuality += 1;
+        }
+        updateLesson.run(tagsJson, qualityScore, row.updated_at || new Date().toISOString(), lessonId);
+        deleteFts.run(lessonId);
+        insertFts.run(lessonId, String(row.title || ""), String(row.lesson || ""), tags.join(" "));
+      }
+      db.exec("COMMIT;");
+      return {
+        ok: true,
+        scope: scopeFlags.scope,
+        scanned_lessons: rows.length,
+        updated_tags: updatedTags,
+        updated_quality_score: updatedQuality,
+        rebuilt_fts_rows: rows.length
+      };
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      return {
+        ok: false,
+        error: error.message || String(error)
+      };
+    }
+  });
+}
+
 function extractLessonTitle(query, summary) {
   const fromQuery = clipText(query, 120);
   if (fromQuery) {
@@ -1011,12 +1489,36 @@ function inferTags(query, summary) {
 export async function recordLessonFromTurn(workspaceRoot, turn = {}, options = {}) {
   const query = String(turn.user_query || "").trim();
   const summary = String(turn.assistant_summary || "").trim();
-  if (!summary || summary.length < 40) {
+  const minLessonChars = clampInt(options.minLessonChars, DEFAULT_MIN_LESSON_CHARS, 40, 4_000);
+  const gateEnabled = options.writeGateEnabled !== false;
+  if (!summary || summary.length < minLessonChars) {
     return {
       ok: false,
       skipped: true,
-      reason: "summary_too_short"
+      reason: "summary_too_short",
+      min_chars: minLessonChars
     };
+  }
+
+  if (gateEnabled) {
+    const signals = {
+      problem: query.length >= 8,
+      action: /\b(fix|update|retry|patch|refactor|handle|run|test|build|validate|guard|avoid|use)\b/i.test(
+        summary
+      ),
+      outcome: /\b(success|failed|resolved|works|error|warning|pass|improved|result)\b/i.test(summary)
+    };
+    const score =
+      Number(signals.problem === true) + Number(signals.action === true) + Number(signals.outcome === true);
+    if (score < 2) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: "write_gate_rejected",
+        gate_score: score,
+        signals
+      };
+    }
   }
 
   const refs = Array.isArray(turn.changed_paths)
@@ -1031,6 +1533,7 @@ export async function recordLessonFromTurn(workspaceRoot, turn = {}, options = {
       tags: inferTags(query, summary),
       confidence: turn.outcome === "success" ? 0.68 : 0.45,
       success_rate: turn.outcome === "success" ? 0.75 : 0.4,
+      source_query: query,
       refs
     },
     options

@@ -4,6 +4,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
+import { resolveMemoryDbPath } from "./memory.js";
 
 const execFileAsync = promisify(execFile);
 const SECTION_SEPARATOR = "────────────────────────────────────────";
@@ -368,6 +370,119 @@ async function runIndexDbCheck(context) {
   );
 }
 
+function resolveDoctorMemoryPath(context) {
+  return resolveMemoryDbPath({
+    homeDir: context?.config?.sources?.homeDir
+  });
+}
+
+async function runMemoryDbCheck(context) {
+  if (context?.config?.memory?.enabled !== true) {
+    return result(STATUS.SKIP, "Disabled");
+  }
+
+  const dbPath = resolveDoctorMemoryPath(context);
+  try {
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec("SELECT 1;");
+    db.close();
+    return result(STATUS.PASS, `Ready (${dbPath})`);
+  } catch (error) {
+    return result(
+      STATUS.FAIL,
+      `Unavailable: ${error.message || String(error)}`,
+      "Check filesystem permissions for ~/.clawty."
+    );
+  }
+}
+
+async function runMemorySchemaCheck(context) {
+  if (context?.config?.memory?.enabled !== true) {
+    return result(STATUS.SKIP, "Disabled");
+  }
+
+  const dbPath = resolveDoctorMemoryPath(context);
+  let db;
+  try {
+    db = new DatabaseSync(dbPath);
+    const schemaRow = db
+      .prepare("SELECT value FROM memory_meta WHERE key = 'schema_version' LIMIT 1")
+      .get();
+    const schemaVersion = Number(schemaRow?.value || 0);
+    const lessonColumns = db
+      .prepare("SELECT name FROM pragma_table_info('memory_lessons')")
+      .all()
+      .map((row) => String(row.name || ""));
+    const feedbackColumns = db
+      .prepare("SELECT name FROM pragma_table_info('memory_feedback')")
+      .all()
+      .map((row) => String(row.name || ""));
+    const hasRequiredLessonColumns = ["quality_score", "quarantined"].every((name) =>
+      lessonColumns.includes(name)
+    );
+    const hasReasonColumn = feedbackColumns.includes("reason");
+
+    if (schemaVersion >= 2 && hasRequiredLessonColumns && hasReasonColumn) {
+      return result(STATUS.PASS, `schema_version=${schemaVersion}`);
+    }
+    return result(
+      STATUS.WARN,
+      `schema_version=${schemaVersion || 0}`,
+      "Run a memory command once to trigger automatic migration."
+    );
+  } catch (error) {
+    return result(
+      STATUS.WARN,
+      `Schema check skipped: ${error.message || String(error)}`,
+      "Run `clawty memory stats --json` to initialize memory metadata."
+    );
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
+async function runMemoryRecentWriteCheck(context) {
+  if (context?.config?.memory?.enabled !== true) {
+    return result(STATUS.SKIP, "Disabled");
+  }
+
+  const dbPath = resolveDoctorMemoryPath(context);
+  let db;
+  try {
+    db = new DatabaseSync(dbPath);
+    const threshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const lessonCount = db
+      .prepare("SELECT COUNT(*) AS count FROM memory_lessons WHERE created_at >= ?")
+      .get(threshold);
+    const episodeCount = db
+      .prepare("SELECT COUNT(*) AS count FROM memory_episodes WHERE created_at >= ?")
+      .get(threshold);
+    const lessons = Number(lessonCount?.count || 0);
+    const episodes = Number(episodeCount?.count || 0);
+    if (lessons === 0 && episodes === 0) {
+      return result(
+        STATUS.WARN,
+        "No writes in last 7 days",
+        "Use chat/run and `clawty memory feedback` to build memory signal."
+      );
+    }
+    return result(STATUS.PASS, `7d lessons=${lessons}, episodes=${episodes}`);
+  } catch (error) {
+    return result(
+      STATUS.WARN,
+      `Recent-write check skipped: ${error.message || String(error)}`,
+      "Memory DB may not be initialized yet."
+    );
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
 async function runVersionUpdateCheck() {
   return result(STATUS.SKIP, "Update check not configured");
 }
@@ -408,6 +523,24 @@ const CHECK_DEFINITIONS = [
     section: "Configuration",
     title: "Model Resolution",
     run: runModelResolutionCheck
+  },
+  {
+    id: "memory_db",
+    section: "Configuration",
+    title: "Memory DB",
+    run: runMemoryDbCheck
+  },
+  {
+    id: "memory_schema",
+    section: "Configuration",
+    title: "Memory Schema",
+    run: runMemorySchemaCheck
+  },
+  {
+    id: "memory_recent_write",
+    section: "Configuration",
+    title: "Memory Recent Write",
+    run: runMemoryRecentWriteCheck
   },
   {
     id: "openai_auth",

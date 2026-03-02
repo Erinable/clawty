@@ -12,7 +12,10 @@ import {
   getMemoryStats,
   recordFeedback,
   pruneMemory,
-  formatMemoryContextForPrompt
+  formatMemoryContextForPrompt,
+  inspectMemoryLesson,
+  reindexMemory,
+  recordLessonFromTurn
 } from "../src/memory.js";
 
 function memoryOptions(homeDir) {
@@ -137,6 +140,95 @@ test("memory tracks episodes, feedback, and stats", async (t) => {
   const tagNames = stats.top_tags.map((item) => item.tag);
   assert.ok(tagNames.includes("patch"));
   assert.ok(tagNames.includes("tests"));
+});
+
+test("memory supports inspect and reindex workflows", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const options = memoryOptions(fakeHome);
+  const inserted = await recordLesson(
+    workspaceRoot,
+    {
+      title: "Inspect target",
+      lesson: "Use inspect to view lesson details, refs, and feedback summary.",
+      tags: "inspect;memory",
+      refs: [{ file_path: "src/memory.js", line_start: 10, line_end: 30 }]
+    },
+    options
+  );
+  assert.equal(inserted.ok, true);
+
+  const feedback = await recordFeedback(
+    workspaceRoot,
+    inserted.id,
+    "down",
+    "stale data",
+    "stale",
+    {
+      ...options,
+      quarantineThreshold: 1
+    }
+  );
+  assert.equal(feedback.ok, true);
+  assert.equal(feedback.reason, "stale");
+  assert.equal(feedback.quarantined, true);
+
+  const inspect = await inspectMemoryLesson(workspaceRoot, inserted.id, options);
+  assert.equal(inspect.ok, true);
+  assert.equal(inspect.lesson.id, inserted.id);
+  assert.ok(Array.isArray(inspect.lesson.refs));
+  assert.ok(inspect.lesson.feedback.down >= 1);
+  assert.ok(inspect.lesson.feedback.reasons.some((item) => item.reason === "stale"));
+
+  const reindex = await reindexMemory(workspaceRoot, options);
+  assert.equal(reindex.ok, true);
+  assert.ok(reindex.scanned_lessons >= 1);
+  assert.ok(reindex.rebuilt_fts_rows >= 1);
+});
+
+test("recordLessonFromTurn applies write gate", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+  const options = memoryOptions(fakeHome);
+
+  const rejected = await recordLessonFromTurn(
+    workspaceRoot,
+    {
+      user_query: "auth failed",
+      assistant_summary: "auth issue maybe retry"
+    },
+    {
+      ...options,
+      minLessonChars: 80,
+      writeGateEnabled: true
+    }
+  );
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.skipped, true);
+
+  const accepted = await recordLessonFromTurn(
+    workspaceRoot,
+    {
+      user_query: "auth failed with expired token",
+      assistant_summary:
+        "Fixed auth flow by adding token refresh retry and reran tests. Result: login error resolved and tests pass.",
+      outcome: "success",
+      changed_paths: ["src/auth.js"]
+    },
+    {
+      ...options,
+      minLessonChars: 40,
+      writeGateEnabled: true
+    }
+  );
+  assert.equal(accepted.ok, true);
 });
 
 test("memory supports project/global scope and pruning", async (t) => {

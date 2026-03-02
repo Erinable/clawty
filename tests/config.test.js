@@ -56,6 +56,17 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           persistHybrid: false,
           persistWatch: false,
           queryPreviewChars: 120
+        },
+        memory: {
+          enabled: true,
+          maxInjectedItems: 7,
+          maxInjectedChars: 2800,
+          autoWrite: true,
+          writeGateEnabled: true,
+          minLessonChars: 96,
+          dedupeEnabled: false,
+          quarantineThreshold: 4,
+          scope: "project"
         }
       },
       null,
@@ -89,6 +100,15 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.metrics.persistHybrid, false);
   assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.queryPreviewChars, 120);
+  assert.equal(config.memory.enabled, true);
+  assert.equal(config.memory.maxInjectedItems, 7);
+  assert.equal(config.memory.maxInjectedChars, 2800);
+  assert.equal(config.memory.autoWrite, true);
+  assert.equal(config.memory.writeGateEnabled, true);
+  assert.equal(config.memory.minLessonChars, 96);
+  assert.equal(config.memory.dedupeEnabled, false);
+  assert.equal(config.memory.quarantineThreshold, 4);
+  assert.equal(config.memory.scope, "project");
   assert.ok(config.sources.configFile?.endsWith("clawty.config.json"));
 });
 
@@ -138,7 +158,10 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000",
       CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS: "9000",
       CLAWTY_METRICS_PERSIST_WATCH: "false",
-      CLAWTY_METRICS_QUERY_PREVIEW_CHARS: "220"
+      CLAWTY_METRICS_QUERY_PREVIEW_CHARS: "220",
+      CLAWTY_MEMORY_MIN_LESSON_CHARS: "120",
+      CLAWTY_MEMORY_DEDUPE_ENABLED: "false",
+      CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6"
     }
   });
 
@@ -149,6 +172,9 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.agentContext.incrementalContextMaxDiffChars, 9000);
   assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.queryPreviewChars, 220);
+  assert.equal(config.memory.minLessonChars, 120);
+  assert.equal(config.memory.dedupeEnabled, false);
+  assert.equal(config.memory.quarantineThreshold, 6);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
 

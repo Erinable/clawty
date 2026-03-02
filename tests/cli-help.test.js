@@ -27,6 +27,14 @@ test("config help exposes normalized subcommands", async () => {
   assert.match(stdout, /clawty config validate/);
 });
 
+test("memory help exposes inspect/reindex and reason option", async () => {
+  const { stdout } = await execFileAsync("node", [CLI_PATH, "memory", "--help"]);
+  assert.match(stdout, /^== clawty ==/);
+  assert.match(stdout, /clawty memory inspect <lessonId>/);
+  assert.match(stdout, /clawty memory reindex/);
+  assert.match(stdout, /--reason <wrong\|stale\|unsafe\|irrelevant\|good>/);
+});
+
 test("completion command emits shell script", async () => {
   const { stdout } = await execFileAsync("node", [CLI_PATH, "completion", "bash"]);
   assert.match(stdout, /complete -F _clawty_completion clawty/);

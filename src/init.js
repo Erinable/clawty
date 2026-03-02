@@ -4,6 +4,7 @@ import { buildCodeIndex } from "./code-index.js";
 import { buildSyntaxIndex } from "./syntax-index.js";
 import { buildSemanticGraph } from "./semantic-graph.js";
 import { buildVectorIndex } from "./vector-index.js";
+import { getMemoryStats } from "./memory.js";
 
 const STATUS = {
   PASS: "pass",
@@ -88,6 +89,13 @@ function buildStepMessage(stepId, result) {
       `layer ${result?.layer || "base"}`,
       `processed_files ${Number(result?.processed_files || 0)}`,
       `processed_chunks ${Number(result?.processed_chunks || 0)}`
+    ].join(", ");
+  }
+  if (stepId === "memory_status") {
+    return [
+      `scope ${result?.scope || "project+global"}`,
+      `lessons ${Number(result?.counts?.lessons || 0)}`,
+      `episodes ${Number(result?.counts?.episodes || 0)}`
     ].join(", ");
   }
   return "completed";
@@ -332,6 +340,7 @@ export async function runInit(config, options = {}, internal = {}) {
   const buildSyntaxIndexImpl = internal.buildSyntaxIndex || buildSyntaxIndex;
   const buildSemanticGraphImpl = internal.buildSemanticGraph || buildSemanticGraph;
   const buildVectorIndexImpl = internal.buildVectorIndex || buildVectorIndex;
+  const getMemoryStatsImpl = internal.getMemoryStats || getMemoryStats;
 
   const root = path.resolve(config.workspaceRoot);
   const steps = [];
@@ -422,6 +431,21 @@ export async function runInit(config, options = {}, internal = {}) {
     }
   );
   steps.push(vectorStep);
+
+  if (config?.memory?.enabled === true) {
+    const memoryStep = await executeStep({
+      id: "memory_status",
+      title: "Memory status",
+      enabled: true,
+      required: false,
+      run: async () =>
+        getMemoryStatsImpl(root, {
+          homeDir: config?.sources?.homeDir,
+          scope: config?.memory?.scope || "project+global"
+        })
+    });
+    steps.push(memoryStep);
+  }
 
   const summary = summarizeSteps(steps);
   return {

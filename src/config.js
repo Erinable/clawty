@@ -486,6 +486,27 @@ export function loadConfig(options = {}) {
       env.CLAWTY_MEMORY_AUTO_WRITE ?? deepPick(fileConfig, ["memory", "autoWrite"]),
       true
     ),
+    writeGateEnabled: readBoolean(
+      env.CLAWTY_MEMORY_WRITE_GATE_ENABLED ?? deepPick(fileConfig, ["memory", "writeGateEnabled"]),
+      true
+    ),
+    minLessonChars: readInt(
+      env.CLAWTY_MEMORY_MIN_LESSON_CHARS ?? deepPick(fileConfig, ["memory", "minLessonChars"]),
+      80,
+      40,
+      4000
+    ),
+    dedupeEnabled: readBoolean(
+      env.CLAWTY_MEMORY_DEDUPE_ENABLED ?? deepPick(fileConfig, ["memory", "dedupeEnabled"]),
+      true
+    ),
+    quarantineThreshold: readInt(
+      env.CLAWTY_MEMORY_QUARANTINE_THRESHOLD ??
+        deepPick(fileConfig, ["memory", "quarantineThreshold"]),
+      3,
+      1,
+      20
+    ),
     scope: memoryScope
   };
 

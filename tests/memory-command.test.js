@@ -81,7 +81,7 @@ test("memory search and feedback commands work with json output", async (t) => {
 
   const targetId = searchPayload.items[0].id;
   const { stdout: feedbackStdout } = await runCli(
-    ["memory", "feedback", String(targetId), "--vote", "up", "--json"],
+    ["memory", "feedback", String(targetId), "--vote", "up", "--reason", "good", "--json"],
     {
       cwd: workspaceRoot,
       env: {
@@ -92,4 +92,27 @@ test("memory search and feedback commands work with json output", async (t) => {
   );
   const feedbackPayload = JSON.parse(feedbackStdout);
   assert.equal(feedbackPayload.ok, true);
+  assert.equal(feedbackPayload.reason, "good");
+
+  const { stdout: inspectStdout } = await runCli(["memory", "inspect", String(targetId), "--json"], {
+    cwd: workspaceRoot,
+    env: {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome
+    }
+  });
+  const inspectPayload = JSON.parse(inspectStdout);
+  assert.equal(inspectPayload.ok, true);
+  assert.equal(inspectPayload.lesson.id, targetId);
+
+  const { stdout: reindexStdout } = await runCli(["memory", "reindex", "--json"], {
+    cwd: workspaceRoot,
+    env: {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome
+    }
+  });
+  const reindexPayload = JSON.parse(reindexStdout);
+  assert.equal(reindexPayload.ok, true);
+  assert.ok(reindexPayload.scanned_lessons >= 1);
 });

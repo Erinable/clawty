@@ -187,3 +187,56 @@ test("runInit treats vector failure as warning when vector is optional", async (
   assert.equal(report.summary.fail, 0);
   assert.equal(report.steps.find((item) => item.id === "vector_index")?.status, "warn");
 });
+
+test("runInit reports memory status when memory is enabled", async () => {
+  const report = await runInit(
+    {
+      ...createConfig(),
+      memory: {
+        enabled: true,
+        scope: "project+global"
+      },
+      sources: {
+        homeDir: "/tmp"
+      }
+    },
+    {},
+    {
+      runDoctor: async () => ({
+        ok: true,
+        summary: { pass: 1, fail: 0, warn: 0 }
+      }),
+      buildCodeIndex: async () => ({
+        ok: true,
+        indexed_files: 3,
+        chunk_count: 9,
+        symbol_count: 6
+      }),
+      buildSyntaxIndex: async () => ({
+        ok: true,
+        parsed_files: 3,
+        total_import_edges: 4,
+        total_call_edges: 10
+      }),
+      buildSemanticGraph: async () => ({
+        ok: true,
+        total_nodes: 8,
+        total_edges: 15,
+        lsp: { available: false }
+      }),
+      buildVectorIndex: async () => ({
+        ok: true
+      }),
+      getMemoryStats: async () => ({
+        ok: true,
+        scope: "project+global",
+        counts: { lessons: 2, episodes: 4 }
+      })
+    }
+  );
+
+  const memoryStep = report.steps.find((item) => item.id === "memory_status");
+  assert.ok(memoryStep);
+  assert.equal(memoryStep.status, "pass");
+  assert.match(memoryStep.message, /lessons 2/);
+});

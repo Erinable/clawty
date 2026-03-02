@@ -56,8 +56,10 @@ node src/index.js config validate
 # 长期记忆（搜索/统计/反馈/清理）
 node src/index.js memory search "auth retry" --top-k 5
 node src/index.js memory stats
-node src/index.js memory feedback 12 --vote up --note "worked"
+node src/index.js memory inspect 12
+node src/index.js memory feedback 12 --vote up --reason good --note "worked"
 node src/index.js memory prune --days 90
+node src/index.js memory reindex
 
 # 运行本地健康诊断
 node src/index.js doctor

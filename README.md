@@ -11,7 +11,7 @@
 - `watch-index`：监听文件变更并自动刷新索引
 - `completion`：生成 shell completion 脚本（bash/zsh/fish）
 - `config path/validate`：查看配置路径与校验配置有效性
-- `memory search/stats/feedback/prune`：长期记忆检索、统计、反馈与清理
+- `memory search/stats/inspect/feedback/prune/reindex`：长期记忆检索、诊断与维护
 - `upgrade` / `uninstall`：CLI 自升级与卸载命令
 - `chat/run` 自动注入当前工作区 `changed_paths + git diff` 增量上下文（可配置开关）
 - 模型可调用本地工具：
@@ -100,8 +100,10 @@ node src/index.js config path --json
 node src/index.js config validate
 node src/index.js memory search "auth retry" --top-k 5
 node src/index.js memory stats
-node src/index.js memory feedback 12 --vote up --note "worked"
+node src/index.js memory inspect 12
+node src/index.js memory feedback 12 --vote up --reason good --note "worked"
 node src/index.js memory prune --days 90
+node src/index.js memory reindex
 node src/index.js completion bash
 node src/index.js doctor
 node src/index.js doctor --json
@@ -169,8 +171,10 @@ node src/index.js init --json
 ```bash
 node src/index.js memory search "auth timeout" --top-k 5
 node src/index.js memory stats
-node src/index.js memory feedback 12 --vote up --note "有效"
+node src/index.js memory inspect 12
+node src/index.js memory feedback 12 --vote up --reason good --note "有效"
 node src/index.js memory prune --days 90
+node src/index.js memory reindex
 ```
 
 作用域参数：
@@ -410,6 +414,10 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_MEMORY_MAX_INJECTED_ITEMS`：每轮注入的 memory 条目数上限，默认 `5`
 - `CLAWTY_MEMORY_MAX_INJECTED_CHARS`：每轮注入的 memory 文本上限，默认 `2400`
 - `CLAWTY_MEMORY_AUTO_WRITE`：是否自动沉淀回合经验，默认 `true`
+- `CLAWTY_MEMORY_WRITE_GATE_ENABLED`：是否启用 lesson 写入门控，默认 `true`
+- `CLAWTY_MEMORY_MIN_LESSON_CHARS`：自动写入 lesson 的最小长度，默认 `80`
+- `CLAWTY_MEMORY_DEDUPE_ENABLED`：是否启用同标题 lesson 合并，默认 `true`
+- `CLAWTY_MEMORY_QUARANTINE_THRESHOLD`：负反馈隔离阈值，默认 `3`
 - `CLAWTY_MEMORY_SCOPE`：memory 作用域，默认 `project+global`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`

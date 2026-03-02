@@ -50,6 +50,10 @@
     "maxInjectedItems": 5,
     "maxInjectedChars": 2400,
     "autoWrite": true,
+    "writeGateEnabled": true,
+    "minLessonChars": 80,
+    "dedupeEnabled": true,
+    "quarantineThreshold": 3,
     "scope": "project+global"
   }
 }

@@ -198,8 +198,10 @@ function printMemoryHelp() {
       commands: [
         ["clawty memory search <query>", "search memory lessons"],
         ["clawty memory stats", "show memory usage statistics"],
+        ["clawty memory inspect <lessonId>", "inspect one memory lesson detail"],
         ["clawty memory feedback <lessonId>", "mark lesson as up/down vote"],
-        ["clawty memory prune", "remove stale memory entries"]
+        ["clawty memory prune", "remove stale memory entries"],
+        ["clawty memory reindex", "rebuild memory tags/fts metadata"]
       ],
       positionals: [
         ["query", "search text for memory recall"],
@@ -210,6 +212,7 @@ function printMemoryHelp() {
         ["--top-k <n>", "max returned lessons for search"],
         ["--scope <project|global|project+global>", "memory scope"],
         ["--vote <up|down>", "feedback vote (for feedback command)"],
+        ["--reason <wrong|stale|unsafe|irrelevant|good>", "feedback reason (optional)"],
         ["--note <text>", "optional feedback note"],
         ["--days <n>", "retention days (for prune command)"],
         ["-h, --help", "show help"]
@@ -512,7 +515,7 @@ function generateBashCompletion(binary = "clawty") {
     "  prev=\"${COMP_WORDS[COMP_CWORD-1]}\"",
     "  local cmds=\"chat run init doctor watch-index config memory completion upgrade uninstall help\"",
     "  local config_sub=\"show path validate\"",
-    "  local memory_sub=\"search stats feedback prune\"",
+    "  local memory_sub=\"search stats inspect feedback prune reindex\"",
     "  case \"$prev\" in",
     "    config)",
     "      COMPREPLY=( $(compgen -W \"$config_sub\" -- \"$cur\") )",
@@ -672,6 +675,7 @@ function parseMemoryArgs(argv = []) {
     topK: null,
     scope: null,
     vote: null,
+    reason: null,
     note: null,
     days: null,
     rest: []
@@ -730,6 +734,19 @@ function parseMemoryArgs(argv = []) {
       state.vote = String(arg.slice("--vote=".length)).trim();
       continue;
     }
+    if (arg === "--reason") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --reason");
+      }
+      state.reason = String(raw).trim();
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--reason=")) {
+      state.reason = String(arg.slice("--reason=".length)).trim();
+      continue;
+    }
     if (arg === "--note") {
       const raw = argv[idx + 1];
       if (!raw) {
@@ -774,12 +791,15 @@ async function handleMemoryCommand(argv) {
   const config = loadConfig({ allowMissingApiKey: true });
   const memoryOptions = {
     homeDir: config?.sources?.homeDir,
-    scope: parsed.scope || config?.memory?.scope || "project+global"
+    scope: parsed.scope || config?.memory?.scope || "project+global",
+    quarantineThreshold: config?.memory?.quarantineThreshold
   };
 
   const {
     searchMemory,
     getMemoryStats,
+    inspectMemoryLesson,
+    reindexMemory,
     recordFeedback,
     pruneMemory
   } = await import("./memory.js");
@@ -831,6 +851,23 @@ async function handleMemoryCommand(argv) {
     return;
   }
 
+  if (sub === "inspect") {
+    const lessonId = Number(parsed.rest[1]);
+    if (!Number.isFinite(lessonId) || lessonId <= 0) {
+      throw new Error("Missing lesson id. Example: clawty memory inspect 12");
+    }
+    const result = await inspectMemoryLesson(config.workspaceRoot, lessonId, memoryOptions);
+    if (parsed.format === "json") {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (sub === "feedback") {
     const lessonId = Number(parsed.rest[1]);
     if (!Number.isFinite(lessonId) || lessonId <= 0) {
@@ -844,6 +881,7 @@ async function handleMemoryCommand(argv) {
       lessonId,
       parsed.vote,
       parsed.note,
+      parsed.reason,
       memoryOptions
     );
     if (parsed.format === "json") {
@@ -873,7 +911,22 @@ async function handleMemoryCommand(argv) {
     return;
   }
 
-  throw new Error(`Unknown memory command: ${sub}. Use: clawty memory <search|stats|feedback|prune>`);
+  if (sub === "reindex") {
+    const result = await reindexMemory(config.workspaceRoot, memoryOptions);
+    if (parsed.format === "json") {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  throw new Error(
+    `Unknown memory command: ${sub}. Use: clawty memory <search|stats|inspect|feedback|prune|reindex>`
+  );
 }
 
 async function handleCompletionCommand(argv) {

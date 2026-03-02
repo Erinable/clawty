@@ -59,6 +59,7 @@ test("runDoctor fails when OPENAI_API_KEY is missing", async (t) => {
 
 test("runDoctor reports pass when api key is configured and emits text summary", async (t) => {
   const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
   t.after(async () => {
     await removeWorkspace(workspaceRoot);
   });
@@ -71,7 +72,10 @@ test("runDoctor reports pass when api key is configured and emits text summary",
 
   const config = loadConfig({
     cwd: workspaceRoot,
-    env: {},
+    env: {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome
+    },
     allowMissingApiKey: true
   });
   const report = await runDoctor(config);
@@ -80,6 +84,12 @@ test("runDoctor reports pass when api key is configured and emits text summary",
   assert.ok(apiKeyCheck);
   assert.equal(apiKeyCheck.status, "pass");
   assert.ok(report.summary.total >= 8);
+  const memoryDbCheck = findCheck(report, "memory_db");
+  assert.ok(memoryDbCheck);
+  assert.equal(memoryDbCheck.status, "pass");
+  const memorySchemaCheck = findCheck(report, "memory_schema");
+  assert.ok(memorySchemaCheck);
+  assert.ok(["pass", "warn"].includes(memorySchemaCheck.status));
 
   const text = formatDoctorReportText(report);
   assert.match(text, /Clawty\.\.\. Doctor/);

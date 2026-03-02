@@ -399,7 +399,11 @@ async function persistTurnMemory({
   const normalizedOutcome = outcome === "success" ? "success" : outcome === "failed" ? "failed" : "partial";
 
   const recordOptions = {
-    homeDir: config?.sources?.homeDir
+    homeDir: config?.sources?.homeDir,
+    dedupeEnabled: config?.memory?.dedupeEnabled,
+    writeGateEnabled: config?.memory?.writeGateEnabled,
+    minLessonChars: config?.memory?.minLessonChars,
+    quarantineThreshold: config?.memory?.quarantineThreshold
   };
 
   try {
