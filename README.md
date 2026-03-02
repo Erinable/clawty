@@ -128,6 +128,7 @@ npm run precise:check:fixture
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
 - “代码改完后刷新 semantic graph（changed_paths/deleted_paths）再查多跳邻居”
 - “用 `query_hybrid_index` 融合 semantic/syntax/index，返回重排后的 Top5”
+- “启用 `query_hybrid_index` 的 embedding rerank（enable_embedding=true）再返回 Top5”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
@@ -148,6 +149,7 @@ npm run precise:check:fixture
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
 `query_semantic_graph` 返回 `language_distribution`（`scanned_candidates` / `deduped_candidates` / `returned_seeds`），用于观察召回语言偏置。
 `query_hybrid_index` 会联合 `semantic + syntax + index` 候选并做轻量重排，支持 `path_prefix` 与 `explain`。
+可选启用 embedding 第二阶段重排（`enable_embedding` / `embedding_top_k` / `embedding_weight` / `embedding_model`），默认关闭。
 `query_semantic_graph` 支持 `max_hops`（默认 `1`）与 `per_hop_limit`，当 `max_hops > 1` 时每个 seed 会返回 `multi_hop` 路径展开结果（含 `path_score` 与质量因子）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
 `query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
@@ -210,6 +212,13 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_LSP_TIMEOUT_MS`：默认 `5000`
 - `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
 - `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
+- `CLAWTY_EMBEDDING_ENABLED`：是否开启 hybrid embedding 重排，默认 `false`
+- `CLAWTY_EMBEDDING_MODEL`：embedding 模型，默认 `text-embedding-3-small`
+- `CLAWTY_EMBEDDING_TOP_K`：embedding 重排候选数，默认 `15`
+- `CLAWTY_EMBEDDING_WEIGHT`：embedding 融合权重（0-1），默认 `0.25`
+- `CLAWTY_EMBEDDING_TIMEOUT_MS`：embedding 请求超时，默认 `15000`
+- `CLAWTY_EMBEDDING_API_KEY`：可选独立 key，未设置时回退 `OPENAI_API_KEY`
+- `CLAWTY_EMBEDDING_BASE_URL`：可选独立 endpoint，未设置时回退 `OPENAI_BASE_URL`
 - `CLAWTY_SEMANTIC_SEED_LANG_FILTER`：语义图 seed 语言过滤，默认 `*`（不过滤）
 - `CLAWTY_PRECISE_STALE_AFTER_MINUTES`：精确索引新鲜度阈值（分钟），默认 `1440`
 - `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）

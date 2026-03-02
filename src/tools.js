@@ -28,6 +28,7 @@ import {
   lspReferences,
   lspWorkspaceSymbols
 } from "./lsp-manager.js";
+import { createEmbeddings } from "./embedding-client.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -647,6 +648,27 @@ export const TOOL_DEFINITIONS = [
         explain: {
           type: "boolean",
           description: "Include score feature breakdown for each returned candidate."
+        },
+        enable_embedding: {
+          type: "boolean",
+          description:
+            "Enable optional embedding rerank for top hybrid candidates. Defaults to CLAWTY_EMBEDDING_ENABLED."
+        },
+        embedding_top_k: {
+          type: "integer",
+          description: "Maximum candidates to rerank with embeddings.",
+          minimum: 1,
+          maximum: 200
+        },
+        embedding_weight: {
+          type: "number",
+          description: "Blend weight for embedding score in final hybrid ranking (0-1).",
+          minimum: 0,
+          maximum: 1
+        },
+        embedding_model: {
+          type: "string",
+          description: "Optional embedding model override, e.g. text-embedding-3-small."
         }
       },
       required: ["query"],
@@ -1189,12 +1211,95 @@ const HYBRID_SOURCE_SCORE = Object.freeze({
   unknown: 0.4
 });
 
+const DEFAULT_HYBRID_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_HYBRID_EMBEDDING_TOP_K = 15;
+const DEFAULT_HYBRID_EMBEDDING_WEIGHT = 0.25;
+const DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS = 15_000;
+
 function roundHybridMetric(value) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric)) {
     return 0;
   }
   return Number(numeric.toFixed(4));
+}
+
+function parseHybridBoolean(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
+}
+
+function parseHybridInt(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) {
+    return fallback;
+  }
+  return Math.min(max, Math.floor(n));
+}
+
+function parseHybridFloat(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) {
+    return fallback;
+  }
+  return Math.min(max, n);
+}
+
+function resolveHybridEmbeddingConfig(args, context) {
+  const embedding = context?.embedding || {};
+  const enabled = parseHybridBoolean(args?.enable_embedding, Boolean(embedding.enabled));
+  const topK = parseHybridInt(
+    args?.embedding_top_k,
+    parseHybridInt(embedding.topK, DEFAULT_HYBRID_EMBEDDING_TOP_K, 1, 200),
+    1,
+    200
+  );
+  const weight = parseHybridFloat(
+    args?.embedding_weight,
+    parseHybridFloat(embedding.weight, DEFAULT_HYBRID_EMBEDDING_WEIGHT, 0, 1),
+    0,
+    1
+  );
+  const timeoutMs = parseHybridInt(
+    embedding.timeoutMs,
+    DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS,
+    1000,
+    120_000
+  );
+  const model =
+    typeof args?.embedding_model === "string" && args.embedding_model.trim().length > 0
+      ? args.embedding_model.trim()
+      : typeof embedding.model === "string" && embedding.model.trim().length > 0
+        ? embedding.model.trim()
+        : DEFAULT_HYBRID_EMBEDDING_MODEL;
+
+  return {
+    enabled,
+    top_k: topK,
+    weight,
+    timeout_ms: timeoutMs,
+    model,
+    api_key:
+      typeof embedding.apiKey === "string" && embedding.apiKey.trim().length > 0
+        ? embedding.apiKey.trim()
+        : null,
+    base_url:
+      typeof embedding.baseUrl === "string" && embedding.baseUrl.trim().length > 0
+        ? embedding.baseUrl.trim()
+        : "https://api.openai.com/v1",
+    client: typeof embedding.client === "function" ? embedding.client : null
+  };
 }
 
 function normalizeHybridSource(source) {
@@ -1293,6 +1398,80 @@ function hybridCandidateKey(candidate) {
   ].join("::");
 }
 
+function buildHybridEmbeddingText(candidate) {
+  const outgoingNames = (candidate?.outgoing || [])
+    .slice(0, 4)
+    .map((item) => String(item?.node?.name || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  const incomingNames = (candidate?.incoming || [])
+    .slice(0, 4)
+    .map((item) => String(item?.node?.name || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  const providers = (candidate?.supporting_providers || [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ");
+
+  return [
+    `path: ${String(candidate?.path || "")}`,
+    `name: ${String(candidate?.name || "")}`,
+    `kind: ${String(candidate?.kind || "")}`,
+    `source: ${String(candidate?.source || "")}`,
+    outgoingNames ? `outgoing: ${outgoingNames}` : "",
+    incomingNames ? `incoming: ${incomingNames}` : "",
+    providers ? `providers: ${providers}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  const size = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let idx = 0; idx < size; idx += 1) {
+    const av = Number(a[idx] || 0);
+    const bv = Number(b[idx] || 0);
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  if (normA <= 0 || normB <= 0) {
+    return 0;
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function normalizedCosineScore(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  const clipped = Math.max(-1, Math.min(1, numeric));
+  return roundHybridMetric((clipped + 1) / 2);
+}
+
+function sortHybridCandidates(a, b) {
+  if (b.hybrid_score !== a.hybrid_score) {
+    return b.hybrid_score - a.hybrid_score;
+  }
+  const sourceDiff = hybridSourceScore(b.source) - hybridSourceScore(a.source);
+  if (sourceDiff !== 0) {
+    return sourceDiff;
+  }
+  const pathDiff = String(a.path || "").localeCompare(String(b.path || ""));
+  if (pathDiff !== 0) {
+    return pathDiff;
+  }
+  return Number(a.line || 1) - Number(b.line || 1);
+}
+
 function mapIndexResultToHybridSeed(item) {
   const filePath = String(item?.path || "");
   return {
@@ -1368,22 +1547,134 @@ function rankHybridCandidates(entries, options) {
     return merged;
   });
 
-  ranked.sort((a, b) => {
-    if (b.hybrid_score !== a.hybrid_score) {
-      return b.hybrid_score - a.hybrid_score;
-    }
-    const sourceDiff = hybridSourceScore(b.source) - hybridSourceScore(a.source);
-    if (sourceDiff !== 0) {
-      return sourceDiff;
-    }
-    const pathDiff = String(a.path || "").localeCompare(String(b.path || ""));
-    if (pathDiff !== 0) {
-      return pathDiff;
-    }
-    return Number(a.line || 1) - Number(b.line || 1);
-  });
+  ranked.sort(sortHybridCandidates);
 
   return ranked;
+}
+
+async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
+  const config = resolveHybridEmbeddingConfig(args, context);
+  if (!config.enabled) {
+    return {
+      ranked,
+      source: {
+        enabled: false,
+        attempted: false,
+        ok: false,
+        model: config.model,
+        top_k: config.top_k,
+        weight: config.weight,
+        reranked_candidates: 0,
+        error: null
+      }
+    };
+  }
+
+  if (!config.client && !config.api_key) {
+    return {
+      ranked,
+      source: {
+        enabled: true,
+        attempted: false,
+        ok: false,
+        model: config.model,
+        top_k: config.top_k,
+        weight: config.weight,
+        reranked_candidates: 0,
+        error: "embedding api key is missing"
+      }
+    };
+  }
+
+  const rerankCount = Math.min(ranked.length, Math.max(1, config.top_k));
+  if (rerankCount === 0) {
+    return {
+      ranked,
+      source: {
+        enabled: true,
+        attempted: false,
+        ok: false,
+        model: config.model,
+        top_k: config.top_k,
+        weight: config.weight,
+        reranked_candidates: 0,
+        error: "no hybrid candidates available"
+      }
+    };
+  }
+
+  const explain = Boolean(args?.explain);
+  const pool = ranked.slice(0, rerankCount);
+  const rest = ranked.slice(rerankCount);
+
+  const input = [
+    String(args?.query || ""),
+    ...pool.map((candidate) => buildHybridEmbeddingText(candidate))
+  ];
+
+  let vectors;
+  try {
+    vectors = await createEmbeddings({
+      apiKey: config.api_key,
+      baseUrl: config.base_url,
+      model: config.model,
+      input,
+      timeoutMs: config.timeout_ms,
+      client: config.client
+    });
+  } catch (error) {
+    return {
+      ranked,
+      source: {
+        enabled: true,
+        attempted: true,
+        ok: false,
+        model: config.model,
+        top_k: config.top_k,
+        weight: config.weight,
+        reranked_candidates: 0,
+        error: error.message || String(error)
+      }
+    };
+  }
+
+  const queryVector = vectors[0];
+  const rerankedPool = pool.map((candidate, idx) => {
+    const baseScore = roundHybridMetric(candidate.hybrid_score);
+    const candidateVector = vectors[idx + 1];
+    const embeddingScore = normalizedCosineScore(cosineSimilarity(queryVector, candidateVector));
+    const finalScore = roundHybridMetric(baseScore * (1 - config.weight) + embeddingScore * config.weight);
+    const next = {
+      ...candidate,
+      hybrid_score: finalScore
+    };
+    if (explain) {
+      next.hybrid_explain = {
+        ...(candidate.hybrid_explain || {}),
+        base_score: baseScore,
+        embedding_score: embeddingScore,
+        embedding_weight: roundHybridMetric(config.weight),
+        final_score: finalScore
+      };
+    }
+    return next;
+  });
+
+  const merged = [...rerankedPool, ...rest];
+  merged.sort(sortHybridCandidates);
+  return {
+    ranked: merged,
+    source: {
+      enabled: true,
+      attempted: true,
+      ok: true,
+      model: config.model,
+      top_k: config.top_k,
+      weight: config.weight,
+      reranked_candidates: rerankCount,
+      error: null
+    }
+  };
 }
 
 async function querySemanticGraphTool(args, context) {
@@ -1553,7 +1844,22 @@ async function queryHybridIndexTool(args, context) {
     path_prefix: args?.path_prefix,
     explain: args?.explain
   });
-  const seeds = ranked.slice(0, topK);
+  const embeddingRerank = await rerankHybridCandidatesWithEmbedding(ranked, {
+    ...args,
+    query
+  }, context);
+  const finalRanked = Array.isArray(embeddingRerank?.ranked) ? embeddingRerank.ranked : ranked;
+  const seeds = finalRanked.slice(0, topK);
+  const embeddingSource = embeddingRerank?.source || {
+    enabled: false,
+    attempted: false,
+    ok: false,
+    model: DEFAULT_HYBRID_EMBEDDING_MODEL,
+    top_k: DEFAULT_HYBRID_EMBEDDING_TOP_K,
+    weight: DEFAULT_HYBRID_EMBEDDING_WEIGHT,
+    reranked_candidates: 0,
+    error: null
+  };
 
   return {
     ok: true,
@@ -1568,7 +1874,14 @@ async function queryHybridIndexTool(args, context) {
       per_hop_limit: Number.isFinite(Number(args?.per_hop_limit))
         ? Math.max(1, Math.floor(Number(args.per_hop_limit)))
         : null,
-      explain: Boolean(args?.explain)
+      explain: Boolean(args?.explain),
+      embedding: {
+        enabled: Boolean(embeddingSource.enabled),
+        attempted: Boolean(embeddingSource.attempted),
+        model: embeddingSource.model,
+        top_k: Number(embeddingSource.top_k || 0),
+        weight: Number(embeddingSource.weight || 0)
+      }
     },
     sources: {
       semantic: {
@@ -1586,9 +1899,20 @@ async function queryHybridIndexTool(args, context) {
         ok: Boolean(indexResult?.ok),
         candidates: Array.isArray(indexResult?.results) ? indexResult.results.length : 0,
         error: indexResult?.ok ? null : indexResult?.error || null
+      },
+      embedding: {
+        enabled: Boolean(embeddingSource.enabled),
+        attempted: Boolean(embeddingSource.attempted),
+        ok: Boolean(embeddingSource.ok),
+        model: embeddingSource.model || null,
+        reranked_candidates: Number(embeddingSource.reranked_candidates || 0),
+        error: embeddingSource.error || null
       }
     },
-    priority_policy: ["semantic", "syntax", "index"],
+    priority_policy:
+      embeddingSource.ok
+        ? ["semantic", "syntax", "index", "embedding_rerank"]
+        : ["semantic", "syntax", "index"],
     total_seeds: seeds.length,
     scanned_candidates: scannedCandidates.length,
     deduped_candidates: deduped.size,

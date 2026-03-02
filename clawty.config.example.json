@@ -18,5 +18,14 @@
     "timeoutMs": 5000,
     "maxResults": 100,
     "tsCommand": "typescript-language-server --stdio"
+  },
+  "embedding": {
+    "enabled": false,
+    "apiKey": "sk-...",
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "text-embedding-3-small",
+    "topK": 15,
+    "weight": 0.25,
+    "timeoutMs": 15000
   }
 }

@@ -34,6 +34,13 @@ function printHelp() {
       "  CLAWTY_INDEX_MAX_FILE_SIZE_KB Optional (default: 512)",
       "  CLAWTY_LSP_ENABLED     Optional (default: true)",
       "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)",
+      "  CLAWTY_EMBEDDING_ENABLED Optional (default: false)",
+      "  CLAWTY_EMBEDDING_MODEL  Optional (default: text-embedding-3-small)",
+      "  CLAWTY_EMBEDDING_TOP_K  Optional (default: 15)",
+      "  CLAWTY_EMBEDDING_WEIGHT Optional (default: 0.25)",
+      "  CLAWTY_EMBEDDING_TIMEOUT_MS Optional (default: 15000)",
+      "  CLAWTY_EMBEDDING_API_KEY Optional (default: OPENAI_API_KEY)",
+      "  CLAWTY_EMBEDDING_BASE_URL Optional (default: OPENAI_BASE_URL)",
       "  CLAWTY_SEMANTIC_SEED_LANG_FILTER Optional (default: *)",
       "  CLAWTY_PRECISE_STALE_AFTER_MINUTES Optional (default: 1440)",
       "  CLAWTY_WATCH_INTERVAL_MS Optional (default: 2000)",
@@ -94,6 +101,10 @@ function printWatchHelp() {
 function redactConfig(config) {
   return {
     ...config,
+    embedding: {
+      ...(config.embedding || {}),
+      apiKey: config.embedding?.apiKey ? `${config.embedding.apiKey.slice(0, 6)}***` : null
+    },
     apiKey: config.apiKey ? `${config.apiKey.slice(0, 6)}***` : null
   };
 }

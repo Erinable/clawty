@@ -77,6 +77,14 @@ function readInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
   return Math.min(max, Math.floor(n));
 }
 
+function readFloat(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) {
+    return fallback;
+  }
+  return Math.min(max, n);
+}
+
 function readBoolean(value, fallback) {
   if (typeof value === "boolean") {
     return value;
@@ -204,6 +212,46 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const embeddingApiKey =
+    readString(
+      env.CLAWTY_EMBEDDING_API_KEY,
+      readString(deepPick(fileConfig.data, ["embedding", "apiKey"]), null)
+    ) || apiKey;
+
+  const embedding = {
+    enabled: readBoolean(
+      env.CLAWTY_EMBEDDING_ENABLED ?? deepPick(fileConfig.data, ["embedding", "enabled"]),
+      false
+    ),
+    apiKey: embeddingApiKey,
+    baseUrl: readString(
+      env.CLAWTY_EMBEDDING_BASE_URL,
+      readString(deepPick(fileConfig.data, ["embedding", "baseUrl"]), baseUrl)
+    ).replace(/\/$/, ""),
+    model: readString(
+      env.CLAWTY_EMBEDDING_MODEL,
+      readString(deepPick(fileConfig.data, ["embedding", "model"]), "text-embedding-3-small")
+    ),
+    topK: readInt(
+      env.CLAWTY_EMBEDDING_TOP_K ?? deepPick(fileConfig.data, ["embedding", "topK"]),
+      15,
+      1,
+      200
+    ),
+    weight: readFloat(
+      env.CLAWTY_EMBEDDING_WEIGHT ?? deepPick(fileConfig.data, ["embedding", "weight"]),
+      0.25,
+      0,
+      1
+    ),
+    timeoutMs: readInt(
+      env.CLAWTY_EMBEDDING_TIMEOUT_MS ?? deepPick(fileConfig.data, ["embedding", "timeoutMs"]),
+      15_000,
+      1000,
+      120_000
+    )
+  };
+
   return {
     apiKey: apiKey || null,
     baseUrl,
@@ -213,6 +261,7 @@ export function loadConfig(options = {}) {
     maxToolIterations,
     lsp,
     index,
+    embedding,
     sources: {
       cwd: rootDir,
       configFile: fileConfig.path,

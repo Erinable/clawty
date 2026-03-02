@@ -578,3 +578,119 @@ test("query_hybrid_index still returns candidates when semantic graph is empty",
   assert.ok(query.sources.index.ok);
   assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-fallback.ts"));
 });
+
+test("query_hybrid_index supports optional embedding rerank with mock client", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-embed.ts",
+    "export function hybridEmbedToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "tests/hybrid-embed.spec.ts",
+    "export function hybridEmbedToken() { return false; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    embedding: {
+      enabled: true,
+      model: "mock-embedding",
+      topK: 10,
+      weight: 0.95,
+      client: async ({ input }) =>
+        input.map((text, idx) => {
+          if (idx === 0) {
+            return [1, 0];
+          }
+          return String(text).includes("tests/hybrid-embed.spec.ts") ? [1, 0] : [0, 1];
+        })
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+  const builtGraph = await runTool(
+    "build_semantic_graph",
+    {
+      max_symbols: 50,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true,
+      precise_preferred: false
+    },
+    context
+  );
+  assert.equal(builtGraph.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridEmbedToken",
+      top_k: 3,
+      explain: true,
+      enable_embedding: true,
+      embedding_top_k: 3,
+      embedding_weight: 0.95
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.sources.embedding.enabled, true);
+  assert.equal(query.sources.embedding.attempted, true);
+  assert.equal(query.sources.embedding.ok, true);
+  assert.equal(query.sources.embedding.model, "mock-embedding");
+  assert.ok(query.sources.embedding.reranked_candidates >= 1);
+  assert.equal(query.seeds[0].path, "tests/hybrid-embed.spec.ts");
+  assert.ok(query.seeds[0].hybrid_explain);
+  assert.equal(typeof query.seeds[0].hybrid_explain.embedding_score, "number");
+});
+
+test("query_hybrid_index degrades gracefully when embedding is enabled without key", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-embed-fallback.ts",
+    "export function hybridEmbedFallback() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    embedding: {
+      enabled: true,
+      apiKey: ""
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridEmbedFallback",
+      top_k: 3,
+      enable_embedding: true
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.sources.embedding.enabled, true);
+  assert.equal(query.sources.embedding.attempted, false);
+  assert.equal(query.sources.embedding.ok, false);
+  assert.match(String(query.sources.embedding.error), /api key is missing/i);
+  assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-embed-fallback.ts"));
+});

@@ -133,6 +133,51 @@ test("loadConfig throws on missing API key unless allowMissingApiKey=true", asyn
   assert.equal(config.apiKey, null);
 });
 
+test("loadConfig resolves embedding config and honors env overrides", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "clawty.config.json",
+    JSON.stringify(
+      {
+        openai: {
+          apiKey: "sk-base-key",
+          baseUrl: "https://example.invalid/v1"
+        },
+        embedding: {
+          enabled: true,
+          model: "text-embedding-3-large",
+          topK: 12,
+          weight: 0.4,
+          timeoutMs: 20000
+        }
+      },
+      null,
+      2
+    )
+  );
+
+  const config = loadConfig({
+    cwd: workspaceRoot,
+    env: {
+      CLAWTY_EMBEDDING_TOP_K: "22",
+      CLAWTY_EMBEDDING_WEIGHT: "0.7"
+    }
+  });
+
+  assert.equal(config.embedding.enabled, true);
+  assert.equal(config.embedding.model, "text-embedding-3-large");
+  assert.equal(config.embedding.topK, 22);
+  assert.equal(config.embedding.weight, 0.7);
+  assert.equal(config.embedding.timeoutMs, 20000);
+  assert.equal(config.embedding.apiKey, "sk-base-key");
+  assert.equal(config.embedding.baseUrl, "https://example.invalid/v1");
+});
+
 test("loadConfig throws on invalid JSON config", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {
