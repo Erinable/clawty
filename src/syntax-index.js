@@ -10,9 +10,15 @@ const SYNTAX_PARSER_VERSION = "skeleton-v1";
 const DEFAULT_MAX_FILES = 3000;
 const DEFAULT_MAX_CALLS_PER_FILE = 400;
 const DEFAULT_MAX_ERRORS = 80;
+const DEFAULT_QUERY_TOP_K = 5;
+const DEFAULT_QUERY_MAX_NEIGHBORS = 8;
+const DEFAULT_QUERY_SCAN_FACTOR = 8;
 const MAX_FILES_LIMIT = 20_000;
 const MAX_CALLS_LIMIT = 2000;
 const MAX_ERRORS_LIMIT = 1000;
+const MAX_QUERY_TOP_K = 30;
+const MAX_QUERY_MAX_NEIGHBORS = 100;
+const MAX_QUERY_SCAN_LIMIT = 400;
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -24,6 +30,28 @@ function parsePositiveInt(value, fallback, min, max) {
 
 function toPosixPath(inputPath) {
   return inputPath.split(path.sep).join("/");
+}
+
+function normalizePathPrefix(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!cleaned) {
+    return null;
+  }
+  return cleaned.endsWith("/") ? cleaned : `${cleaned}/`;
+}
+
+function normalizeQueryToken(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function isIdentifierToken(value) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
 }
 
 function indexDbPath(workspaceRoot) {
@@ -367,6 +395,70 @@ function buildStatements(db) {
       ORDER BY count DESC, imported_path ASC
       LIMIT ?
     `),
+    selectQuerySeeds: db.prepare(`
+      SELECT
+        sf.path,
+        sf.lang,
+        sf.line_count,
+        sf.node_count,
+        sf.import_count,
+        sf.call_count
+      FROM syntax_files sf
+      WHERE (
+        sf.path LIKE ?
+        OR EXISTS (
+          SELECT 1
+          FROM syntax_import_edges sie
+          WHERE sie.file_path = sf.path
+            AND sie.imported_path LIKE ?
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM syntax_call_edges sce
+          WHERE sce.file_path = sf.path
+            AND sce.callee LIKE ?
+        )
+      )
+        AND (? IS NULL OR sf.path LIKE ?)
+      ORDER BY
+        CASE
+          WHEN sf.path = ? THEN 0
+          WHEN sf.path LIKE ? THEN 1
+          WHEN sf.path LIKE ? THEN 2
+          ELSE 3
+        END,
+        (sf.import_count + sf.call_count) DESC,
+        sf.path ASC
+      LIMIT ?
+    `),
+    selectOutgoingImportsByFile: db.prepare(`
+      SELECT imported_path, line, source
+      FROM syntax_import_edges
+      WHERE file_path = ?
+      ORDER BY line ASC, imported_path ASC
+      LIMIT ?
+    `),
+    selectIncomingImportersByTarget: db.prepare(`
+      SELECT file_path, imported_path, line, source
+      FROM syntax_import_edges
+      WHERE imported_path = ?
+      ORDER BY file_path ASC, line ASC
+      LIMIT ?
+    `),
+    selectOutgoingCallsByFile: db.prepare(`
+      SELECT callee, line
+      FROM syntax_call_edges
+      WHERE file_path = ?
+      ORDER BY line ASC, callee ASC
+      LIMIT ?
+    `),
+    selectIncomingCallersByCallee: db.prepare(`
+      SELECT file_path, callee, line
+      FROM syntax_call_edges
+      WHERE callee = ?
+      ORDER BY file_path ASC, line ASC
+      LIMIT ?
+    `),
     latestRun: db.prepare(`
       SELECT *
       FROM syntax_runs
@@ -403,6 +495,39 @@ function deleteSyntaxForFile(statements, relativePath) {
   statements.deleteImportEdgesByFile.run(relativePath);
   statements.deleteCallEdgesByFile.run(relativePath);
   statements.deleteSyntaxFile.run(relativePath);
+}
+
+function buildImportPathCandidates(filePath) {
+  const normalized = normalizeQueryToken(filePath);
+  if (!normalized) {
+    return [];
+  }
+
+  const candidates = new Set([normalized]);
+  const ext = path.posix.extname(normalized);
+  if (ext) {
+    const withoutExt = normalized.slice(0, -ext.length);
+    candidates.add(withoutExt);
+    if (path.posix.basename(normalized, ext) === "index") {
+      const dirPath = path.posix.dirname(normalized);
+      if (dirPath && dirPath !== ".") {
+        candidates.add(dirPath);
+      }
+    }
+  }
+
+  return Array.from(candidates);
+}
+
+function dedupeRows(rows, keyFn) {
+  const deduped = new Map();
+  for (const row of rows) {
+    const key = keyFn(row);
+    if (!deduped.has(key)) {
+      deduped.set(key, row);
+    }
+  }
+  return Array.from(deduped.values());
 }
 
 async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
@@ -737,6 +862,171 @@ export async function getSyntaxIndexStats(workspaceRoot, args = {}) {
       top_callers: topCallers,
       top_imported: topImported,
       latest_run: latestRun
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export async function querySyntaxIndex(workspaceRoot, args = {}) {
+  const indexExists = await checkIndexExists(workspaceRoot);
+  if (!indexExists) {
+    return {
+      ok: false,
+      error: "code index not found; run build_code_index first"
+    };
+  }
+
+  const query = normalizeQueryToken(args.query);
+  if (!query) {
+    return {
+      ok: false,
+      error: "query must be a non-empty string"
+    };
+  }
+
+  const topK = parsePositiveInt(args.top_k, DEFAULT_QUERY_TOP_K, 1, MAX_QUERY_TOP_K);
+  const maxNeighbors = parsePositiveInt(
+    args.max_neighbors,
+    DEFAULT_QUERY_MAX_NEIGHBORS,
+    1,
+    MAX_QUERY_MAX_NEIGHBORS
+  );
+  const pathPrefix = normalizePathPrefix(args.path_prefix);
+  const pathLike = pathPrefix ? `${pathPrefix}%` : null;
+  const seedScanLimit = Math.min(MAX_QUERY_SCAN_LIMIT, Math.max(topK, topK * DEFAULT_QUERY_SCAN_FACTOR));
+  const queryLike = `%${query}%`;
+  const pathQuery = normalizeQueryToken(query);
+
+  const db = openDb(workspaceRoot);
+  ensureSyntaxSchema(db);
+  const statements = buildStatements(db);
+  try {
+    const totalFiles = Number(statements.countFiles.get().count || 0);
+    if (totalFiles === 0) {
+      return {
+        ok: false,
+        error: "syntax index is empty; run build_syntax_index first"
+      };
+    }
+
+    const rawSeeds = statements.selectQuerySeeds.all(
+      queryLike,
+      queryLike,
+      queryLike,
+      pathPrefix,
+      pathLike,
+      pathQuery,
+      `${pathQuery}%`,
+      `%${pathQuery}%`,
+      seedScanLimit
+    );
+
+    const seeds = [];
+    for (const seed of rawSeeds.slice(0, topK)) {
+      const outgoingImports = statements
+        .selectOutgoingImportsByFile
+        .all(seed.path, maxNeighbors)
+        .map((row) => ({
+          imported_path: row.imported_path,
+          line: Number(row.line || 1),
+          source: row.source,
+          external: String(row.imported_path || "").startsWith("pkg:")
+        }));
+
+      const incomingImportRows = [];
+      for (const candidate of buildImportPathCandidates(seed.path)) {
+        incomingImportRows.push(
+          ...statements.selectIncomingImportersByTarget.all(candidate, maxNeighbors)
+        );
+      }
+      const incomingImporters = dedupeRows(
+        incomingImportRows,
+        (row) => `${row.file_path}:${row.imported_path}:${row.line}:${row.source}`
+      )
+        .sort((a, b) => {
+          const pathCompare = String(a.file_path || "").localeCompare(String(b.file_path || ""));
+          if (pathCompare !== 0) {
+            return pathCompare;
+          }
+          return Number(a.line || 1) - Number(b.line || 1);
+        })
+        .slice(0, maxNeighbors)
+        .map((row) => ({
+          file_path: row.file_path,
+          imported_path: row.imported_path,
+          line: Number(row.line || 1),
+          source: row.source
+        }));
+
+      const outgoingCalls = statements
+        .selectOutgoingCallsByFile
+        .all(seed.path, maxNeighbors)
+        .map((row) => ({
+          callee: row.callee,
+          line: Number(row.line || 1)
+        }));
+
+      const callTargets = new Set();
+      const fileStem = path.posix.basename(seed.path, path.posix.extname(seed.path));
+      if (isIdentifierToken(fileStem)) {
+        callTargets.add(fileStem);
+      }
+      if (isIdentifierToken(query)) {
+        callTargets.add(query);
+      }
+
+      const incomingCallRows = [];
+      for (const callee of callTargets) {
+        incomingCallRows.push(...statements.selectIncomingCallersByCallee.all(callee, maxNeighbors));
+      }
+      const incomingCallers = dedupeRows(
+        incomingCallRows,
+        (row) => `${row.file_path}:${row.callee}:${row.line}`
+      )
+        .sort((a, b) => {
+          const pathCompare = String(a.file_path || "").localeCompare(String(b.file_path || ""));
+          if (pathCompare !== 0) {
+            return pathCompare;
+          }
+          const calleeCompare = String(a.callee || "").localeCompare(String(b.callee || ""));
+          if (calleeCompare !== 0) {
+            return calleeCompare;
+          }
+          return Number(a.line || 1) - Number(b.line || 1);
+        })
+        .slice(0, maxNeighbors)
+        .map((row) => ({
+          file_path: row.file_path,
+          callee: row.callee,
+          line: Number(row.line || 1)
+        }));
+
+      seeds.push({
+        path: seed.path,
+        lang: seed.lang || null,
+        line_count: Number(seed.line_count || 0),
+        node_count: Number(seed.node_count || 0),
+        import_count: Number(seed.import_count || 0),
+        call_count: Number(seed.call_count || 0),
+        outgoing_imports: outgoingImports,
+        incoming_importers: incomingImporters,
+        outgoing_calls: outgoingCalls,
+        incoming_callers: incomingCallers
+      });
+    }
+
+    return {
+      ok: true,
+      query,
+      filters: {
+        path_prefix: pathPrefix
+      },
+      provider: SYNTAX_PROVIDER,
+      parser_version: SYNTAX_PARSER_VERSION,
+      scanned_candidates: rawSeeds.length,
+      total_seeds: seeds.length,
+      seeds
     };
   } finally {
     db.close();

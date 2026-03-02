@@ -214,6 +214,16 @@ test("syntax index tools are callable through runTool", async (t) => {
   assert.equal(statsBefore.ok, true);
   assert.ok(statsBefore.counts.files >= 2);
 
+  const queriedSyntax = await runTool(
+    "query_syntax_index",
+    { query: "syntaxMain", top_k: 3, max_neighbors: 5, path_prefix: "src" },
+    context
+  );
+  assert.equal(queriedSyntax.ok, true);
+  assert.ok(queriedSyntax.total_seeds >= 1);
+  assert.ok(Array.isArray(queriedSyntax.seeds[0].outgoing_imports));
+  assert.ok(Array.isArray(queriedSyntax.seeds[0].outgoing_calls));
+
   await writeWorkspaceFile(
     workspaceRoot,
     "src/syntax-main.js",
@@ -337,6 +347,46 @@ test("semantic graph tools are callable through runTool", async (t) => {
   );
   assert.equal(query.ok, true);
   assert.ok(query.total_seeds >= 1);
+});
+
+test("query_semantic_graph falls back to syntax index when semantic graph is empty", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-fallback.ts",
+    "import { syntaxDepToken } from './syntax-dep';\nexport function syntaxFallbackToken() { return syntaxDepToken(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-dep.ts",
+    "export function syntaxDepToken() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+
+  const query = await runTool(
+    "query_semantic_graph",
+    { query: "syntaxFallbackToken", edge_type: "import", top_k: 3, max_neighbors: 5 },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.fallback, true);
+  assert.equal(query.provider, "syntax");
+  assert.ok(Array.isArray(query.seeds));
+  assert.ok(query.seeds.length >= 1);
+  assert.ok(query.seeds[0].outgoing.some((item) => item.edge_source === "syntax"));
 });
 
 test("query_semantic_graph falls back to index when semantic graph is empty", async (t) => {

@@ -5,7 +5,8 @@ import { buildCodeIndex, refreshCodeIndex } from "../src/code-index.js";
 import {
   buildSyntaxIndex,
   refreshSyntaxIndex,
-  getSyntaxIndexStats
+  getSyntaxIndexStats,
+  querySyntaxIndex
 } from "../src/syntax-index.js";
 import {
   createWorkspace,
@@ -30,6 +31,10 @@ test("syntax index tools report clear error when code index is missing", async (
   const stats = await getSyntaxIndexStats(workspaceRoot, {});
   assert.equal(stats.ok, false);
   assert.match(String(stats.error), /build_code_index/i);
+
+  const query = await querySyntaxIndex(workspaceRoot, { query: "demo" });
+  assert.equal(query.ok, false);
+  assert.match(String(query.error), /build_code_index/i);
 });
 
 test("buildSyntaxIndex extracts import and call edges", async (t) => {
@@ -82,6 +87,50 @@ test("buildSyntaxIndex extracts import and call edges", async (t) => {
   assert.ok(stats.counts.import_edges >= 4);
   assert.ok(stats.top_imported.some((item) => item.imported_path === "pkg:node:fs"));
   assert.equal(stats.latest_run.mode, "full");
+});
+
+test("querySyntaxIndex returns structural neighbors and supports filters", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/core/main.ts",
+    "import { helperToken } from './helper';\nexport function runToken() { return helperToken(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/core/helper.ts",
+    "export function helperToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/feature/other.ts",
+    "export function otherToken() { return 1; }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+  const built = await buildSyntaxIndex(workspaceRoot, {});
+  assert.equal(built.ok, true);
+
+  const query = await querySyntaxIndex(workspaceRoot, {
+    query: "runToken",
+    top_k: 3,
+    max_neighbors: 5,
+    path_prefix: "src/core"
+  });
+  assert.equal(query.ok, true);
+  assert.equal(query.query, "runToken");
+  assert.ok(query.total_seeds >= 1);
+  assert.ok(query.scanned_candidates >= 1);
+  assert.ok(query.seeds.every((seed) => seed.path.startsWith("src/core/")));
+  assert.ok(query.seeds[0].outgoing_imports.length >= 1);
+  assert.ok(query.seeds[0].outgoing_calls.length >= 1);
+  assert.ok(Array.isArray(query.seeds[0].incoming_importers));
+  assert.ok(Array.isArray(query.seeds[0].incoming_callers));
 });
 
 test("refreshSyntaxIndex supports incremental and event modes", async (t) => {

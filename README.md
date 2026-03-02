@@ -17,6 +17,7 @@
   - `get_index_stats`
   - `build_syntax_index`
   - `refresh_syntax_index`
+  - `query_syntax_index`
   - `get_syntax_index_stats`
   - `build_semantic_graph`
   - `import_precise_index`
@@ -97,6 +98,7 @@ npm run bench:semantic:check
 - “只查 `src/` 下 `javascript` 结果，并输出 explain 评分明细”
 - “先构建 syntax index，再看 import/call 结构统计”
 - “代码改完后刷新 syntax index（changed_paths: [src/a.js]）并返回最新 stats”
+- “查询 syntax index（query: syntaxMain）并返回结构邻居”
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
@@ -106,6 +108,7 @@ npm run bench:semantic:check
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
 `build_syntax_index` / `refresh_syntax_index` 会基于 `files` 表提取 import/call 结构边（当前 provider：`tree-sitter-skeleton`），并写入同一数据库。
+`query_syntax_index` 按 symbol/path 关键词返回结构邻居（outgoing imports/calls、incoming importers/callers）。
 `get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 当 syntax index 可用时，`build_semantic_graph` 会自动摄取 syntax import/call 边（`source=syntax`）作为结构先验。

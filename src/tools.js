@@ -17,6 +17,7 @@ import {
 } from "./semantic-graph.js";
 import {
   buildSyntaxIndex,
+  querySyntaxIndex,
   refreshSyntaxIndex,
   getSyntaxIndexStats
 } from "./syntax-index.js";
@@ -554,6 +555,39 @@ export const TOOL_DEFINITIONS = [
   },
   {
     type: "function",
+    name: "query_syntax_index",
+    description:
+      "Query syntax index by symbol/path keyword and return structural neighbors (imports/calls).",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Symbol or path keyword to locate syntax seed files."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum seed files returned.",
+          minimum: 1,
+          maximum: 30
+        },
+        max_neighbors: {
+          type: "integer",
+          description: "Maximum outgoing/incoming neighbors per seed.",
+          minimum: 1,
+          maximum: 100
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter, e.g. src/."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
     name: "get_syntax_index_stats",
     description: "Return syntax index coverage and structural edge statistics.",
     parameters: {
@@ -821,6 +855,96 @@ async function importPreciseIndexTool(args, context) {
   return importPreciseIndex(context.workspaceRoot, args);
 }
 
+function mapSyntaxSeedToSemanticSeed(seed, edgeType = null) {
+  const outgoing = [];
+  const incoming = [];
+
+  for (const item of seed.outgoing_imports || []) {
+    outgoing.push({
+      edge_type: "import",
+      edge_source: "syntax",
+      weight: 1.5,
+      node: {
+        path: item.imported_path,
+        name: path.basename(String(item.imported_path || "").replace(/^pkg:/, "")),
+        kind: item.external ? "package" : "module",
+        line: Number(item.line || 1),
+        column: 1,
+        lang: null,
+        source: "syntax"
+      }
+    });
+  }
+  for (const item of seed.outgoing_calls || []) {
+    outgoing.push({
+      edge_type: "call",
+      edge_source: "syntax",
+      weight: 1,
+      node: {
+        path: seed.path,
+        name: item.callee,
+        kind: "symbol",
+        line: Number(item.line || 1),
+        column: 1,
+        lang: seed.lang || null,
+        source: "syntax"
+      }
+    });
+  }
+
+  for (const item of seed.incoming_importers || []) {
+    incoming.push({
+      edge_type: "import",
+      edge_source: "syntax",
+      weight: 1.5,
+      node: {
+        path: item.file_path,
+        name: path.basename(String(item.file_path || "")),
+        kind: "file",
+        line: Number(item.line || 1),
+        column: 1,
+        lang: null,
+        source: "syntax"
+      }
+    });
+  }
+  for (const item of seed.incoming_callers || []) {
+    incoming.push({
+      edge_type: "call",
+      edge_source: "syntax",
+      weight: 1,
+      node: {
+        path: item.file_path,
+        name: path.basename(String(item.file_path || "")),
+        kind: "file",
+        line: Number(item.line || 1),
+        column: 1,
+        lang: null,
+        source: "syntax"
+      }
+    });
+  }
+
+  const filteredOutgoing = edgeType
+    ? outgoing.filter((item) => item.edge_type === edgeType)
+    : outgoing;
+  const filteredIncoming = edgeType
+    ? incoming.filter((item) => item.edge_type === edgeType)
+    : incoming;
+
+  return {
+    path: seed.path,
+    name: seed.path,
+    kind: "file",
+    line: 1,
+    column: 1,
+    lang: seed.lang || null,
+    source: "syntax_fallback",
+    outgoing: filteredOutgoing,
+    incoming: filteredIncoming
+  };
+}
+
 async function querySemanticGraphTool(args, context) {
   const semanticResult = await querySemanticGraph(context.workspaceRoot, args);
   if (semanticResult.ok) {
@@ -829,6 +953,34 @@ async function querySemanticGraphTool(args, context) {
 
   if (!/semantic graph is empty/i.test(String(semanticResult.error || ""))) {
     return semanticResult;
+  }
+
+  const syntaxResult = await querySyntaxIndex(context.workspaceRoot, {
+    query: args?.query,
+    top_k: args?.top_k,
+    max_neighbors: args?.max_neighbors,
+    path_prefix: args?.path_prefix
+  });
+  if (syntaxResult.ok && Array.isArray(syntaxResult.seeds) && syntaxResult.seeds.length > 0) {
+    const fallbackSeeds = syntaxResult.seeds.map((seed) =>
+      mapSyntaxSeedToSemanticSeed(seed, args?.edge_type || null)
+    );
+    return {
+      ok: true,
+      provider: "syntax",
+      fallback: true,
+      warning: "semantic graph is empty, returned syntax-index fallback results",
+      query: syntaxResult.query,
+      filters: {
+        edge_type: args?.edge_type || null,
+        path_prefix: args?.path_prefix || null
+      },
+      priority_policy: ["syntax", "index_fallback"],
+      total_seeds: fallbackSeeds.length,
+      scanned_candidates: Number(syntaxResult.scanned_candidates || fallbackSeeds.length),
+      deduped_candidates: fallbackSeeds.length,
+      seeds: fallbackSeeds
+    };
   }
 
   const indexResult = await queryCodeIndex(context.workspaceRoot, {
@@ -879,6 +1031,10 @@ async function buildSyntaxIndexTool(args, context) {
 
 async function refreshSyntaxIndexTool(args, context) {
   return refreshSyntaxIndex(context.workspaceRoot, args);
+}
+
+async function querySyntaxIndexTool(args, context) {
+  return querySyntaxIndex(context.workspaceRoot, args);
 }
 
 async function getSyntaxIndexStatsTool(args, context) {
@@ -943,6 +1099,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "refresh_syntax_index") {
     return refreshSyntaxIndexTool(args, context);
+  }
+  if (name === "query_syntax_index") {
+    return querySyntaxIndexTool(args, context);
   }
   if (name === "get_syntax_index_stats") {
     return getSyntaxIndexStatsTool(args, context);

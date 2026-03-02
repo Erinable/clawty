@@ -6,7 +6,7 @@ const SYSTEM_PROMPT = [
   "Focus on software engineering tasks in the workspace.",
   "For repository exploration, build_code_index once, then use refresh_code_index + query_code_index.",
   "Use get_index_stats when you need index health or coverage details.",
-  "For structural code context, build_syntax_index then use refresh_syntax_index + get_syntax_index_stats.",
+  "For structural code context, build_syntax_index then use refresh_syntax_index + query_syntax_index + get_syntax_index_stats.",
   "For multi-hop reasoning, build_semantic_graph then use query_semantic_graph and get_semantic_graph_stats.",
   "When syntax index is available, build_semantic_graph can ingest syntax import/call edges as structural priors.",
   "When precise index data exists, import it via import_precise_index before semantic graph query.",
