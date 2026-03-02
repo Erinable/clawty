@@ -54,6 +54,7 @@ npm run test:coverage
 - `npm test`：运行全部自动化测试（Node test runner）
 - `npm run test:watch`：监听模式，边改边测
 - `npm run test:coverage`：生成覆盖率报告（实验特性）
+- GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。
 

@@ -50,6 +50,7 @@ PRs should include:
 - clear summary of behavior changes
 - commands used for verification
 - config or security impact (if any)
+- green CI status (`.github/workflows/ci.yml`)
 
 ## Security & Configuration Tips
 - Never commit secrets; keep `OPENAI_API_KEY` only in `.env`.
