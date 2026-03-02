@@ -91,13 +91,46 @@ test("metrics-report aggregates hybrid and watch KPI from jsonl files", async (t
     "utf8"
   );
 
+  const memoryEvents = [
+    {
+      timestamp: nowIso,
+      event_type: "memory_search",
+      query_total_ms: 30,
+      returned_count: 1,
+      fallback_used: false
+    },
+    {
+      timestamp: nowIso,
+      event_type: "memory_search",
+      query_total_ms: 80,
+      returned_count: 0,
+      fallback_used: true
+    },
+    {
+      timestamp: nowIso,
+      event_type: "memory_search",
+      query_total_ms: 55,
+      returned_count: 2,
+      fallback_used: false
+    }
+  ];
+  await fs.writeFile(
+    path.join(metricsDir, "memory.jsonl"),
+    `${memoryEvents.map((item) => JSON.stringify(item)).join("\n")}\n`,
+    "utf8"
+  );
+
   const report = await runMetricsReport(workspaceRoot);
   assert.equal(report.kpi.query_hybrid_p95_ms, 40);
   assert.equal(report.kpi.code_index_lag_p95_ms, 300);
   assert.equal(report.kpi.stale_hit_rate_avg, 0.2);
   assert.equal(report.kpi.degrade_rate, 0.3333);
+  assert.equal(report.kpi.memory_query_p95_ms, 80);
+  assert.equal(report.kpi.memory_hit_rate, 0.6667);
+  assert.equal(report.kpi.memory_fallback_rate, 0.3333);
   assert.equal(report.sample_sizes.hybrid_events, 3);
   assert.equal(report.sample_sizes.watch_flush_events, 3);
+  assert.equal(report.sample_sizes.memory_events, 3);
 });
 
 test("metrics-report returns null kpi values when metric files are missing", async (t) => {
@@ -111,7 +144,10 @@ test("metrics-report returns null kpi values when metric files are missing", asy
   assert.equal(report.kpi.code_index_lag_p95_ms, null);
   assert.equal(report.kpi.stale_hit_rate_avg, null);
   assert.equal(report.kpi.degrade_rate, null);
+  assert.equal(report.kpi.memory_query_p95_ms, null);
+  assert.equal(report.kpi.memory_hit_rate, null);
+  assert.equal(report.kpi.memory_fallback_rate, null);
   assert.equal(report.sample_sizes.hybrid_events, 0);
   assert.equal(report.sample_sizes.watch_flush_events, 0);
+  assert.equal(report.sample_sizes.memory_events, 0);
 });
-

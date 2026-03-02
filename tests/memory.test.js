@@ -58,6 +58,7 @@ test("memory records lessons and supports search/context formatting", async (t) 
   assert.ok(result.items.length >= 1);
   assert.equal(result.items[0].workspace_match, true);
   assert.deepEqual(result.items[0].tags, ["auth", "retry"]);
+  assert.equal(Object.hasOwn(result.items[0], "components"), false);
 
   const prompt = formatMemoryContextForPrompt(result, { maxChars: 1200 });
   assert.match(prompt, /\[memory_context\]/);
@@ -91,6 +92,64 @@ test("memory search handles hyphenated tokens safely", async (t) => {
   assert.equal(result.ok, true);
   assert.ok(result.items.length >= 1);
   assert.match(result.items[0].lesson, /oauth-2/i);
+});
+
+test("memory search supports explain mode and ranking overrides", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const options = memoryOptions(fakeHome);
+  const oldTimestamp = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const newTimestamp = new Date().toISOString();
+
+  await recordLesson(
+    workspaceRoot,
+    {
+      title: "Older memory",
+      lesson: "Legacy workaround for auth flow.",
+      tags: ["auth"],
+      created_at: oldTimestamp,
+      updated_at: oldTimestamp
+    },
+    options
+  );
+  await recordLesson(
+    workspaceRoot,
+    {
+      title: "Recent memory",
+      lesson: "Recent auth fix with retry and tests.",
+      tags: ["auth"],
+      created_at: newTimestamp,
+      updated_at: newTimestamp
+    },
+    options
+  );
+
+  const result = await searchMemory(workspaceRoot, "auth", {
+    ...options,
+    scope: "project",
+    topK: 2,
+    explain: true,
+    ranking: {
+      bm25Weight: 0,
+      recencyWeight: 1,
+      confidenceWeight: 0,
+      successRateWeight: 0,
+      qualityWeight: 0,
+      feedbackWeight: 0
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.ranking);
+  assert.equal(result.ranking.weights.recency, 1);
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].title, "Recent memory");
+  assert.ok(result.items[0].components);
+  assert.equal(typeof result.items[0].components.weighted_score, "number");
 });
 
 test("memory tracks episodes, feedback, and stats", async (t) => {

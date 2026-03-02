@@ -6,12 +6,16 @@ const DEFAULT_THRESHOLDS = {
   codeIndexLagP95Ms: 2000,
   staleHitRateAvg: 0.05,
   queryHybridP95Ms: 2000,
-  degradeRate: 0.1
+  degradeRate: 0.1,
+  memoryQueryP95Ms: null,
+  minMemoryHitRate: null,
+  maxMemoryFallbackRate: null
 };
 
 const DEFAULT_MIN_SAMPLES = {
   hybridEvents: 1,
-  watchFlushEvents: 1
+  watchFlushEvents: 1,
+  memoryEvents: 0
 };
 
 function parsePositiveNumber(raw, argName, min, max) {
@@ -106,6 +110,33 @@ function parseArgs(argv) {
       );
       continue;
     }
+    if (arg.startsWith("--max-memory-query-p95-ms=")) {
+      options.thresholds.memoryQueryP95Ms = parsePositiveNumber(
+        arg.slice("--max-memory-query-p95-ms=".length),
+        "--max-memory-query-p95-ms",
+        1,
+        86_400_000
+      );
+      continue;
+    }
+    if (arg.startsWith("--min-memory-hit-rate=")) {
+      options.thresholds.minMemoryHitRate = parsePositiveNumber(
+        arg.slice("--min-memory-hit-rate=".length),
+        "--min-memory-hit-rate",
+        0,
+        1
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-memory-fallback-rate=")) {
+      options.thresholds.maxMemoryFallbackRate = parsePositiveNumber(
+        arg.slice("--max-memory-fallback-rate=".length),
+        "--max-memory-fallback-rate",
+        0,
+        1
+      );
+      continue;
+    }
     if (arg.startsWith("--min-hybrid-events=")) {
       options.minSamples.hybridEvents = parseNonNegativeInt(
         arg.slice("--min-hybrid-events=".length),
@@ -117,6 +148,13 @@ function parseArgs(argv) {
       options.minSamples.watchFlushEvents = parseNonNegativeInt(
         arg.slice("--min-watch-flush-events=".length),
         "--min-watch-flush-events"
+      );
+      continue;
+    }
+    if (arg.startsWith("--min-memory-events=")) {
+      options.minSamples.memoryEvents = parseNonNegativeInt(
+        arg.slice("--min-memory-events=".length),
+        "--min-memory-events"
       );
       continue;
     }
@@ -135,6 +173,9 @@ function roundMetric(value, digits = 4) {
 }
 
 function evaluateMaxMetric(name, value, max, allowMissing, failures) {
+  if (max === null || max === undefined) {
+    return { name, ok: true, value: value ?? null, max: null, missing: value == null, skipped: true };
+  }
   if (value === null || value === undefined) {
     if (!allowMissing) {
       failures.push(`${name} is missing`);
@@ -149,11 +190,30 @@ function evaluateMaxMetric(name, value, max, allowMissing, failures) {
   return { name, ok: true, value, max, missing: false };
 }
 
+function evaluateMinMetric(name, value, min, allowMissing, failures) {
+  if (min === null || min === undefined) {
+    return { name, ok: true, value: value ?? null, min: null, missing: value == null, skipped: true };
+  }
+  if (value === null || value === undefined) {
+    if (!allowMissing) {
+      failures.push(`${name} is missing`);
+      return { name, ok: false, value: null, min, missing: true };
+    }
+    return { name, ok: true, value: null, min, missing: true };
+  }
+  if (value < min) {
+    failures.push(`${name}=${value} below min=${min}`);
+    return { name, ok: false, value, min, missing: false };
+  }
+  return { name, ok: true, value, min, missing: false };
+}
+
 function evaluateReport(report, options) {
   const failures = [];
   const sampleSizes = report?.sample_sizes || {};
   const hybridEvents = Number(sampleSizes.hybrid_events || 0);
   const watchFlushEvents = Number(sampleSizes.watch_flush_events || 0);
+  const memoryEvents = Number(sampleSizes.memory_events || 0);
 
   if (!(options.allowMissing && hybridEvents === 0)) {
     if (hybridEvents < options.minSamples.hybridEvents) {
@@ -166,6 +226,13 @@ function evaluateReport(report, options) {
     if (watchFlushEvents < options.minSamples.watchFlushEvents) {
       failures.push(
         `watch_flush_events=${watchFlushEvents} below min_watch_flush_events=${options.minSamples.watchFlushEvents}`
+      );
+    }
+  }
+  if (!(options.allowMissing && memoryEvents === 0)) {
+    if (memoryEvents < options.minSamples.memoryEvents) {
+      failures.push(
+        `memory_events=${memoryEvents} below min_memory_events=${options.minSamples.memoryEvents}`
       );
     }
   }
@@ -198,6 +265,27 @@ function evaluateReport(report, options) {
       options.thresholds.degradeRate,
       options.allowMissing,
       failures
+    ),
+    evaluateMaxMetric(
+      "memory_query_p95_ms",
+      report?.kpi?.memory_query_p95_ms,
+      options.thresholds.memoryQueryP95Ms,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMinMetric(
+      "memory_hit_rate",
+      report?.kpi?.memory_hit_rate,
+      options.thresholds.minMemoryHitRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "memory_fallback_rate",
+      report?.kpi?.memory_fallback_rate,
+      options.thresholds.maxMemoryFallbackRate,
+      options.allowMissing,
+      failures
     )
   ];
 
@@ -207,7 +295,8 @@ function evaluateReport(report, options) {
     checks,
     sample_sizes: {
       hybrid_events: hybridEvents,
-      watch_flush_events: watchFlushEvents
+      watch_flush_events: watchFlushEvents,
+      memory_events: memoryEvents
     }
   };
 }
@@ -222,20 +311,28 @@ function printTextResult(payload) {
   console.log(`- window: last ${report.window_hours}h`);
   console.log(`- generated_at: ${report.generated_at}`);
   console.log(
-    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}`
+    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}, memory_query_p95_ms<=${thresholds.memoryQueryP95Ms ?? "off"}, memory_hit_rate>=${thresholds.minMemoryHitRate ?? "off"}, memory_fallback_rate<=${thresholds.maxMemoryFallbackRate ?? "off"}`
   );
   console.log(
-    `- sample_sizes: hybrid_events=${evaluation.sample_sizes.hybrid_events}, watch_flush_events=${evaluation.sample_sizes.watch_flush_events}`
+    `- sample_sizes: hybrid_events=${evaluation.sample_sizes.hybrid_events}, watch_flush_events=${evaluation.sample_sizes.watch_flush_events}, memory_events=${evaluation.sample_sizes.memory_events}`
   );
   console.log("");
 
   for (const check of evaluation.checks) {
+    if (check.skipped) {
+      console.log(`- [skip] ${check.name}: threshold disabled`);
+      continue;
+    }
     if (check.missing) {
       console.log(`- [skip] ${check.name}: missing`);
       continue;
     }
     const status = check.ok ? "ok" : "fail";
-    console.log(`- [${status}] ${check.name}: value=${roundMetric(check.value)} max=${check.max}`);
+    if (check.max !== undefined) {
+      console.log(`- [${status}] ${check.name}: value=${roundMetric(check.value)} max=${check.max}`);
+      continue;
+    }
+    console.log(`- [${status}] ${check.name}: value=${roundMetric(check.value)} min=${check.min}`);
   }
 
   if (!evaluation.pass) {

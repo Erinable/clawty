@@ -209,6 +209,7 @@ function printMemoryHelp() {
       ],
       options: [
         ["--json", "output structured JSON"],
+        ["--explain", "include score component breakdown (search command)"],
         ["--top-k <n>", "max returned lessons for search"],
         ["--scope <project|global|project+global>", "memory scope"],
         ["--vote <up|down>", "feedback vote (for feedback command)"],
@@ -678,6 +679,7 @@ function parseMemoryArgs(argv = []) {
     reason: null,
     note: null,
     days: null,
+    explain: false,
     rest: []
   };
 
@@ -693,6 +695,10 @@ function parseMemoryArgs(argv = []) {
     }
     if (arg === "--format=text") {
       state.format = "text";
+      continue;
+    }
+    if (arg === "--explain") {
+      state.explain = true;
       continue;
     }
     if (arg === "--top-k") {
@@ -792,7 +798,9 @@ async function handleMemoryCommand(argv) {
   const memoryOptions = {
     homeDir: config?.sources?.homeDir,
     scope: parsed.scope || config?.memory?.scope || "project+global",
-    quarantineThreshold: config?.memory?.quarantineThreshold
+    quarantineThreshold: config?.memory?.quarantineThreshold,
+    ranking: config?.memory?.ranking,
+    metrics: config?.metrics
   };
 
   const {
@@ -811,7 +819,8 @@ async function handleMemoryCommand(argv) {
     }
     const result = await searchMemory(config.workspaceRoot, query, {
       ...memoryOptions,
-      topK: parsed.topK
+      topK: parsed.topK,
+      explain: parsed.explain
     });
     if (parsed.format === "json") {
       console.log(JSON.stringify(result, null, 2));
@@ -830,9 +839,11 @@ async function handleMemoryCommand(argv) {
                 score: item.score,
                 confidence: item.confidence,
                 workspace_match: item.workspace_match,
-                updated_at: item.updated_at
+                updated_at: item.updated_at,
+                ...(parsed.explain ? { components: item.components || null } : {})
               }))
-            : []
+            : [],
+          ...(parsed.explain ? { ranking: result.ranking || null } : {})
         },
         null,
         2

@@ -535,7 +535,9 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
           homeDir: config?.sources?.homeDir,
           scope: config?.memory?.scope,
           maxItems: config?.memory?.maxInjectedItems,
-          maxChars: config?.memory?.maxInjectedChars
+          maxChars: config?.memory?.maxInjectedChars,
+          ranking: config?.memory?.ranking,
+          metrics: config?.metrics
         });
         state.memory_context = memoryContext;
         const memoryPrompt = formatMemoryContextForPrompt(memoryContext, {

@@ -55,6 +55,7 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           enabled: false,
           persistHybrid: false,
           persistWatch: false,
+          persistMemory: false,
           queryPreviewChars: 120
         },
         memory: {
@@ -66,6 +67,20 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           minLessonChars: 96,
           dedupeEnabled: false,
           quarantineThreshold: 4,
+          ranking: {
+            bm25Weight: 0.4,
+            recencyWeight: 0.2,
+            confidenceWeight: 0.1,
+            successRateWeight: 0.1,
+            qualityWeight: 0.1,
+            feedbackWeight: 0.1,
+            projectBoost: 1.2,
+            globalBoost: 0.4,
+            negativePenaltyPerDownvote: 0.08,
+            negativePenaltyCap: 0.35,
+            recentNegativePenalty: 0.2,
+            recentNegativeRecencyThreshold: 0.6
+          },
           scope: "project"
         }
       },
@@ -99,6 +114,7 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.metrics.enabled, false);
   assert.equal(config.metrics.persistHybrid, false);
   assert.equal(config.metrics.persistWatch, false);
+  assert.equal(config.metrics.persistMemory, false);
   assert.equal(config.metrics.queryPreviewChars, 120);
   assert.equal(config.memory.enabled, true);
   assert.equal(config.memory.maxInjectedItems, 7);
@@ -108,6 +124,9 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.memory.minLessonChars, 96);
   assert.equal(config.memory.dedupeEnabled, false);
   assert.equal(config.memory.quarantineThreshold, 4);
+  assert.equal(config.memory.ranking.bm25Weight, 0.4);
+  assert.equal(config.memory.ranking.projectBoost, 1.2);
+  assert.equal(config.memory.ranking.recentNegativeRecencyThreshold, 0.6);
   assert.equal(config.memory.scope, "project");
   assert.ok(config.sources.configFile?.endsWith("clawty.config.json"));
 });
@@ -158,10 +177,13 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000",
       CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS: "9000",
       CLAWTY_METRICS_PERSIST_WATCH: "false",
+      CLAWTY_METRICS_PERSIST_MEMORY: "false",
       CLAWTY_METRICS_QUERY_PREVIEW_CHARS: "220",
       CLAWTY_MEMORY_MIN_LESSON_CHARS: "120",
       CLAWTY_MEMORY_DEDUPE_ENABLED: "false",
-      CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6"
+      CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6",
+      CLAWTY_MEMORY_RANK_RECENCY_WEIGHT: "0.9",
+      CLAWTY_MEMORY_RANK_BM25_WEIGHT: "0.1"
     }
   });
 
@@ -171,10 +193,13 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.index.freshnessStaleAfterMs, 123000);
   assert.equal(config.agentContext.incrementalContextMaxDiffChars, 9000);
   assert.equal(config.metrics.persistWatch, false);
+  assert.equal(config.metrics.persistMemory, false);
   assert.equal(config.metrics.queryPreviewChars, 220);
   assert.equal(config.memory.minLessonChars, 120);
   assert.equal(config.memory.dedupeEnabled, false);
   assert.equal(config.memory.quarantineThreshold, 6);
+  assert.equal(config.memory.ranking.recencyWeight, 0.9);
+  assert.equal(config.memory.ranking.bm25Weight, 0.1);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
 

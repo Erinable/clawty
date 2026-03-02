@@ -6,6 +6,7 @@ const DEFAULT_WINDOW_HOURS = 24;
 const METRICS_DIR_RELATIVE = path.join(".clawty", "metrics");
 const DEFAULT_HYBRID_FILE = "hybrid-query.jsonl";
 const DEFAULT_WATCH_FLUSH_FILE = "watch-flush.jsonl";
+const DEFAULT_MEMORY_FILE = "memory.jsonl";
 
 function parseArgs(argv) {
   const options = {
@@ -159,6 +160,41 @@ function computeWatchKpis(watchFlushEvents) {
   };
 }
 
+function computeMemoryKpis(memoryEvents) {
+  const queryDurations = [];
+  let hitCount = 0;
+  let fallbackCount = 0;
+
+  for (const event of memoryEvents) {
+    const queryMs = Number(event?.query_total_ms);
+    if (Number.isFinite(queryMs) && queryMs >= 0) {
+      queryDurations.push(queryMs);
+    }
+
+    const returnedCount = Number(event?.returned_count);
+    if (Number.isFinite(returnedCount) && returnedCount > 0) {
+      hitCount += 1;
+    }
+
+    if (event?.fallback_used === true) {
+      fallbackCount += 1;
+    }
+  }
+
+  return {
+    memory_query_count: memoryEvents.length,
+    memory_query_p95_ms: queryDurations.length > 0 ? roundMetric(percentile(queryDurations, 95)) : null,
+    memory_hit_rate:
+      memoryEvents.length > 0 ? roundMetric(hitCount / memoryEvents.length, 4) : null,
+    memory_fallback_rate:
+      memoryEvents.length > 0 ? roundMetric(fallbackCount / memoryEvents.length, 4) : null,
+    sample_sizes: {
+      memory_query_duration_samples: queryDurations.length,
+      memory_hit_samples: memoryEvents.length
+    }
+  };
+}
+
 function formatMetricValue(value, unit = "") {
   if (value === null || value === undefined) {
     return "n/a";
@@ -175,7 +211,7 @@ function printTextReport(report) {
   console.log(`- window: last ${report.window_hours}h`);
   console.log(`- generated_at: ${report.generated_at}`);
   console.log(
-    `- files: hybrid=${report.inputs.hybrid_file.exists ? "present" : "missing"}, watch_flush=${report.inputs.watch_flush_file.exists ? "present" : "missing"}`
+    `- files: hybrid=${report.inputs.hybrid_file.exists ? "present" : "missing"}, watch_flush=${report.inputs.watch_flush_file.exists ? "present" : "missing"}, memory=${report.inputs.memory_file.exists ? "present" : "missing"}`
   );
   console.log("");
   console.log("Core KPI");
@@ -183,13 +219,18 @@ function printTextReport(report) {
   console.log(`- stale_hit_rate_avg: ${formatMetricValue(report.kpi.stale_hit_rate_avg)}`);
   console.log(`- query_hybrid_p95_ms: ${formatMetricValue(report.kpi.query_hybrid_p95_ms, "ms")}`);
   console.log(`- degrade_rate: ${formatMetricValue(report.kpi.degrade_rate)}`);
+  console.log(`- memory_query_p95_ms: ${formatMetricValue(report.kpi.memory_query_p95_ms, "ms")}`);
+  console.log(`- memory_hit_rate: ${formatMetricValue(report.kpi.memory_hit_rate)}`);
+  console.log(`- memory_fallback_rate: ${formatMetricValue(report.kpi.memory_fallback_rate)}`);
   console.log("");
   console.log("Sample Sizes");
   console.log(`- hybrid_events: ${report.sample_sizes.hybrid_events}`);
   console.log(`- watch_flush_events: ${report.sample_sizes.watch_flush_events}`);
+  console.log(`- memory_events: ${report.sample_sizes.memory_events}`);
   console.log(`- query_duration_samples: ${report.sample_sizes.query_duration_samples}`);
   console.log(`- stale_rate_samples: ${report.sample_sizes.stale_rate_samples}`);
   console.log(`- index_lag_samples: ${report.sample_sizes.index_lag_samples}`);
+  console.log(`- memory_query_duration_samples: ${report.sample_sizes.memory_query_duration_samples}`);
 }
 
 async function buildReport(options) {
@@ -197,13 +238,15 @@ async function buildReport(options) {
   const metricsDir = path.join(workspaceRoot, METRICS_DIR_RELATIVE);
   const hybridFilePath = path.join(metricsDir, DEFAULT_HYBRID_FILE);
   const watchFlushFilePath = path.join(metricsDir, DEFAULT_WATCH_FLUSH_FILE);
+  const memoryFilePath = path.join(metricsDir, DEFAULT_MEMORY_FILE);
 
   const nowMs = Date.now();
   const windowStartMs = nowMs - options.windowHours * 60 * 60 * 1000;
 
-  const [hybridRows, watchFlushRows] = await Promise.all([
+  const [hybridRows, watchFlushRows, memoryRows] = await Promise.all([
     readJsonl(hybridFilePath),
-    readJsonl(watchFlushFilePath)
+    readJsonl(watchFlushFilePath),
+    readJsonl(memoryFilePath)
   ]);
 
   const hybridEvents = filterByWindow(
@@ -214,9 +257,14 @@ async function buildReport(options) {
     watchFlushRows.filter((row) => row?.event_type === "watch_flush"),
     windowStartMs
   );
+  const memoryEvents = filterByWindow(
+    memoryRows.filter((row) => row?.event_type === "memory_search"),
+    windowStartMs
+  );
 
   const hybridKpis = computeHybridKpis(hybridEvents);
   const watchKpis = computeWatchKpis(watchFlushEvents);
+  const memoryKpis = computeMemoryKpis(memoryEvents);
 
   return {
     generated_at: new Date(nowMs).toISOString(),
@@ -231,20 +279,29 @@ async function buildReport(options) {
       watch_flush_file: {
         path: path.relative(workspaceRoot, watchFlushFilePath),
         exists: watchFlushRows.length > 0
+      },
+      memory_file: {
+        path: path.relative(workspaceRoot, memoryFilePath),
+        exists: memoryRows.length > 0
       }
     },
     kpi: {
       code_index_lag_p95_ms: watchKpis.code_index_lag_p95_ms,
       stale_hit_rate_avg: hybridKpis.stale_hit_rate_avg,
       query_hybrid_p95_ms: hybridKpis.query_hybrid_p95_ms,
-      degrade_rate: hybridKpis.degrade_rate
+      degrade_rate: hybridKpis.degrade_rate,
+      memory_query_p95_ms: memoryKpis.memory_query_p95_ms,
+      memory_hit_rate: memoryKpis.memory_hit_rate,
+      memory_fallback_rate: memoryKpis.memory_fallback_rate
     },
     sample_sizes: {
       hybrid_events: hybridKpis.query_hybrid_count,
       watch_flush_events: watchKpis.watch_flush_count,
+      memory_events: memoryKpis.memory_query_count,
       query_duration_samples: hybridKpis.sample_sizes.query_duration_samples,
       stale_rate_samples: hybridKpis.sample_sizes.stale_rate_samples,
-      index_lag_samples: watchKpis.sample_sizes.index_lag_samples
+      index_lag_samples: watchKpis.sample_sizes.index_lag_samples,
+      memory_query_duration_samples: memoryKpis.sample_sizes.memory_query_duration_samples
     }
   };
 }

@@ -13,6 +13,23 @@ const DEFAULT_MAX_CHARS = 2400;
 const MAX_QUERY_TOKENS = 12;
 const DEFAULT_MIN_LESSON_CHARS = 80;
 const DEFAULT_QUARANTINE_THRESHOLD = 3;
+const METRICS_SUBDIR = path.join(".clawty", "metrics");
+const MEMORY_METRICS_FILE = "memory.jsonl";
+const DEFAULT_MEMORY_METRICS_QUERY_PREVIEW_CHARS = 120;
+const DEFAULT_MEMORY_RANKING = Object.freeze({
+  bm25Weight: 0.34,
+  recencyWeight: 0.16,
+  confidenceWeight: 0.12,
+  successRateWeight: 0.12,
+  qualityWeight: 0.14,
+  feedbackWeight: 0.12,
+  projectBoost: 1,
+  globalBoost: 0.35,
+  negativePenaltyPerDownvote: 0.06,
+  negativePenaltyCap: 0.3,
+  recentNegativePenalty: 0.18,
+  recentNegativeRecencyThreshold: 0.55
+});
 const ALLOWED_FEEDBACK_REASONS = new Set(["wrong", "stale", "unsafe", "irrelevant", "good"]);
 
 function isFiniteNumber(value) {
@@ -38,6 +55,23 @@ function clampFloat(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(max, n);
+}
+
+function parseBoolean(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function toPosixPath(inputPath) {
@@ -155,6 +189,193 @@ function recencyScore(updatedAt) {
     return 0.3;
   }
   return 0.1;
+}
+
+function normalizeWeightMap(rawWeights, fallbackWeights) {
+  const fallback = {
+    bm25: Number(fallbackWeights.bm25Weight || 0),
+    recency: Number(fallbackWeights.recencyWeight || 0),
+    confidence: Number(fallbackWeights.confidenceWeight || 0),
+    success_rate: Number(fallbackWeights.successRateWeight || 0),
+    quality: Number(fallbackWeights.qualityWeight || 0),
+    feedback: Number(fallbackWeights.feedbackWeight || 0)
+  };
+  const source = {
+    bm25: Number(rawWeights.bm25 || 0),
+    recency: Number(rawWeights.recency || 0),
+    confidence: Number(rawWeights.confidence || 0),
+    success_rate: Number(rawWeights.success_rate || 0),
+    quality: Number(rawWeights.quality || 0),
+    feedback: Number(rawWeights.feedback || 0)
+  };
+
+  let sum = 0;
+  for (const key of Object.keys(source)) {
+    const value = Number(source[key] || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+      source[key] = 0;
+      continue;
+    }
+    source[key] = value;
+    sum += value;
+  }
+
+  if (sum <= 0) {
+    return fallback;
+  }
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(source)) {
+    normalized[key] = Number((value / sum).toFixed(6));
+  }
+  return normalized;
+}
+
+function resolveMemoryRanking(options = {}) {
+  const input = isPlainObject(options.ranking) ? options.ranking : {};
+  const weights = normalizeWeightMap(
+    {
+      bm25: clampFloat(
+        input.bm25Weight,
+        DEFAULT_MEMORY_RANKING.bm25Weight,
+        0,
+        4
+      ),
+      recency: clampFloat(
+        input.recencyWeight,
+        DEFAULT_MEMORY_RANKING.recencyWeight,
+        0,
+        4
+      ),
+      confidence: clampFloat(
+        input.confidenceWeight,
+        DEFAULT_MEMORY_RANKING.confidenceWeight,
+        0,
+        4
+      ),
+      success_rate: clampFloat(
+        input.successRateWeight,
+        DEFAULT_MEMORY_RANKING.successRateWeight,
+        0,
+        4
+      ),
+      quality: clampFloat(
+        input.qualityWeight,
+        DEFAULT_MEMORY_RANKING.qualityWeight,
+        0,
+        4
+      ),
+      feedback: clampFloat(
+        input.feedbackWeight,
+        DEFAULT_MEMORY_RANKING.feedbackWeight,
+        0,
+        4
+      )
+    },
+    DEFAULT_MEMORY_RANKING
+  );
+
+  return {
+    weights,
+    workspace_boost: {
+      project: clampFloat(input.projectBoost, DEFAULT_MEMORY_RANKING.projectBoost, 0.1, 4),
+      global: clampFloat(input.globalBoost, DEFAULT_MEMORY_RANKING.globalBoost, 0, 4)
+    },
+    penalties: {
+      per_downvote: clampFloat(
+        input.negativePenaltyPerDownvote,
+        DEFAULT_MEMORY_RANKING.negativePenaltyPerDownvote,
+        0,
+        2
+      ),
+      cap: clampFloat(
+        input.negativePenaltyCap,
+        DEFAULT_MEMORY_RANKING.negativePenaltyCap,
+        0,
+        2
+      ),
+      recent: clampFloat(
+        input.recentNegativePenalty,
+        DEFAULT_MEMORY_RANKING.recentNegativePenalty,
+        0,
+        2
+      ),
+      recent_recency_threshold: clampFloat(
+        input.recentNegativeRecencyThreshold,
+        DEFAULT_MEMORY_RANKING.recentNegativeRecencyThreshold,
+        0,
+        1
+      )
+    }
+  };
+}
+
+function resolveMemoryMetricsConfig(options = {}) {
+  const metricsInput = isPlainObject(options.metrics) ? options.metrics : {};
+  const env = options.env && typeof options.env === "object" ? options.env : process.env;
+
+  return {
+    enabled: parseBoolean(metricsInput.enabled ?? env.CLAWTY_METRICS_ENABLED, true),
+    persist_memory: parseBoolean(
+      metricsInput.persistMemory ??
+        metricsInput.persist_memory ??
+        env.CLAWTY_METRICS_PERSIST_MEMORY,
+      true
+    ),
+    query_preview_chars: clampInt(
+      metricsInput.queryPreviewChars ??
+        metricsInput.query_preview_chars ??
+        env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS,
+      DEFAULT_MEMORY_METRICS_QUERY_PREVIEW_CHARS,
+      32,
+      1000
+    )
+  };
+}
+
+function buildQueryPreview(query, maxChars) {
+  const text = typeof query === "string" ? query.trim() : "";
+  if (!text) {
+    return "";
+  }
+  const limit = clampInt(maxChars, DEFAULT_MEMORY_METRICS_QUERY_PREVIEW_CHARS, 32, 1000);
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, limit - 16))}...[truncated]`;
+}
+
+async function appendMemoryMetricEvent(workspaceRoot, event, options = {}) {
+  const metricsConfig = resolveMemoryMetricsConfig(options);
+  if (!metricsConfig.enabled || !metricsConfig.persist_memory) {
+    return {
+      logged: false,
+      reason: "metrics_disabled"
+    };
+  }
+
+  try {
+    const root = normalizeWorkspaceRoot(workspaceRoot);
+    const metricsDir = path.join(root, METRICS_SUBDIR);
+    await fs.mkdir(metricsDir, { recursive: true });
+    const outputPath = path.join(metricsDir, MEMORY_METRICS_FILE);
+    const payload = {
+      timestamp: new Date().toISOString(),
+      event_type: "memory_search",
+      ...event
+    };
+    await fs.appendFile(outputPath, `${JSON.stringify(payload)}\n`, "utf8");
+    return {
+      logged: true,
+      reason: null
+    };
+  } catch (error) {
+    return {
+      logged: false,
+      reason: "metrics_write_failed",
+      error: error.message || String(error)
+    };
+  }
 }
 
 function clipText(input, maxChars) {
@@ -769,6 +990,10 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
   const topK = clampInt(options.topK ?? options.maxItems, DEFAULT_TOP_K, 1, MAX_TOP_K);
   const maxChars = clampInt(options.maxChars, DEFAULT_MAX_CHARS, 200, 50_000);
   const scopeFlags = resolveScopeFlags(options.scope);
+  const explain = options.explain === true;
+  const ranking = resolveMemoryRanking(options);
+  const metricsConfig = resolveMemoryMetricsConfig(options);
+  const queryStartedAt = Date.now();
 
   return withDb(options, async (db, dbPath) => {
     const tokens = tokenizeQuery(query);
@@ -776,6 +1001,8 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
     const scopeArgs = buildScopeArgs(scopeFlags, workspaceHash);
 
     let rows = [];
+    let ftsMatchCount = 0;
+    let fallbackUsed = false;
     if (tokens.length > 0) {
       const ftsQuery = buildFtsQuery(tokens);
       rows = db
@@ -803,11 +1030,13 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
           ORDER BY bm25 ASC
           LIMIT 200
         `
-        )
-        .all(ftsQuery, ...scopeArgs);
+          )
+          .all(ftsQuery, ...scopeArgs);
+      ftsMatchCount = rows.length;
     }
 
     if (rows.length === 0) {
+      fallbackUsed = true;
       rows = db
         .prepare(
           `
@@ -885,17 +1114,25 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
         const qualityScore = clampFloat(row.quality_score, 0.5, 0, 1);
         const feedbackScore = clampFloat((feedback.score + 5) / 10, 0.5, 0, 1);
         const downCount = Math.max(0, Number(feedback.down_count || 0));
-        const recentNegativePenalty = downCount > 0 && recencyScore(feedback.last_down_at) >= 0.55 ? 0.18 : 0;
-        const negativePenalty = Math.min(0.3, downCount * 0.06 + recentNegativePenalty);
-        const workspaceBoost = isProject ? 1 : 0.35;
-        const score =
-          bm25Score * 0.34 +
-          recency * 0.16 +
-          confidence * 0.12 +
-          successRate * 0.12 +
-          qualityScore * 0.14 +
-          feedbackScore * 0.12 -
+        const recentNegativePenalty =
+          downCount > 0 &&
+          recencyScore(feedback.last_down_at) >= ranking.penalties.recent_recency_threshold
+            ? ranking.penalties.recent
+            : 0;
+        const negativePenalty = Math.min(
+          ranking.penalties.cap,
+          downCount * ranking.penalties.per_downvote + recentNegativePenalty
+        );
+        const workspaceBoost = isProject ? ranking.workspace_boost.project : ranking.workspace_boost.global;
+        const weightedScore =
+          bm25Score * ranking.weights.bm25 +
+          recency * ranking.weights.recency +
+          confidence * ranking.weights.confidence +
+          successRate * ranking.weights.success_rate +
+          qualityScore * ranking.weights.quality +
+          feedbackScore * ranking.weights.feedback -
           negativePenalty;
+        const score = weightedScore * workspaceBoost;
 
         return {
           id,
@@ -910,15 +1147,24 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
           use_count: clampInt(row.use_count, 0, 0, 1_000_000),
           updated_at: row.updated_at,
           refs: refs.slice(0, 12),
-          score: Number((score * workspaceBoost).toFixed(6)),
-          components: {
-            bm25: Number(bm25Score.toFixed(6)),
-            recency: Number(recency.toFixed(6)),
-            quality: Number(qualityScore.toFixed(6)),
-            feedback: Number(feedbackScore.toFixed(6)),
-            negative_penalty: Number(negativePenalty.toFixed(6)),
-            workspace_boost: Number(workspaceBoost.toFixed(6))
-          }
+          score: Number(score.toFixed(6)),
+          ...(explain
+            ? {
+                components: {
+                  bm25: Number(bm25Score.toFixed(6)),
+                  recency: Number(recency.toFixed(6)),
+                  confidence: Number(confidence.toFixed(6)),
+                  success_rate: Number(successRate.toFixed(6)),
+                  quality: Number(qualityScore.toFixed(6)),
+                  feedback: Number(feedbackScore.toFixed(6)),
+                  negative_penalty: Number(negativePenalty.toFixed(6)),
+                  weighted_score: Number(weightedScore.toFixed(6)),
+                  workspace_boost: Number(workspaceBoost.toFixed(6)),
+                  down_count: downCount,
+                  weights: ranking.weights
+                }
+              }
+            : {})
         };
       })
       .sort((a, b) => b.score - a.score)
@@ -934,6 +1180,34 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
     }
 
     const totalChars = ranked.reduce((acc, item) => acc + item.lesson.length, 0);
+    const queryTotalMs = Math.max(0, Date.now() - queryStartedAt);
+    const scoreValues = ranked.map((item) => Number(item.score || 0)).filter(Number.isFinite);
+    const avgScore =
+      scoreValues.length > 0
+        ? Number((scoreValues.reduce((sum, value) => sum + value, 0) / scoreValues.length).toFixed(6))
+        : 0;
+    const topScore = scoreValues.length > 0 ? Number(scoreValues[0].toFixed(6)) : 0;
+    const metricsWrite = await appendMemoryMetricEvent(
+      normalizedRoot,
+      {
+        scope: scopeFlags.scope,
+        query_preview: buildQueryPreview(query, metricsConfig.query_preview_chars),
+        token_count: tokens.length,
+        top_k: topK,
+        returned_count: ranked.length,
+        candidate_count: rows.length,
+        fts_match_count: ftsMatchCount,
+        fallback_used: fallbackUsed,
+        query_total_ms: queryTotalMs,
+        avg_score: avgScore,
+        top_score: topScore,
+        explain
+      },
+      {
+        ...options,
+        metrics: metricsConfig
+      }
+    );
 
     return {
       ok: true,
@@ -942,6 +1216,11 @@ export async function loadMemoryContext(workspaceRoot, query, options = {}) {
       query: String(query || ""),
       token_count: tokens.length,
       total_chars: totalChars,
+      query_total_ms: queryTotalMs,
+      metrics_logged: Boolean(metricsWrite.logged),
+      metrics_reason: metricsWrite.reason || null,
+      metrics_error: metricsWrite.error || null,
+      ...(explain ? { ranking } : {}),
       items: ranked
     };
   });

@@ -66,6 +66,7 @@ test("memory search and feedback commands work with json output", async (t) => {
   assert.equal(searchPayload.ok, true);
   assert.ok(Array.isArray(searchPayload.items));
   assert.ok(searchPayload.items.length >= 1);
+  assert.equal(Object.hasOwn(searchPayload.items[0], "components"), false);
 
   const { stdout: hyphenSearchStdout } = await runCli(["memory", "search", "oauth-2 ci-cd", "--json"], {
     cwd: workspaceRoot,
@@ -78,6 +79,22 @@ test("memory search and feedback commands work with json output", async (t) => {
   assert.equal(hyphenPayload.ok, true);
   assert.ok(Array.isArray(hyphenPayload.items));
   assert.ok(hyphenPayload.items.length >= 1);
+
+  const { stdout: explainStdout } = await runCli(
+    ["memory", "search", "auth timeout", "--json", "--explain"],
+    {
+      cwd: workspaceRoot,
+      env: {
+        HOME: fakeHome,
+        USERPROFILE: fakeHome
+      }
+    }
+  );
+  const explainPayload = JSON.parse(explainStdout);
+  assert.equal(explainPayload.ok, true);
+  assert.ok(explainPayload.ranking);
+  assert.ok(explainPayload.items[0].components);
+  assert.equal(typeof explainPayload.items[0].components.weights.bm25, "number");
 
   const targetId = searchPayload.items[0].id;
   const { stdout: feedbackStdout } = await runCli(

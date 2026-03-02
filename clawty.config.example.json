@@ -43,6 +43,7 @@
     "enabled": true,
     "persistHybrid": true,
     "persistWatch": true,
+    "persistMemory": true,
     "queryPreviewChars": 160
   },
   "memory": {
@@ -54,6 +55,20 @@
     "minLessonChars": 80,
     "dedupeEnabled": true,
     "quarantineThreshold": 3,
+    "ranking": {
+      "bm25Weight": 0.34,
+      "recencyWeight": 0.16,
+      "confidenceWeight": 0.12,
+      "successRateWeight": 0.12,
+      "qualityWeight": 0.14,
+      "feedbackWeight": 0.12,
+      "projectBoost": 1,
+      "globalBoost": 0.35,
+      "negativePenaltyPerDownvote": 0.06,
+      "negativePenaltyCap": 0.3,
+      "recentNegativePenalty": 0.18,
+      "recentNegativeRecencyThreshold": 0.55
+    },
     "scope": "project+global"
   }
 }

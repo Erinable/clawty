@@ -446,6 +446,10 @@ export function loadConfig(options = {}) {
       env.CLAWTY_METRICS_PERSIST_WATCH ?? deepPick(fileConfig, ["metrics", "persistWatch"]),
       true
     ),
+    persistMemory: readBoolean(
+      env.CLAWTY_METRICS_PERSIST_MEMORY ?? deepPick(fileConfig, ["metrics", "persistMemory"]),
+      true
+    ),
     queryPreviewChars: readInt(
       env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS ??
         deepPick(fileConfig, ["metrics", "queryPreviewChars"]),
@@ -462,6 +466,92 @@ export function loadConfig(options = {}) {
   const memoryScope = ["project", "global", "project+global"].includes(memoryScopeRaw)
     ? memoryScopeRaw
     : "project+global";
+  const memoryRanking = {
+    bm25Weight: readFloat(
+      env.CLAWTY_MEMORY_RANK_BM25_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "bm25Weight"]),
+      0.34,
+      0,
+      4
+    ),
+    recencyWeight: readFloat(
+      env.CLAWTY_MEMORY_RANK_RECENCY_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "recencyWeight"]),
+      0.16,
+      0,
+      4
+    ),
+    confidenceWeight: readFloat(
+      env.CLAWTY_MEMORY_RANK_CONFIDENCE_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "confidenceWeight"]),
+      0.12,
+      0,
+      4
+    ),
+    successRateWeight: readFloat(
+      env.CLAWTY_MEMORY_RANK_SUCCESS_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "successRateWeight"]),
+      0.12,
+      0,
+      4
+    ),
+    qualityWeight: readFloat(
+      env.CLAWTY_MEMORY_RANK_QUALITY_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "qualityWeight"]),
+      0.14,
+      0,
+      4
+    ),
+    feedbackWeight: readFloat(
+      env.CLAWTY_MEMORY_RANK_FEEDBACK_WEIGHT ??
+        deepPick(fileConfig, ["memory", "ranking", "feedbackWeight"]),
+      0.12,
+      0,
+      4
+    ),
+    projectBoost: readFloat(
+      env.CLAWTY_MEMORY_RANK_PROJECT_BOOST ??
+        deepPick(fileConfig, ["memory", "ranking", "projectBoost"]),
+      1,
+      0.1,
+      4
+    ),
+    globalBoost: readFloat(
+      env.CLAWTY_MEMORY_RANK_GLOBAL_BOOST ??
+        deepPick(fileConfig, ["memory", "ranking", "globalBoost"]),
+      0.35,
+      0,
+      4
+    ),
+    negativePenaltyPerDownvote: readFloat(
+      env.CLAWTY_MEMORY_RANK_NEGATIVE_PENALTY_PER_DOWNVOTE ??
+        deepPick(fileConfig, ["memory", "ranking", "negativePenaltyPerDownvote"]),
+      0.06,
+      0,
+      2
+    ),
+    negativePenaltyCap: readFloat(
+      env.CLAWTY_MEMORY_RANK_NEGATIVE_PENALTY_CAP ??
+        deepPick(fileConfig, ["memory", "ranking", "negativePenaltyCap"]),
+      0.3,
+      0,
+      2
+    ),
+    recentNegativePenalty: readFloat(
+      env.CLAWTY_MEMORY_RANK_RECENT_NEGATIVE_PENALTY ??
+        deepPick(fileConfig, ["memory", "ranking", "recentNegativePenalty"]),
+      0.18,
+      0,
+      2
+    ),
+    recentNegativeRecencyThreshold: readFloat(
+      env.CLAWTY_MEMORY_RANK_RECENT_NEGATIVE_RECENCY_THRESHOLD ??
+        deepPick(fileConfig, ["memory", "ranking", "recentNegativeRecencyThreshold"]),
+      0.55,
+      0,
+      1
+    )
+  };
 
   const memory = {
     enabled: readBoolean(
@@ -507,6 +597,7 @@ export function loadConfig(options = {}) {
       1,
       20
     ),
+    ranking: memoryRanking,
     scope: memoryScope
   };
 

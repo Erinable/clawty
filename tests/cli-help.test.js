@@ -32,6 +32,7 @@ test("memory help exposes inspect/reindex and reason option", async () => {
   assert.match(stdout, /^== clawty ==/);
   assert.match(stdout, /clawty memory inspect <lessonId>/);
   assert.match(stdout, /clawty memory reindex/);
+  assert.match(stdout, /--explain/);
   assert.match(stdout, /--reason <wrong\|stale\|unsafe\|irrelevant\|good>/);
 });
 

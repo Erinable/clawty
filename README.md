@@ -99,6 +99,7 @@ node src/index.js config show
 node src/index.js config path --json
 node src/index.js config validate
 node src/index.js memory search "auth retry" --top-k 5
+node src/index.js memory search "auth retry" --top-k 5 --explain
 node src/index.js memory stats
 node src/index.js memory inspect 12
 node src/index.js memory feedback 12 --vote up --reason good --note "worked"
@@ -170,6 +171,7 @@ node src/index.js init --json
 
 ```bash
 node src/index.js memory search "auth timeout" --top-k 5
+node src/index.js memory search "auth timeout" --top-k 5 --explain
 node src/index.js memory stats
 node src/index.js memory inspect 12
 node src/index.js memory feedback 12 --vote up --reason good --note "有效"
@@ -249,8 +251,8 @@ npm run build:bin:clean
 - `npm run bench:graph:refresh`：运行语义图增量刷新一致性基准（event vs full）
 - `npm run bench:graph:refresh:check`：按 `tests/bench/semantic-graph-refresh.baseline.json` 执行 2% 增量一致性退化门禁
 - `npm run bench:graph:refresh:baseline`：重写语义图增量刷新基线
-- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate`）
-- `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`）
+- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
+- `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`；memory 阈值可按需通过参数开启）
 - `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）
 - `npm run precise:check:fixture`：校验内置精确索引夹具格式（CI 强制执行）
 - `npm run precise:import`：一键执行 `build_code_index + import_precise_index`（replace 模式）
@@ -409,6 +411,7 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_METRICS_ENABLED`：是否启用指标事件记录，默认 `true`
 - `CLAWTY_METRICS_PERSIST_HYBRID`：是否落盘 hybrid 查询指标事件，默认 `true`
 - `CLAWTY_METRICS_PERSIST_WATCH`：是否落盘 watch flush 指标事件，默认 `true`
+- `CLAWTY_METRICS_PERSIST_MEMORY`：是否落盘 memory 查询指标事件，默认 `true`
 - `CLAWTY_METRICS_QUERY_PREVIEW_CHARS`：指标事件中 `query_preview` 长度上限，默认 `160`
 - `CLAWTY_MEMORY_ENABLED`：是否启用长期记忆检索与注入，默认 `true`
 - `CLAWTY_MEMORY_MAX_INJECTED_ITEMS`：每轮注入的 memory 条目数上限，默认 `5`
@@ -418,6 +421,18 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_MEMORY_MIN_LESSON_CHARS`：自动写入 lesson 的最小长度，默认 `80`
 - `CLAWTY_MEMORY_DEDUPE_ENABLED`：是否启用同标题 lesson 合并，默认 `true`
 - `CLAWTY_MEMORY_QUARANTINE_THRESHOLD`：负反馈隔离阈值，默认 `3`
+- `CLAWTY_MEMORY_RANK_BM25_WEIGHT`：memory 检索 bm25 分量权重，默认 `0.34`
+- `CLAWTY_MEMORY_RANK_RECENCY_WEIGHT`：memory 检索 recency 分量权重，默认 `0.16`
+- `CLAWTY_MEMORY_RANK_CONFIDENCE_WEIGHT`：memory 检索 confidence 分量权重，默认 `0.12`
+- `CLAWTY_MEMORY_RANK_SUCCESS_WEIGHT`：memory 检索 success_rate 分量权重，默认 `0.12`
+- `CLAWTY_MEMORY_RANK_QUALITY_WEIGHT`：memory 检索 quality 分量权重，默认 `0.14`
+- `CLAWTY_MEMORY_RANK_FEEDBACK_WEIGHT`：memory 检索 feedback 分量权重，默认 `0.12`
+- `CLAWTY_MEMORY_RANK_PROJECT_BOOST`：memory 当前仓库 boost，默认 `1`
+- `CLAWTY_MEMORY_RANK_GLOBAL_BOOST`：memory 跨仓库 boost，默认 `0.35`
+- `CLAWTY_MEMORY_RANK_NEGATIVE_PENALTY_PER_DOWNVOTE`：每个负反馈惩罚，默认 `0.06`
+- `CLAWTY_MEMORY_RANK_NEGATIVE_PENALTY_CAP`：负反馈惩罚上限，默认 `0.3`
+- `CLAWTY_MEMORY_RANK_RECENT_NEGATIVE_PENALTY`：近期负反馈额外惩罚，默认 `0.18`
+- `CLAWTY_MEMORY_RANK_RECENT_NEGATIVE_RECENCY_THRESHOLD`：近期负反馈判定阈值，默认 `0.55`
 - `CLAWTY_MEMORY_SCOPE`：memory 作用域，默认 `project+global`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`

@@ -28,7 +28,7 @@ async function runMetricsCheck(workspaceRoot, extraArgs = []) {
   });
 }
 
-async function writeMetricFiles(workspaceRoot, { hybridEvents = [], watchEvents = [] }) {
+async function writeMetricFiles(workspaceRoot, { hybridEvents = [], watchEvents = [], memoryEvents = [] }) {
   const metricsDir = path.join(workspaceRoot, ".clawty/metrics");
   await fs.mkdir(metricsDir, { recursive: true });
   await fs.writeFile(
@@ -39,6 +39,11 @@ async function writeMetricFiles(workspaceRoot, { hybridEvents = [], watchEvents 
   await fs.writeFile(
     path.join(metricsDir, "watch-flush.jsonl"),
     watchEvents.map((item) => JSON.stringify(item)).join("\n"),
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(metricsDir, "memory.jsonl"),
+    memoryEvents.map((item) => JSON.stringify(item)).join("\n"),
     "utf8"
   );
 }
@@ -139,4 +144,74 @@ test("metrics-check supports --allow-missing for empty metrics", async (t) => {
   assert.equal(payload.evaluation.pass, true);
   assert.equal(payload.evaluation.sample_sizes.hybrid_events, 0);
   assert.equal(payload.evaluation.sample_sizes.watch_flush_events, 0);
+});
+
+test("metrics-check supports memory KPI thresholds", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-metrics-check-memory-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const nowIso = new Date().toISOString();
+  await writeMetricFiles(workspaceRoot, {
+    hybridEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 120,
+        sources: { freshness: { stale_hit_rate: 0.03 } },
+        degradation: { degraded: false }
+      }
+    ],
+    watchEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "watch_flush",
+        index_lag_ms: 400
+      }
+    ],
+    memoryEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "memory_search",
+        query_total_ms: 60,
+        returned_count: 1,
+        fallback_used: false
+      },
+      {
+        timestamp: nowIso,
+        event_type: "memory_search",
+        query_total_ms: 80,
+        returned_count: 0,
+        fallback_used: true
+      }
+    ]
+  });
+
+  const { stdout } = await runMetricsCheck(workspaceRoot, [
+    "--max-memory-query-p95-ms=100",
+    "--min-memory-hit-rate=0.4",
+    "--max-memory-fallback-rate=0.6",
+    "--min-memory-events=2"
+  ]);
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.evaluation.pass, true);
+  assert.equal(payload.evaluation.sample_sizes.memory_events, 2);
+
+  await assert.rejects(
+    () =>
+      runMetricsCheck(workspaceRoot, [
+        "--max-memory-query-p95-ms=100",
+        "--min-memory-hit-rate=0.8",
+        "--max-memory-fallback-rate=0.6",
+        "--min-memory-events=2"
+      ]),
+    (error) => {
+      const stdoutText = String(error?.stdout || "");
+      const failedPayload = JSON.parse(stdoutText);
+      assert.equal(failedPayload.evaluation.pass, false);
+      assert.match(failedPayload.evaluation.failures.join("\n"), /memory_hit_rate=0\.5 below min=0\.8/);
+      return true;
+    }
+  );
 });
