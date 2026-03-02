@@ -24,7 +24,7 @@
 - `max_errors`: 错误上限，达到后提前停止
 - `changed_paths` / `deleted_paths`: 事件驱动刷新输入
 - `query`, `top_k`, `max_neighbors`, `path_prefix`: 结构查询参数
-- `parser_provider`: `skeleton`（默认）/ `tree-sitter` / `auto`
+- `parser_provider`: `auto`（默认）/ `skeleton` / `tree-sitter`
 - `parser_strict`: `tree-sitter` 不可用时是否直接失败（默认 false，回退 skeleton）
 
 ## 当前实现说明

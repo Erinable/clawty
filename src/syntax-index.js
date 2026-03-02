@@ -15,7 +15,7 @@ const DEFAULT_MAX_ERRORS = 80;
 const DEFAULT_QUERY_TOP_K = 5;
 const DEFAULT_QUERY_MAX_NEIGHBORS = 8;
 const DEFAULT_QUERY_SCAN_FACTOR = 8;
-const DEFAULT_PARSER_PROVIDER = "skeleton";
+const DEFAULT_PARSER_PROVIDER = "auto";
 const MAX_FILES_LIMIT = 20_000;
 const MAX_CALLS_LIMIT = 2000;
 const MAX_ERRORS_LIMIT = 1000;
@@ -470,6 +470,15 @@ function buildTreeSitterSummary(relativePath, content, runtime, language, maxCal
         functionNode = children[0] || null;
       }
       const callee = extractIdentifierFromCallee(treeNodeText(content, functionNode));
+      if (callee === "require") {
+        const requireMatch = nodeText.match(/require\s*\(\s*["']([^"']+)["']\s*\)/);
+        if (requireMatch) {
+          const importedPath = normalizeImportTarget(relativePath, requireMatch[1]);
+          if (importedPath) {
+            imports.push({ imported_path: importedPath, line, source: "cjs" });
+          }
+        }
+      }
       if (callee && !blockedCallNames.has(callee)) {
         calls.push({ callee, line });
       }
@@ -728,6 +737,12 @@ function buildStatements(db) {
           FROM syntax_call_edges sce
           WHERE sce.file_path = sf.path
             AND sce.callee LIKE ?
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM symbols s
+          WHERE s.file_path = sf.path
+            AND s.name LIKE ?
         )
       )
         AND (? IS NULL OR sf.path LIKE ?)
@@ -1304,6 +1319,7 @@ export async function querySyntaxIndex(workspaceRoot, args = {}) {
     const parserVersion = latestRun?.parser_version || parserVersionForProvider(provider);
 
     const rawSeeds = statements.selectQuerySeeds.all(
+      queryLike,
       queryLike,
       queryLike,
       queryLike,

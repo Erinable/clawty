@@ -127,6 +127,26 @@ test("buildSyntaxIndex supports tree-sitter provider request with fallback/stric
   }
 });
 
+test("buildSyntaxIndex defaults parser_provider to auto", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/default-auto.ts",
+    "export function defaultAutoToken() { return true; }\n"
+  );
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSyntaxIndex(workspaceRoot, {});
+  assert.equal(built.ok, true);
+  assert.equal(built.parser.requested, "auto");
+  assert.ok(["tree-sitter-skeleton", "tree-sitter"].includes(built.provider));
+});
+
 test("querySyntaxIndex returns structural neighbors and supports filters", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

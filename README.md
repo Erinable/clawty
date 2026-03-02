@@ -109,7 +109,7 @@ npm run bench:semantic:check
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
 `build_syntax_index` / `refresh_syntax_index` 会基于 `files` 表提取 import/call 结构边（当前 provider：`tree-sitter-skeleton`），并写入同一数据库。
-可选 `parser_provider`：`skeleton`（默认）/ `tree-sitter` / `auto`；当 `tree-sitter` 不可用时默认回退到 `skeleton`（`parser_strict=true` 可改为失败）。
+可选 `parser_provider`：`auto`（默认）/ `skeleton` / `tree-sitter`；当 `tree-sitter` 不可用时默认回退到 `skeleton`（`parser_strict=true` 可改为失败）。
 `query_syntax_index` 按 symbol/path 关键词返回结构邻居（outgoing imports/calls、incoming importers/callers）。
 `get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。

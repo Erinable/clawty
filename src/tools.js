@@ -509,7 +509,7 @@ export const TOOL_DEFINITIONS = [
         },
         parser_provider: {
           type: "string",
-          description: "Parser provider mode: skeleton (default), tree-sitter, or auto.",
+          description: "Parser provider mode: auto (default), skeleton, or tree-sitter.",
           enum: ["skeleton", "tree-sitter", "auto"]
         },
         parser_strict: {
@@ -548,7 +548,7 @@ export const TOOL_DEFINITIONS = [
         },
         parser_provider: {
           type: "string",
-          description: "Parser provider mode: skeleton (default), tree-sitter, or auto.",
+          description: "Parser provider mode: auto (default), skeleton, or tree-sitter.",
           enum: ["skeleton", "tree-sitter", "auto"]
         },
         parser_strict: {
