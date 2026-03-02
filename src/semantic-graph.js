@@ -8,6 +8,8 @@ const INDEX_DB_FILENAME = "index.db";
 const DEFAULT_MAX_SYMBOLS = 120;
 const DEFAULT_MAX_REFERENCES_PER_SYMBOL = 12;
 const DEFAULT_MAX_LSP_ERRORS = 12;
+const DEFAULT_MAX_SYNTAX_IMPORT_EDGES = 6000;
+const DEFAULT_MAX_SYNTAX_CALL_EDGES = 8000;
 const DEFAULT_MAX_IMPORT_NODES = 50_000;
 const DEFAULT_MAX_IMPORT_EDGES = 200_000;
 const DEFAULT_SEED_SCAN_FACTOR = 8;
@@ -15,14 +17,28 @@ const MAX_SEED_SCAN_LIMIT = 400;
 const MAX_MAX_SYMBOLS = 5000;
 const MAX_MAX_REFERENCES = 200;
 const MAX_MAX_LSP_ERRORS = 200;
+const MAX_MAX_SYNTAX_EDGES = 200_000;
 const MAX_IMPORT_NODES = 500_000;
 const MAX_IMPORT_EDGES = 1_000_000;
 const SOURCE_PRIORITY_ORDER = Object.freeze([
   "scip",
   "lsif",
   "lsp",
+  "syntax",
   "index_seed",
   "lsp_anchor"
+]);
+const IMPORT_PATH_EXTENSION_CANDIDATES = Object.freeze([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".go"
 ]);
 const PRECISE_INDEX_DEFAULT_CANDIDATES = Object.freeze([
   "artifacts/scip.normalized.json",
@@ -120,7 +136,20 @@ function resolveConfig(args = {}) {
     ),
     include_definitions: parseBoolean(args.include_definitions, true),
     include_references: parseBoolean(args.include_references, true),
+    include_syntax: parseBoolean(args.include_syntax, true),
     lsp_required: parseBoolean(args.lsp_required, false),
+    max_syntax_import_edges: parsePositiveInt(
+      args.max_syntax_import_edges,
+      DEFAULT_MAX_SYNTAX_IMPORT_EDGES,
+      1,
+      MAX_MAX_SYNTAX_EDGES
+    ),
+    max_syntax_call_edges: parsePositiveInt(
+      args.max_syntax_call_edges,
+      DEFAULT_MAX_SYNTAX_CALL_EDGES,
+      1,
+      MAX_MAX_SYNTAX_EDGES
+    ),
     precise_preferred: parseBoolean(args.precise_preferred, true),
     precise_required: parseBoolean(args.precise_required, false),
     precise_source:
@@ -420,11 +449,33 @@ function buildStatements(db) {
   };
 }
 
+function hasTable(db, tableName) {
+  const row = db
+    .prepare(
+      `
+      SELECT 1 AS ok
+      FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+      LIMIT 1
+    `
+    )
+    .get(tableName);
+  return Boolean(row?.ok);
+}
+
 function pushNodeToPathMap(pathMap, node) {
   if (!pathMap.has(node.path)) {
     pathMap.set(node.path, []);
   }
   pathMap.get(node.path).push(node);
+}
+
+function getFirstNodeIdFromPathMap(pathMap, pathValue) {
+  const nodes = pathMap.get(pathValue);
+  if (!nodes || nodes.length === 0) {
+    return null;
+  }
+  return Number(nodes[0].id || 0) || null;
 }
 
 function findClosestNodeId(pathMap, pathValue, line) {
@@ -453,6 +504,175 @@ function findClosestNodeId(pathMap, pathValue, line) {
     return null;
   }
   return best.id;
+}
+
+function resolveImportedNodeId(pathMap, importedPath) {
+  if (typeof importedPath !== "string" || importedPath.trim().length === 0) {
+    return null;
+  }
+  const normalized = importedPath.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized || normalized.startsWith("pkg:")) {
+    return null;
+  }
+
+  const candidates = [normalized];
+  for (const ext of IMPORT_PATH_EXTENSION_CANDIDATES) {
+    candidates.push(`${normalized}${ext}`);
+  }
+  for (const ext of IMPORT_PATH_EXTENSION_CANDIDATES) {
+    candidates.push(`${normalized}/index${ext}`);
+  }
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    const nodeId = getFirstNodeIdFromPathMap(pathMap, candidate);
+    if (nodeId) {
+      return nodeId;
+    }
+  }
+  return null;
+}
+
+function buildNameNodeMap(nodes) {
+  const nameMap = new Map();
+  for (const node of nodes) {
+    const nameLc = String(node.name || "").toLowerCase();
+    if (!nameLc) {
+      continue;
+    }
+    if (!nameMap.has(nameLc)) {
+      nameMap.set(nameLc, []);
+    }
+    nameMap.get(nameLc).push(node);
+  }
+  return nameMap;
+}
+
+function resolveCalleeNodeId(nameMap, callee, filePath) {
+  if (typeof callee !== "string" || callee.trim().length === 0) {
+    return null;
+  }
+  const candidates = nameMap.get(callee.trim().toLowerCase());
+  if (!candidates || candidates.length === 0) {
+    return null;
+  }
+
+  let best = candidates[0];
+  for (const candidate of candidates.slice(1)) {
+    const candidateInFile = candidate.path === filePath;
+    const bestInFile = best.path === filePath;
+    if (candidateInFile && !bestInFile) {
+      best = candidate;
+      continue;
+    }
+    if (candidateInFile && bestInFile && Number(candidate.line || 1) < Number(best.line || 1)) {
+      best = candidate;
+      continue;
+    }
+    if (!candidateInFile && !bestInFile) {
+      const candidatePath = String(candidate.path || "");
+      const bestPath = String(best.path || "");
+      if (
+        candidatePath.localeCompare(bestPath) < 0 ||
+        (candidatePath === bestPath && Number(candidate.line || 1) < Number(best.line || 1))
+      ) {
+        best = candidate;
+      }
+    }
+  }
+  return Number(best.id || 0) || null;
+}
+
+function ingestSyntaxEdges({ db, statements, pathMap, seededNodes, config }) {
+  const result = {
+    enabled: Boolean(config.include_syntax),
+    available: false,
+    import_edges: 0,
+    call_edges: 0,
+    reused_edges: 0,
+    skipped_edges: 0,
+    reason: config.include_syntax ? "syntax index tables not found" : "disabled",
+    error: null
+  };
+  if (!config.include_syntax) {
+    return result;
+  }
+
+  const hasImportTable = hasTable(db, "syntax_import_edges");
+  const hasCallTable = hasTable(db, "syntax_call_edges");
+  if (!hasImportTable && !hasCallTable) {
+    return result;
+  }
+
+  const nameMap = buildNameNodeMap(seededNodes);
+  result.available = true;
+  result.reason = null;
+
+  if (hasImportTable) {
+    const selectSyntaxImportEdges = db.prepare(`
+      SELECT file_path, imported_path, line
+      FROM syntax_import_edges
+      ORDER BY file_path ASC, line ASC, imported_path ASC
+      LIMIT ?
+    `);
+    const importRows = selectSyntaxImportEdges.all(config.max_syntax_import_edges);
+    for (const row of importRows) {
+      const fromNodeId =
+        findClosestNodeId(pathMap, row.file_path, Number(row.line || 1)) ||
+        getFirstNodeIdFromPathMap(pathMap, row.file_path);
+      if (!fromNodeId) {
+        result.skipped_edges += 1;
+        continue;
+      }
+      const toNodeId = resolveImportedNodeId(pathMap, row.imported_path);
+      if (!toNodeId) {
+        result.skipped_edges += 1;
+        continue;
+      }
+      const insertResult = statements.insertEdge.run(fromNodeId, toNodeId, "import", "syntax", 1.5);
+      if (Number(insertResult.changes || 0) > 0) {
+        result.import_edges += 1;
+      } else {
+        result.reused_edges += 1;
+      }
+    }
+  }
+
+  if (hasCallTable) {
+    const selectSyntaxCallEdges = db.prepare(`
+      SELECT file_path, callee, line
+      FROM syntax_call_edges
+      ORDER BY file_path ASC, line ASC, callee ASC
+      LIMIT ?
+    `);
+    const callRows = selectSyntaxCallEdges.all(config.max_syntax_call_edges);
+    for (const row of callRows) {
+      const fromNodeId =
+        findClosestNodeId(pathMap, row.file_path, Number(row.line || 1)) ||
+        getFirstNodeIdFromPathMap(pathMap, row.file_path);
+      if (!fromNodeId) {
+        result.skipped_edges += 1;
+        continue;
+      }
+      const toNodeId = resolveCalleeNodeId(nameMap, row.callee, row.file_path);
+      if (!toNodeId) {
+        result.skipped_edges += 1;
+        continue;
+      }
+      const insertResult = statements.insertEdge.run(fromNodeId, toNodeId, "call", "syntax", 1);
+      if (Number(insertResult.changes || 0) > 0) {
+        result.call_edges += 1;
+      } else {
+        result.reused_edges += 1;
+      }
+    }
+  }
+
+  return result;
 }
 
 function toNeighbor(row) {
@@ -789,7 +1009,19 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
   let lspErrorCount = 0;
   let definitionEdgeCount = 0;
   let referenceEdgeCount = 0;
+  let syntaxImportEdgeCount = 0;
+  let syntaxCallEdgeCount = 0;
   let anchorNodeCount = 0;
+  let syntaxSummary = {
+    enabled: Boolean(config.include_syntax),
+    available: false,
+    import_edges: 0,
+    call_edges: 0,
+    reused_edges: 0,
+    skipped_edges: 0,
+    reason: config.include_syntax ? "syntax index tables not found" : "disabled",
+    error: null
+  };
 
   const pathMap = new Map();
   const anchorMap = new Map();
@@ -903,6 +1135,27 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
       }
       return createAnchorNode(targetPath, line, column);
     };
+
+    if (config.include_syntax) {
+      try {
+        syntaxSummary = ingestSyntaxEdges({
+          db,
+          statements,
+          pathMap,
+          seededNodes,
+          config
+        });
+        syntaxImportEdgeCount = Number(syntaxSummary.import_edges || 0);
+        syntaxCallEdgeCount = Number(syntaxSummary.call_edges || 0);
+      } catch (error) {
+        syntaxSummary = {
+          ...syntaxSummary,
+          available: false,
+          reason: "syntax edge ingest failed",
+          error: error.message || String(error)
+        };
+      }
+    }
 
     if (lspAvailable) {
       for (const node of seededNodes) {
@@ -1025,9 +1278,12 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
       total_nodes: nodeCount,
       total_edges: edgeCount,
       edge_counts: {
+        import: syntaxImportEdgeCount,
+        call: syntaxCallEdgeCount,
         definition: definitionEdgeCount,
         reference: referenceEdgeCount
       },
+      syntax: syntaxSummary,
       lsp: {
         available: lspAvailable,
         enriched_symbols: lspEnrichedSymbols,
@@ -1062,6 +1318,7 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
     return {
       ok: false,
       error: error.message || String(error),
+      syntax: syntaxSummary,
       strategy: {
         mode: "lsp_index_fallback",
         fallback_used: true,

@@ -261,13 +261,23 @@ test("semantic graph tools are callable through runTool", async (t) => {
   const builtIndex = await runTool("build_code_index", {}, context);
   assert.equal(builtIndex.ok, true);
 
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+
   const builtGraph = await runTool(
     "build_semantic_graph",
-    { max_symbols: 20, include_definitions: true, include_references: true },
+    {
+      max_symbols: 20,
+      include_definitions: true,
+      include_references: true,
+      include_syntax: true
+    },
     context
   );
   assert.equal(builtGraph.ok, true);
   assert.ok(builtGraph.seeded_nodes >= 2);
+  assert.ok(builtGraph.edge_counts.import >= 1);
+  assert.ok(builtGraph.edge_counts.call >= 1);
 
   await writeWorkspaceFile(
     workspaceRoot,

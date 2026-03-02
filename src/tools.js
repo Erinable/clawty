@@ -327,9 +327,25 @@ export const TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Collect reference edges from LSP."
         },
+        include_syntax: {
+          type: "boolean",
+          description: "Ingest syntax index import/call edges as structural priors."
+        },
         lsp_required: {
           type: "boolean",
           description: "Fail build if LSP is unavailable."
+        },
+        max_syntax_import_edges: {
+          type: "integer",
+          description: "Maximum syntax import edges ingested per build.",
+          minimum: 1,
+          maximum: 200000
+        },
+        max_syntax_call_edges: {
+          type: "integer",
+          description: "Maximum syntax call edges ingested per build.",
+          minimum: 1,
+          maximum: 200000
         },
         precise_preferred: {
           type: "boolean",

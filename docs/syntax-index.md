@@ -27,3 +27,4 @@
 - 当前 provider 为 `tree-sitter-skeleton`，采用轻量提取逻辑（非完整 AST 语义）。
 - 支持全量、增量、事件三种刷新模式。
 - `get_syntax_index_stats` 返回 `counts`、`top_callers`、`top_imported`、`latest_run`，可作为语义图构建前的结构信号。
+- `build_semantic_graph` 在 `include_syntax=true`（默认）时，会摄取 syntax `import/call` 边到语义图，来源标记为 `syntax`。

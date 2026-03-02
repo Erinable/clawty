@@ -8,6 +8,7 @@ const SYSTEM_PROMPT = [
   "Use get_index_stats when you need index health or coverage details.",
   "For structural code context, build_syntax_index then use refresh_syntax_index + get_syntax_index_stats.",
   "For multi-hop reasoning, build_semantic_graph then use query_semantic_graph and get_semantic_graph_stats.",
+  "When syntax index is available, build_semantic_graph can ingest syntax import/call edges as structural priors.",
   "When precise index data exists, import it via import_precise_index before semantic graph query.",
   "For semantic code navigation in TS/JS, use lsp_definition, lsp_references, and lsp_workspace_symbols.",
   "Use lsp_health to diagnose language server problems.",

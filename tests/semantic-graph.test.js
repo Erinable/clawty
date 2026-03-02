@@ -7,6 +7,7 @@ import {
   querySemanticGraph
 } from "../src/semantic-graph.js";
 import { buildCodeIndex } from "../src/code-index.js";
+import { buildSyntaxIndex } from "../src/syntax-index.js";
 import {
   createWorkspace,
   removeWorkspace,
@@ -71,6 +72,73 @@ test("buildSemanticGraph creates seed graph and querySemanticGraph returns node 
   assert.equal(query.ok, true);
   assert.ok(query.total_seeds >= 1);
   assert.ok(query.seeds.some((seed) => seed.name === "fooToken"));
+});
+
+test("buildSemanticGraph ingests syntax import/call edges when syntax index exists", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-foo.ts",
+    "import { syntaxBar } from './syntax-bar';\nexport function syntaxFoo() { return syntaxBar(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-bar.ts",
+    "export function syntaxBar() { return true; }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const syntaxBuilt = await buildSyntaxIndex(workspaceRoot, {});
+  assert.equal(syntaxBuilt.ok, true);
+  assert.ok(syntaxBuilt.total_import_edges >= 1);
+  assert.ok(syntaxBuilt.total_call_edges >= 1);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      max_symbols: 20,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true
+    },
+    { enabled: false }
+  );
+  assert.equal(built.ok, true);
+  assert.equal(built.syntax?.available, true);
+  assert.ok(built.edge_counts.import >= 1);
+  assert.ok(built.edge_counts.call >= 1);
+
+  const importQuery = await querySemanticGraph(workspaceRoot, {
+    query: "syntaxFoo",
+    edge_type: "import",
+    top_k: 3,
+    max_neighbors: 5
+  });
+  assert.equal(importQuery.ok, true);
+  const fooSeed = importQuery.seeds.find((seed) => seed.name === "syntaxFoo");
+  assert.ok(fooSeed);
+  assert.ok(fooSeed.outgoing.some((item) => item.edge_source === "syntax"));
+
+  const callQuery = await querySemanticGraph(workspaceRoot, {
+    query: "syntaxFoo",
+    edge_type: "call",
+    top_k: 3,
+    max_neighbors: 5
+  });
+  assert.equal(callQuery.ok, true);
+  const callSeed = callQuery.seeds.find((seed) => seed.name === "syntaxFoo");
+  assert.ok(callSeed);
+  assert.ok(
+    callSeed.outgoing.some(
+      (item) => item.edge_type === "call" && item.node.name === "syntaxBar"
+    )
+  );
 });
 
 test("buildSemanticGraph ingests LSP facts when provider is available", async (t) => {
