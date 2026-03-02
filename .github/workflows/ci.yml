@@ -85,6 +85,9 @@ jobs:
       - name: Run semantic graph refresh consistency gate
         run: npm run bench:graph:refresh:check
 
+      - name: Run hybrid embedding quality gate
+        run: npm run bench:hybrid:check
+
   coverage-gate:
     if: |
       github.event_name == 'schedule' ||

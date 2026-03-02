@@ -127,6 +127,8 @@ npm run bench:graph
 npm run bench:graph:check
 npm run bench:graph:refresh
 npm run bench:graph:refresh:check
+npm run bench:hybrid
+npm run bench:hybrid:check
 npm run metrics:report
 npm run metrics:check
 npm run precise:check
@@ -251,8 +253,11 @@ npm run build:bin:clean
 - `npm run bench:graph:refresh`：运行语义图增量刷新一致性基准（event vs full）
 - `npm run bench:graph:refresh:check`：按 `tests/bench/semantic-graph-refresh.baseline.json` 执行 2% 增量一致性退化门禁
 - `npm run bench:graph:refresh:baseline`：重写语义图增量刷新基线
-- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
-- `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`；memory 阈值可按需通过参数开启）
+- `npm run bench:hybrid`：运行 hybrid+embedding 评测（含状态码/降级一致性）
+- `npm run bench:hybrid:check`：按 `tests/bench/hybrid-embedding.baseline.json` 执行 5% 退化门禁
+- `npm run bench:hybrid:baseline`：重写 hybrid+embedding 评测基线
+- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `embedding_timeout_rate` / `embedding_network_rate` / `embedding_api_rate` / `embedding_unknown_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
+- `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`；支持 `--max-embedding-timeout-rate` / `--max-embedding-network-rate` / `--min-embedding-attempts` / `--runbook-enforce`；memory 阈值可按需通过参数开启）
 - `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）
 - `npm run precise:check:fixture`：校验内置精确索引夹具格式（CI 强制执行）
 - `npm run precise:import`：一键执行 `build_code_index + import_precise_index`（replace 模式）
@@ -265,6 +270,7 @@ npm run build:bin:clean
 语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
 主流方案对齐路线图位于 `docs/code-index-mainstream-roadmap.md`。
 语法索引说明位于 `docs/syntax-index.md`。
+hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
 发布清单已覆盖 `query_syntax_index` 与 `semantic -> syntax -> index` 回退验收门禁。
 
 ## 代码索引使用建议

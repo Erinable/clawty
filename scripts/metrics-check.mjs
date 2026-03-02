@@ -7,6 +7,8 @@ const DEFAULT_THRESHOLDS = {
   staleHitRateAvg: 0.05,
   queryHybridP95Ms: 2000,
   degradeRate: 0.1,
+  embeddingTimeoutRate: null,
+  embeddingNetworkRate: null,
   memoryQueryP95Ms: null,
   minMemoryHitRate: null,
   maxMemoryFallbackRate: null
@@ -15,7 +17,8 @@ const DEFAULT_THRESHOLDS = {
 const DEFAULT_MIN_SAMPLES = {
   hybridEvents: 1,
   watchFlushEvents: 1,
-  memoryEvents: 0
+  memoryEvents: 0,
+  embeddingAttempts: 0
 };
 
 function parsePositiveNumber(raw, argName, min, max) {
@@ -40,6 +43,7 @@ function parseArgs(argv) {
     windowHours: DEFAULT_WINDOW_HOURS,
     format: "text",
     allowMissing: false,
+    runbookEnforce: false,
     thresholds: { ...DEFAULT_THRESHOLDS },
     minSamples: { ...DEFAULT_MIN_SAMPLES }
   };
@@ -55,6 +59,10 @@ function parseArgs(argv) {
     }
     if (arg === "--allow-missing") {
       options.allowMissing = true;
+      continue;
+    }
+    if (arg === "--runbook-enforce") {
+      options.runbookEnforce = true;
       continue;
     }
     if (arg.startsWith("--workspace=")) {
@@ -119,6 +127,24 @@ function parseArgs(argv) {
       );
       continue;
     }
+    if (arg.startsWith("--max-embedding-timeout-rate=")) {
+      options.thresholds.embeddingTimeoutRate = parsePositiveNumber(
+        arg.slice("--max-embedding-timeout-rate=".length),
+        "--max-embedding-timeout-rate",
+        0,
+        1
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-embedding-network-rate=")) {
+      options.thresholds.embeddingNetworkRate = parsePositiveNumber(
+        arg.slice("--max-embedding-network-rate=".length),
+        "--max-embedding-network-rate",
+        0,
+        1
+      );
+      continue;
+    }
     if (arg.startsWith("--min-memory-hit-rate=")) {
       options.thresholds.minMemoryHitRate = parsePositiveNumber(
         arg.slice("--min-memory-hit-rate=".length),
@@ -155,6 +181,13 @@ function parseArgs(argv) {
       options.minSamples.memoryEvents = parseNonNegativeInt(
         arg.slice("--min-memory-events=".length),
         "--min-memory-events"
+      );
+      continue;
+    }
+    if (arg.startsWith("--min-embedding-attempts=")) {
+      options.minSamples.embeddingAttempts = parseNonNegativeInt(
+        arg.slice("--min-embedding-attempts=".length),
+        "--min-embedding-attempts"
       );
       continue;
     }
@@ -214,6 +247,15 @@ function evaluateReport(report, options) {
   const hybridEvents = Number(sampleSizes.hybrid_events || 0);
   const watchFlushEvents = Number(sampleSizes.watch_flush_events || 0);
   const memoryEvents = Number(sampleSizes.memory_events || 0);
+  const embeddingAttempts = Number(sampleSizes.embedding_attempt_samples || 0);
+  const embeddingUnmappedStatusSamples = Number(
+    sampleSizes.embedding_unmapped_status_samples || 0
+  );
+  const embeddingUnmappedStatusCodes = Array.isArray(
+    report?.runbook?.embedding_unmapped_status_codes
+  )
+    ? report.runbook.embedding_unmapped_status_codes
+    : [];
 
   if (!(options.allowMissing && hybridEvents === 0)) {
     if (hybridEvents < options.minSamples.hybridEvents) {
@@ -233,6 +275,13 @@ function evaluateReport(report, options) {
     if (memoryEvents < options.minSamples.memoryEvents) {
       failures.push(
         `memory_events=${memoryEvents} below min_memory_events=${options.minSamples.memoryEvents}`
+      );
+    }
+  }
+  if (!(options.allowMissing && embeddingAttempts === 0)) {
+    if (embeddingAttempts < options.minSamples.embeddingAttempts) {
+      failures.push(
+        `embedding_attempt_samples=${embeddingAttempts} below min_embedding_attempts=${options.minSamples.embeddingAttempts}`
       );
     }
   }
@@ -267,6 +316,20 @@ function evaluateReport(report, options) {
       failures
     ),
     evaluateMaxMetric(
+      "embedding_timeout_rate",
+      report?.kpi?.embedding_timeout_rate,
+      options.thresholds.embeddingTimeoutRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "embedding_network_rate",
+      report?.kpi?.embedding_network_rate,
+      options.thresholds.embeddingNetworkRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
       "memory_query_p95_ms",
       report?.kpi?.memory_query_p95_ms,
       options.thresholds.memoryQueryP95Ms,
@@ -289,6 +352,12 @@ function evaluateReport(report, options) {
     )
   ];
 
+  if (options.runbookEnforce && embeddingUnmappedStatusSamples > 0) {
+    failures.push(
+      `runbook enforcement failed: unmapped embedding status codes detected (${embeddingUnmappedStatusCodes.join(", ")})`
+    );
+  }
+
   return {
     pass: failures.length === 0,
     failures,
@@ -296,7 +365,14 @@ function evaluateReport(report, options) {
     sample_sizes: {
       hybrid_events: hybridEvents,
       watch_flush_events: watchFlushEvents,
-      memory_events: memoryEvents
+      memory_events: memoryEvents,
+      embedding_attempt_samples: embeddingAttempts,
+      embedding_unmapped_status_samples: embeddingUnmappedStatusSamples
+    },
+    runbook: {
+      enforced: Boolean(options.runbookEnforce),
+      embedding_unmapped_status_samples: embeddingUnmappedStatusSamples,
+      embedding_unmapped_status_codes: embeddingUnmappedStatusCodes
     }
   };
 }
@@ -311,11 +387,17 @@ function printTextResult(payload) {
   console.log(`- window: last ${report.window_hours}h`);
   console.log(`- generated_at: ${report.generated_at}`);
   console.log(
-    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}, memory_query_p95_ms<=${thresholds.memoryQueryP95Ms ?? "off"}, memory_hit_rate>=${thresholds.minMemoryHitRate ?? "off"}, memory_fallback_rate<=${thresholds.maxMemoryFallbackRate ?? "off"}`
+    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}, embedding_timeout_rate<=${thresholds.embeddingTimeoutRate ?? "off"}, embedding_network_rate<=${thresholds.embeddingNetworkRate ?? "off"}, memory_query_p95_ms<=${thresholds.memoryQueryP95Ms ?? "off"}, memory_hit_rate>=${thresholds.minMemoryHitRate ?? "off"}, memory_fallback_rate<=${thresholds.maxMemoryFallbackRate ?? "off"}`
   );
   console.log(
-    `- sample_sizes: hybrid_events=${evaluation.sample_sizes.hybrid_events}, watch_flush_events=${evaluation.sample_sizes.watch_flush_events}, memory_events=${evaluation.sample_sizes.memory_events}`
+    `- sample_sizes: hybrid_events=${evaluation.sample_sizes.hybrid_events}, watch_flush_events=${evaluation.sample_sizes.watch_flush_events}, memory_events=${evaluation.sample_sizes.memory_events}, embedding_attempt_samples=${evaluation.sample_sizes.embedding_attempt_samples}`
   );
+  console.log(`- runbook_enforce: ${evaluation.runbook.enforced}`);
+  if (evaluation.runbook.enforced) {
+    console.log(
+      `- runbook_unmapped_status_samples: ${evaluation.runbook.embedding_unmapped_status_samples}`
+    );
+  }
   console.log("");
 
   for (const check of evaluation.checks) {
@@ -361,6 +443,7 @@ async function main() {
     thresholds: options.thresholds,
     min_samples: options.minSamples,
     allow_missing: options.allowMissing,
+    runbook_enforce: options.runbookEnforce,
     evaluation
   };
 

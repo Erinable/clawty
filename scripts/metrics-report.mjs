@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { classifyEmbeddingStatus } from "./hybrid-degrade-runbook.mjs";
 
 const DEFAULT_WINDOW_HOURS = 24;
 const METRICS_DIR_RELATIVE = path.join(".clawty", "metrics");
@@ -109,6 +110,15 @@ function computeHybridKpis(hybridEvents) {
   const queryDurations = [];
   const staleRates = [];
   let degradedCount = 0;
+  let embeddingAttemptCount = 0;
+  let embeddingFailureCount = 0;
+  const embeddingBucketCounts = {
+    timeout: 0,
+    network: 0,
+    api: 0,
+    unknown: 0
+  };
+  const embeddingUnmappedStatusCounts = new Map();
 
   for (const event of hybridEvents) {
     const queryMs = Number(event?.query_total_ms);
@@ -124,7 +134,38 @@ function computeHybridKpis(hybridEvents) {
     if (event?.degradation?.degraded === true) {
       degradedCount += 1;
     }
+
+    if (event?.sources?.embedding?.attempted === true) {
+      embeddingAttemptCount += 1;
+      const classified = classifyEmbeddingStatus(event?.sources?.embedding?.status_code);
+      if (classified.failure) {
+        embeddingFailureCount += 1;
+      }
+      if (classified.kpi_bucket && Object.hasOwn(embeddingBucketCounts, classified.kpi_bucket)) {
+        embeddingBucketCounts[classified.kpi_bucket] += 1;
+      }
+      if (classified.failure && !classified.mapped) {
+        const statusCode = classified.status_code || "UNKNOWN_STATUS";
+        embeddingUnmappedStatusCounts.set(
+          statusCode,
+          Number(embeddingUnmappedStatusCounts.get(statusCode) || 0) + 1
+        );
+      }
+    }
   }
+
+  const embeddingUnmappedStatusCodes = Array.from(embeddingUnmappedStatusCounts.entries())
+    .sort((a, b) => {
+      const countDiff = b[1] - a[1];
+      if (countDiff !== 0) {
+        return countDiff;
+      }
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([statusCode]) => statusCode);
+  const embeddingUnmappedStatusSampleCount = Array.from(
+    embeddingUnmappedStatusCounts.values()
+  ).reduce((sum, value) => sum + Number(value || 0), 0);
 
   return {
     query_hybrid_count: hybridEvents.length,
@@ -135,10 +176,40 @@ function computeHybridKpis(hybridEvents) {
         : null,
     degrade_rate:
       hybridEvents.length > 0 ? roundMetric(degradedCount / hybridEvents.length, 4) : null,
+    embedding_timeout_rate:
+      embeddingAttemptCount > 0
+        ? roundMetric(embeddingBucketCounts.timeout / embeddingAttemptCount, 4)
+        : null,
+    embedding_network_rate:
+      embeddingAttemptCount > 0
+        ? roundMetric(embeddingBucketCounts.network / embeddingAttemptCount, 4)
+        : null,
+    embedding_api_rate:
+      embeddingAttemptCount > 0
+        ? roundMetric(embeddingBucketCounts.api / embeddingAttemptCount, 4)
+        : null,
+    embedding_unknown_rate:
+      embeddingAttemptCount > 0
+        ? roundMetric(embeddingBucketCounts.unknown / embeddingAttemptCount, 4)
+        : null,
+    embedding_failure_rate:
+      embeddingAttemptCount > 0
+        ? roundMetric(embeddingFailureCount / embeddingAttemptCount, 4)
+        : null,
+    runbook: {
+      embedding_unmapped_status_codes: embeddingUnmappedStatusCodes
+    },
     sample_sizes: {
       query_duration_samples: queryDurations.length,
       stale_rate_samples: staleRates.length,
-      degradation_samples: hybridEvents.length
+      degradation_samples: hybridEvents.length,
+      embedding_attempt_samples: embeddingAttemptCount,
+      embedding_failure_samples: embeddingFailureCount,
+      embedding_timeout_samples: embeddingBucketCounts.timeout,
+      embedding_network_samples: embeddingBucketCounts.network,
+      embedding_api_samples: embeddingBucketCounts.api,
+      embedding_unknown_samples: embeddingBucketCounts.unknown,
+      embedding_unmapped_status_samples: embeddingUnmappedStatusSampleCount
     }
   };
 }
@@ -219,6 +290,10 @@ function printTextReport(report) {
   console.log(`- stale_hit_rate_avg: ${formatMetricValue(report.kpi.stale_hit_rate_avg)}`);
   console.log(`- query_hybrid_p95_ms: ${formatMetricValue(report.kpi.query_hybrid_p95_ms, "ms")}`);
   console.log(`- degrade_rate: ${formatMetricValue(report.kpi.degrade_rate)}`);
+  console.log(`- embedding_timeout_rate: ${formatMetricValue(report.kpi.embedding_timeout_rate)}`);
+  console.log(`- embedding_network_rate: ${formatMetricValue(report.kpi.embedding_network_rate)}`);
+  console.log(`- embedding_api_rate: ${formatMetricValue(report.kpi.embedding_api_rate)}`);
+  console.log(`- embedding_unknown_rate: ${formatMetricValue(report.kpi.embedding_unknown_rate)}`);
   console.log(`- memory_query_p95_ms: ${formatMetricValue(report.kpi.memory_query_p95_ms, "ms")}`);
   console.log(`- memory_hit_rate: ${formatMetricValue(report.kpi.memory_hit_rate)}`);
   console.log(`- memory_fallback_rate: ${formatMetricValue(report.kpi.memory_fallback_rate)}`);
@@ -229,8 +304,26 @@ function printTextReport(report) {
   console.log(`- memory_events: ${report.sample_sizes.memory_events}`);
   console.log(`- query_duration_samples: ${report.sample_sizes.query_duration_samples}`);
   console.log(`- stale_rate_samples: ${report.sample_sizes.stale_rate_samples}`);
+  console.log(`- embedding_attempt_samples: ${report.sample_sizes.embedding_attempt_samples}`);
+  console.log(`- embedding_failure_samples: ${report.sample_sizes.embedding_failure_samples}`);
+  console.log(`- embedding_timeout_samples: ${report.sample_sizes.embedding_timeout_samples}`);
+  console.log(`- embedding_network_samples: ${report.sample_sizes.embedding_network_samples}`);
+  console.log(`- embedding_api_samples: ${report.sample_sizes.embedding_api_samples}`);
+  console.log(`- embedding_unknown_samples: ${report.sample_sizes.embedding_unknown_samples}`);
+  console.log(
+    `- embedding_unmapped_status_samples: ${report.sample_sizes.embedding_unmapped_status_samples}`
+  );
   console.log(`- index_lag_samples: ${report.sample_sizes.index_lag_samples}`);
   console.log(`- memory_query_duration_samples: ${report.sample_sizes.memory_query_duration_samples}`);
+  if (Array.isArray(report.runbook.embedding_unmapped_status_codes)) {
+    console.log(
+      `- embedding_unmapped_status_codes: ${
+        report.runbook.embedding_unmapped_status_codes.length > 0
+          ? report.runbook.embedding_unmapped_status_codes.join(",")
+          : "none"
+      }`
+    );
+  }
 }
 
 async function buildReport(options) {
@@ -290,9 +383,17 @@ async function buildReport(options) {
       stale_hit_rate_avg: hybridKpis.stale_hit_rate_avg,
       query_hybrid_p95_ms: hybridKpis.query_hybrid_p95_ms,
       degrade_rate: hybridKpis.degrade_rate,
+      embedding_timeout_rate: hybridKpis.embedding_timeout_rate,
+      embedding_network_rate: hybridKpis.embedding_network_rate,
+      embedding_api_rate: hybridKpis.embedding_api_rate,
+      embedding_unknown_rate: hybridKpis.embedding_unknown_rate,
+      embedding_failure_rate: hybridKpis.embedding_failure_rate,
       memory_query_p95_ms: memoryKpis.memory_query_p95_ms,
       memory_hit_rate: memoryKpis.memory_hit_rate,
       memory_fallback_rate: memoryKpis.memory_fallback_rate
+    },
+    runbook: {
+      embedding_unmapped_status_codes: hybridKpis.runbook.embedding_unmapped_status_codes
     },
     sample_sizes: {
       hybrid_events: hybridKpis.query_hybrid_count,
@@ -300,6 +401,14 @@ async function buildReport(options) {
       memory_events: memoryKpis.memory_query_count,
       query_duration_samples: hybridKpis.sample_sizes.query_duration_samples,
       stale_rate_samples: hybridKpis.sample_sizes.stale_rate_samples,
+      embedding_attempt_samples: hybridKpis.sample_sizes.embedding_attempt_samples,
+      embedding_failure_samples: hybridKpis.sample_sizes.embedding_failure_samples,
+      embedding_timeout_samples: hybridKpis.sample_sizes.embedding_timeout_samples,
+      embedding_network_samples: hybridKpis.sample_sizes.embedding_network_samples,
+      embedding_api_samples: hybridKpis.sample_sizes.embedding_api_samples,
+      embedding_unknown_samples: hybridKpis.sample_sizes.embedding_unknown_samples,
+      embedding_unmapped_status_samples:
+        hybridKpis.sample_sizes.embedding_unmapped_status_samples,
       index_lag_samples: watchKpis.sample_sizes.index_lag_samples,
       memory_query_duration_samples: memoryKpis.sample_sizes.memory_query_duration_samples
     }

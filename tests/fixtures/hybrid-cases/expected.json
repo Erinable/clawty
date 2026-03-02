@@ -1,0 +1,42 @@
+{
+  "cases": [
+    {
+      "name": "baseline_without_embedding",
+      "embedding_mode": "disabled",
+      "args": {
+        "query": "hybridBaselineToken",
+        "top_k": 3,
+        "enable_embedding": false
+      },
+      "expected_primary_path": "src/hybrid-baseline.ts",
+      "expected_embedding_status": "EMBEDDING_DISABLED",
+      "expected_degraded": false
+    },
+    {
+      "name": "embedding_rerank_reorders_top1",
+      "embedding_mode": "ok",
+      "args": {
+        "query": "hybridEmbedToken",
+        "top_k": 3,
+        "enable_embedding": true,
+        "embedding_top_k": 3,
+        "embedding_weight": 0.95
+      },
+      "expected_primary_path": "tests/hybrid-embed.spec.ts",
+      "expected_embedding_status": "EMBEDDING_OK",
+      "expected_degraded": false
+    },
+    {
+      "name": "embedding_timeout_degrades_gracefully",
+      "embedding_mode": "timeout",
+      "args": {
+        "query": "hybridEmbedTimeout",
+        "top_k": 3,
+        "enable_embedding": true
+      },
+      "expected_primary_path": "src/hybrid-timeout.ts",
+      "expected_embedding_status": "EMBEDDING_ERROR_TIMEOUT",
+      "expected_degraded": true
+    }
+  ]
+}

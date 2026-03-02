@@ -61,14 +61,20 @@ test("metrics-check passes when KPI values are under thresholds", async (t) => {
         timestamp: nowIso,
         event_type: "hybrid_query",
         query_total_ms: 100,
-        sources: { freshness: { stale_hit_rate: 0.01 } },
+        sources: {
+          freshness: { stale_hit_rate: 0.01 },
+          embedding: { attempted: true, status_code: "EMBEDDING_OK" }
+        },
         degradation: { degraded: false }
       },
       {
         timestamp: nowIso,
         event_type: "hybrid_query",
         query_total_ms: 120,
-        sources: { freshness: { stale_hit_rate: 0.03 } },
+        sources: {
+          freshness: { stale_hit_rate: 0.03 },
+          embedding: { attempted: true, status_code: "EMBEDDING_OK" }
+        },
         degradation: { degraded: false }
       }
     ],
@@ -105,7 +111,10 @@ test("metrics-check fails when KPI exceeds threshold", async (t) => {
         timestamp: nowIso,
         event_type: "hybrid_query",
         query_total_ms: 300,
-        sources: { freshness: { stale_hit_rate: 0.4 } },
+        sources: {
+          freshness: { stale_hit_rate: 0.4 },
+          embedding: { attempted: true, status_code: "EMBEDDING_ERROR_TIMEOUT" }
+        },
         degradation: { degraded: true }
       }
     ],
@@ -159,7 +168,10 @@ test("metrics-check supports memory KPI thresholds", async (t) => {
         timestamp: nowIso,
         event_type: "hybrid_query",
         query_total_ms: 120,
-        sources: { freshness: { stale_hit_rate: 0.03 } },
+        sources: {
+          freshness: { stale_hit_rate: 0.03 },
+          embedding: { attempted: true, status_code: "EMBEDDING_OK" }
+        },
         degradation: { degraded: false }
       }
     ],
@@ -211,6 +223,144 @@ test("metrics-check supports memory KPI thresholds", async (t) => {
       const failedPayload = JSON.parse(stdoutText);
       assert.equal(failedPayload.evaluation.pass, false);
       assert.match(failedPayload.evaluation.failures.join("\n"), /memory_hit_rate=0\.5 below min=0\.8/);
+      return true;
+    }
+  );
+});
+
+test("metrics-check supports embedding thresholds and embedding attempt sample gate", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-metrics-check-embedding-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const nowIso = new Date().toISOString();
+  await writeMetricFiles(workspaceRoot, {
+    hybridEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 100,
+        sources: {
+          freshness: { stale_hit_rate: 0.01 },
+          embedding: { attempted: true, status_code: "EMBEDDING_OK" }
+        },
+        degradation: { degraded: false }
+      },
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 140,
+        sources: {
+          freshness: { stale_hit_rate: 0.03 },
+          embedding: { attempted: true, status_code: "EMBEDDING_ERROR_TIMEOUT" }
+        },
+        degradation: { degraded: true }
+      },
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 150,
+        sources: {
+          freshness: { stale_hit_rate: 0.02 },
+          embedding: { attempted: true, status_code: "EMBEDDING_ERROR_NETWORK" }
+        },
+        degradation: { degraded: true }
+      },
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 90,
+        sources: {
+          freshness: { stale_hit_rate: 0.01 },
+          embedding: { attempted: true, status_code: "EMBEDDING_ERROR_API" }
+        },
+        degradation: { degraded: true }
+      }
+    ],
+    watchEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "watch_flush",
+        index_lag_ms: 500
+      }
+    ]
+  });
+
+  const { stdout } = await runMetricsCheck(workspaceRoot, [
+    "--max-degrade-rate=1",
+    "--max-embedding-timeout-rate=0.3",
+    "--max-embedding-network-rate=0.3",
+    "--min-embedding-attempts=4"
+  ]);
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.evaluation.pass, true);
+  assert.equal(payload.evaluation.sample_sizes.embedding_attempt_samples, 4);
+
+  await assert.rejects(
+    () =>
+      runMetricsCheck(workspaceRoot, [
+        "--max-degrade-rate=1",
+        "--max-embedding-timeout-rate=0.2",
+        "--max-embedding-network-rate=0.3",
+        "--min-embedding-attempts=4"
+      ]),
+    (error) => {
+      const stdoutText = String(error?.stdout || "");
+      const failedPayload = JSON.parse(stdoutText);
+      assert.equal(failedPayload.evaluation.pass, false);
+      assert.match(
+        failedPayload.evaluation.failures.join("\n"),
+        /embedding_timeout_rate=0\.25 exceeds max=0\.2/
+      );
+      return true;
+    }
+  );
+});
+
+test("metrics-check fails with --runbook-enforce when embedding status is unmapped", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-metrics-check-runbook-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const nowIso = new Date().toISOString();
+  await writeMetricFiles(workspaceRoot, {
+    hybridEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 88,
+        sources: {
+          freshness: { stale_hit_rate: 0.02 },
+          embedding: { attempted: true, status_code: "EMBEDDING_ERROR_VENDOR_X" }
+        },
+        degradation: { degraded: true }
+      }
+    ],
+    watchEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "watch_flush",
+        index_lag_ms: 600
+      }
+    ]
+  });
+
+  await assert.rejects(
+    () => runMetricsCheck(workspaceRoot, ["--runbook-enforce"]),
+    (error) => {
+      const stdoutText = String(error?.stdout || "");
+      const failedPayload = JSON.parse(stdoutText);
+      assert.equal(failedPayload.evaluation.pass, false);
+      assert.match(
+        failedPayload.evaluation.failures.join("\n"),
+        /runbook enforcement failed: unmapped embedding status codes detected/
+      );
+      assert.deepEqual(
+        failedPayload.evaluation.runbook.embedding_unmapped_status_codes,
+        ["EMBEDDING_ERROR_VENDOR_X"]
+      );
       return true;
     }
   );

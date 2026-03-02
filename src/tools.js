@@ -2660,6 +2660,9 @@ async function queryHybridIndexTool(args, context) {
           attempted: Boolean(embeddingSource.attempted),
           ok: Boolean(embeddingSource.ok),
           status_code: embeddingSource.status_code || null,
+          error_code: embeddingSource.error_code || null,
+          retryable: Boolean(embeddingSource.retryable),
+          reranked_candidates: Number(embeddingSource.reranked_candidates || 0),
           latency_ms: Number(embeddingSource.latency_ms || 0)
         },
         freshness: {

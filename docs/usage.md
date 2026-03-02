@@ -194,7 +194,17 @@ npm run metrics:report
 
 # 指标阈值门禁
 npm run metrics:check
+
+# embedding 分流门禁（示例）
+npm run metrics:check -- --max-embedding-timeout-rate=0.05 --max-embedding-network-rate=0.03 --min-embedding-attempts=50 --runbook-enforce
 ```
+
+说明：
+
+1. `metrics:report` 会输出 embedding 分流指标（timeout/network/api/unknown）。
+2. `metrics:check` 可按样本量启用 embedding 阈值门禁，避免低样本误报。
+3. `--runbook-enforce` 会在出现未映射 embedding `status_code` 时直接失败，便于及时补 runbook。
+4. runbook 见 `docs/hybrid-degrade-runbook.md`。
 
 ## 7. 常见问题
 
