@@ -15,6 +15,9 @@
   - `refresh_code_index`
   - `query_code_index`
   - `get_index_stats`
+  - `build_semantic_graph`
+  - `query_semantic_graph`
+  - `get_semantic_graph_stats`
   - `lsp_definition`
   - `lsp_references`
   - `lsp_workspace_symbols`
@@ -87,12 +90,14 @@ npm run bench:semantic:check
 - “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
 - “刷新索引（changed_paths: [src/a.js], deleted_paths: [src/b.js]）后给我索引统计”
 - “只查 `src/` 下 `javascript` 结果，并输出 explain 评分明细”
+- “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
 索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
 `query_code_index` 支持 `path_prefix`、`language`、`explain`，并返回 `cache_hit`、`query_time_ms`、`candidate_profile` 与候选召回上限信息。`get_index_stats` 会返回查询命中率与慢查询摘要（`query_metrics`）。
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
+`build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 
 ## LSP 语义检索（TS/JS）
 

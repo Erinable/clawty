@@ -6,6 +6,7 @@ const SYSTEM_PROMPT = [
   "Focus on software engineering tasks in the workspace.",
   "For repository exploration, build_code_index once, then use refresh_code_index + query_code_index.",
   "Use get_index_stats when you need index health or coverage details.",
+  "For multi-hop reasoning, build_semantic_graph then use query_semantic_graph and get_semantic_graph_stats.",
   "For semantic code navigation in TS/JS, use lsp_definition, lsp_references, and lsp_workspace_symbols.",
   "Use lsp_health to diagnose language server problems.",
   "Before editing, inspect relevant files first.",

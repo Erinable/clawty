@@ -13,6 +13,7 @@
 - [ ] 运行全量测试：`npm test`
 - [ ] 覆盖率检查：`npm run test:coverage`
 - [ ] 性能门禁：`npm run bench:index:check`
+- [ ] 语义质量门禁：`npm run bench:semantic:check`
 - [ ] CI 绿灯（`Node 22/24`）后再合并。
 
 ## 3. 回归测试要求
@@ -20,6 +21,7 @@
 - [ ] 质量回归：`tests/code-index-quality.test.js`
 - [ ] 增量一致性回归：`tests/code-index-consistency.test.js`
 - [ ] 边界与缓存回归：`tests/code-index.test.js`
+- [ ] 语义任务回归：`npm run bench:semantic:check`
 
 如改动触发以下场景，必须补对应用例：
 

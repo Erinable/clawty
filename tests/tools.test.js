@@ -179,3 +179,49 @@ test("index tools are callable through runTool", async (t) => {
   assert.equal(stats.ok, true);
   assert.ok(stats.counts.files >= 1);
 });
+
+test("semantic graph tools are callable through runTool", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/semantic-a.ts",
+    "import { semanticB } from './semantic-b';\nexport function semanticA() { return semanticB(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/semantic-b.ts",
+    "export function semanticB() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const builtGraph = await runTool(
+    "build_semantic_graph",
+    { max_symbols: 20, include_definitions: true, include_references: true },
+    context
+  );
+  assert.equal(builtGraph.ok, true);
+  assert.ok(builtGraph.seeded_nodes >= 2);
+
+  const graphStats = await runTool("get_semantic_graph_stats", {}, context);
+  assert.equal(graphStats.ok, true);
+  assert.ok(graphStats.counts.nodes >= 2);
+
+  const query = await runTool(
+    "query_semantic_graph",
+    { query: "semanticA", top_k: 3, max_neighbors: 5 },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.ok(query.total_seeds >= 1);
+});

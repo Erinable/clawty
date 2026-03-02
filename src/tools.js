@@ -10,6 +10,11 @@ import {
   refreshCodeIndex
 } from "./code-index.js";
 import {
+  buildSemanticGraph,
+  getSemanticGraphStats,
+  querySemanticGraph
+} from "./semantic-graph.js";
+import {
   lspDefinition,
   lspHealth,
   lspReferences,
@@ -290,6 +295,95 @@ export const TOOL_DEFINITIONS = [
   },
   {
     type: "function",
+    name: "build_semantic_graph",
+    description:
+      "Build semantic graph nodes/edges in SQLite from index symbols and optional LSP facts.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_symbols: {
+          type: "integer",
+          description: "Maximum number of seed symbols loaded from code index.",
+          minimum: 1,
+          maximum: 5000
+        },
+        max_references_per_symbol: {
+          type: "integer",
+          description: "Maximum reference locations collected per seed symbol.",
+          minimum: 1,
+          maximum: 200
+        },
+        include_definitions: {
+          type: "boolean",
+          description: "Collect definition edges from LSP."
+        },
+        include_references: {
+          type: "boolean",
+          description: "Collect reference edges from LSP."
+        },
+        lsp_required: {
+          type: "boolean",
+          description: "Fail build if LSP is unavailable."
+        },
+        max_lsp_errors: {
+          type: "integer",
+          description: "Abort LSP enrichment after this many request errors.",
+          minimum: 1,
+          maximum: 200
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "query_semantic_graph",
+    description:
+      "Query semantic graph seeds and return incoming/outgoing neighbors for semantic reasoning.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Symbol or file keyword to locate graph seeds."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum seed nodes returned.",
+          minimum: 1,
+          maximum: 30
+        },
+        max_neighbors: {
+          type: "integer",
+          description: "Maximum incoming/outgoing neighbors per seed.",
+          minimum: 1,
+          maximum: 100
+        },
+        edge_type: {
+          type: "string",
+          description: "Optional edge type filter, e.g. definition or reference."
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter, e.g. src/."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "get_semantic_graph_stats",
+    description: "Return semantic graph node/edge stats and latest build metadata.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
     name: "lsp_definition",
     description:
       "Find symbol definition using LSP (TypeScript/JavaScript). Falls back to index search when LSP is unavailable.",
@@ -532,6 +626,18 @@ async function getIndexStatsTool(args, context) {
   return getIndexStats(context.workspaceRoot, args);
 }
 
+async function buildSemanticGraphTool(args, context) {
+  return buildSemanticGraph(context.workspaceRoot, args, context.lsp || {});
+}
+
+async function querySemanticGraphTool(args, context) {
+  return querySemanticGraph(context.workspaceRoot, args);
+}
+
+async function getSemanticGraphStatsTool(context) {
+  return getSemanticGraphStats(context.workspaceRoot);
+}
+
 async function lspDefinitionTool(args, context) {
   return lspDefinition(context.workspaceRoot, args, context.lsp || {});
 }
@@ -572,6 +678,15 @@ export async function runTool(name, args, context) {
   }
   if (name === "get_index_stats") {
     return getIndexStatsTool(args, context);
+  }
+  if (name === "build_semantic_graph") {
+    return buildSemanticGraphTool(args, context);
+  }
+  if (name === "query_semantic_graph") {
+    return querySemanticGraphTool(args, context);
+  }
+  if (name === "get_semantic_graph_stats") {
+    return getSemanticGraphStatsTool(context);
   }
   if (name === "lsp_definition") {
     return lspDefinitionTool(args, context);
