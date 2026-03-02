@@ -49,6 +49,8 @@ test("buildCodeIndex builds index and queryCodeIndex returns ranked matches", as
   const db = new DatabaseSync(indexPath);
   const countRow = db.prepare("SELECT COUNT(*) AS count FROM files").get();
   assert.equal(Number(countRow.count), 2);
+  const symbolColumns = db.prepare("PRAGMA table_info(symbols)").all();
+  assert.ok(symbolColumns.some((col) => col.name === "name_lc"));
   db.close();
 
   const query = await queryCodeIndex(workspaceRoot, {

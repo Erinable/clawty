@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -17,6 +18,8 @@ const DEFAULT_CHUNK_OVERLAP = 16;
 const MTIME_EPSILON_MS = 1;
 const QUERY_CACHE_TTL_MS = 10_000;
 const QUERY_CACHE_MAX_ENTRIES = 200;
+const DEFAULT_INDEX_PREPARE_CONCURRENCY = 6;
+const MAX_INDEX_PREPARE_CONCURRENCY = 16;
 const QUERY_SLOW_THRESHOLD_MS = 60;
 const QUERY_METRICS_MAX_SLOW_QUERIES = 20;
 
@@ -238,6 +241,20 @@ function parsePositiveInt(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(max, Math.floor(n));
+}
+
+function getIndexPrepareConcurrency() {
+  const cpuHint =
+    typeof os.availableParallelism === "function"
+      ? os.availableParallelism()
+      : DEFAULT_INDEX_PREPARE_CONCURRENCY;
+  const fallback = Math.max(2, Math.min(DEFAULT_INDEX_PREPARE_CONCURRENCY, cpuHint));
+  return parsePositiveInt(
+    process.env.CLAWTY_INDEX_PREPARE_CONCURRENCY,
+    fallback,
+    1,
+    MAX_INDEX_PREPARE_CONCURRENCY
+  );
 }
 
 function parseBoolean(value, fallback = false) {
@@ -652,6 +669,7 @@ function openIndexDb(workspaceRoot) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       file_path TEXT NOT NULL,
       name TEXT NOT NULL,
+      name_lc TEXT NOT NULL,
       kind TEXT NOT NULL,
       start_line INTEGER NOT NULL,
       end_line INTEGER NOT NULL,
@@ -661,9 +679,23 @@ function openIndexDb(workspaceRoot) {
 
     CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
     CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+    CREATE INDEX IF NOT EXISTS idx_symbols_name_lc ON symbols(name_lc);
   `);
 
+  ensureSymbolNameLowercaseColumn(db);
+
   return db;
+}
+
+function ensureSymbolNameLowercaseColumn(db) {
+  try {
+    db.exec("ALTER TABLE symbols ADD COLUMN name_lc TEXT;");
+  } catch {
+    // Ignore when column already exists.
+  }
+
+  db.exec("UPDATE symbols SET name_lc = lower(name) WHERE name_lc IS NULL OR name_lc = '';");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_lc ON symbols(name_lc);");
 }
 
 function clearAllIndexData(db) {
@@ -733,8 +765,8 @@ function buildSqlStatements(db) {
       VALUES(?, ?, ?, ?)
     `),
     insertSymbol: db.prepare(`
-      INSERT INTO symbols(file_path, name, kind, start_line, end_line, signature)
-      VALUES(?, ?, ?, ?, ?, ?)
+      INSERT INTO symbols(file_path, name, name_lc, kind, start_line, end_line, signature)
+      VALUES(?, ?, ?, ?, ?, ?, ?)
     `),
     deleteFileByPath: db.prepare(`
       DELETE FROM files WHERE path = ?
@@ -827,14 +859,70 @@ async function readFileForIndex(workspaceRoot, relativePath, maxFileBytes) {
   };
 }
 
-async function indexFileContent(workspaceRoot, relativePath, readResult, statements) {
-  const updatedAt = new Date().toISOString();
+async function mapWithConcurrency(items, concurrency, worker) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+
+  const results = new Array(items.length);
+  const parallel = Math.max(1, Math.min(concurrency, items.length));
+  let cursor = 0;
+
+  async function runWorker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: parallel }, () => runWorker()));
+  return results;
+}
+
+async function prepareIndexingPayload(workspaceRoot, relativePath, maxFileBytes) {
+  const readResult = await readFileForIndex(workspaceRoot, relativePath, maxFileBytes);
+  if (readResult.status !== "ok") {
+    return {
+      path: relativePath,
+      status: readResult.status,
+      readResult
+    };
+  }
+
   const symbols = await extractSymbols(
     workspaceRoot,
     relativePath,
     readResult.content,
     readResult.language
   );
+
+  return {
+    path: relativePath,
+    status: "ok",
+    readResult,
+    symbols
+  };
+}
+
+function upsertFileMetadataOnly(statements, relativePath, existingHash, readResult) {
+  statements.upsertFile.run(
+    relativePath,
+    existingHash,
+    readResult.stat.mtimeMs,
+    readResult.stat.size,
+    detectLanguage(relativePath),
+    readResult.line_count,
+    readResult.token_count,
+    new Date().toISOString()
+  );
+}
+
+function indexFileContent(relativePath, readResult, symbols, statements) {
+  const updatedAt = new Date().toISOString();
 
   deleteFileIndex(statements, relativePath);
 
@@ -855,9 +943,14 @@ async function indexFileContent(workspaceRoot, relativePath, readResult, stateme
   }
 
   for (const symbol of symbols) {
+    const symbolName = String(symbol.name || "");
+    if (!symbolName) {
+      continue;
+    }
     statements.insertSymbol.run(
       relativePath,
-      symbol.name,
+      symbolName,
+      symbolName.toLowerCase(),
       symbol.kind,
       symbol.start_line,
       symbol.end_line,
@@ -867,7 +960,7 @@ async function indexFileContent(workspaceRoot, relativePath, readResult, stateme
 }
 
 function writeIndexMeta(statements, config) {
-  statements.setMeta.run("schema_version", "1");
+  statements.setMeta.run("schema_version", "2");
   statements.setMeta.run("engine", "sqlite_fts5");
   statements.setMeta.run("config", JSON.stringify(config));
   statements.setMeta.run("updated_at", new Date().toISOString());
@@ -912,6 +1005,11 @@ async function runFullBuild(workspaceRoot, db, config) {
   const statements = buildSqlStatements(db);
   const maxFileBytes = config.max_file_size_kb * 1024;
   const discoveredPaths = await listCandidateFiles(workspaceRoot, config.max_files);
+  const preparedPayloads = await mapWithConcurrency(
+    discoveredPaths,
+    getIndexPrepareConcurrency(),
+    async (relativePath) => prepareIndexingPayload(workspaceRoot, relativePath, maxFileBytes)
+  );
 
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
@@ -920,21 +1018,20 @@ async function runFullBuild(workspaceRoot, db, config) {
   try {
     clearAllIndexData(db);
 
-    for (const relativePath of discoveredPaths) {
-      const readResult = await readFileForIndex(workspaceRoot, relativePath, maxFileBytes);
-      if (readResult.status === "skip_large") {
+    for (const payload of preparedPayloads) {
+      if (payload.status === "skip_large") {
         skippedLargeFiles += 1;
         continue;
       }
-      if (readResult.status === "skip_binary") {
+      if (payload.status === "skip_binary") {
         skippedBinaryFiles += 1;
         continue;
       }
-      if (readResult.status !== "ok") {
+      if (payload.status !== "ok") {
         continue;
       }
 
-      await indexFileContent(workspaceRoot, relativePath, readResult, statements);
+      indexFileContent(payload.path, payload.readResult, payload.symbols, statements);
     }
 
     writeIndexMeta(statements, config);
@@ -976,87 +1073,99 @@ async function runIncrementalRefresh(workspaceRoot, db, config) {
   let reusedFiles = 0;
   let reindexedFiles = 0;
   let removedFiles = 0;
+  const removePaths = new Set();
+  const preparePlans = [];
+
+  for (const row of existingRows) {
+    if (!discoveredSet.has(row.path)) {
+      removePaths.add(row.path);
+      removedFiles += 1;
+    }
+  }
+
+  for (const relativePath of discoveredPaths) {
+    const existing = existingByPath.get(relativePath);
+    const fullPath = resolveSafePath(workspaceRoot, relativePath);
+
+    let stat;
+    try {
+      stat = await fs.stat(fullPath);
+    } catch {
+      if (existing) {
+        removePaths.add(relativePath);
+        removedFiles += 1;
+      }
+      continue;
+    }
+
+    if (stat.size > maxFileBytes) {
+      skippedLargeFiles += 1;
+      if (existing) {
+        removePaths.add(relativePath);
+      }
+      continue;
+    }
+
+    const mtimeUnchanged =
+      existing &&
+      existing.size === stat.size &&
+      Math.abs(existing.mtime_ms - stat.mtimeMs) < MTIME_EPSILON_MS;
+    if (mtimeUnchanged) {
+      reusedFiles += 1;
+      continue;
+    }
+
+    preparePlans.push({
+      path: relativePath,
+      existing
+    });
+  }
+
+  const preparedPayloads = await mapWithConcurrency(
+    preparePlans.map((plan) => plan.path),
+    getIndexPrepareConcurrency(),
+    async (relativePath) => prepareIndexingPayload(workspaceRoot, relativePath, maxFileBytes)
+  );
 
   db.exec("BEGIN IMMEDIATE;");
   try {
-    for (const row of existingRows) {
-      if (!discoveredSet.has(row.path)) {
-        deleteFileIndex(statements, row.path);
-        removedFiles += 1;
-      }
+    for (const filePath of removePaths) {
+      deleteFileIndex(statements, filePath);
     }
 
-    for (const relativePath of discoveredPaths) {
-      const existing = existingByPath.get(relativePath);
-      const fullPath = resolveSafePath(workspaceRoot, relativePath);
+    for (let i = 0; i < preparePlans.length; i += 1) {
+      const plan = preparePlans[i];
+      const payload = preparedPayloads[i];
 
-      let stat;
-      try {
-        stat = await fs.stat(fullPath);
-      } catch {
-        if (existing) {
-          deleteFileIndex(statements, relativePath);
-          removedFiles += 1;
-        }
-        continue;
-      }
-
-      if (stat.size > maxFileBytes) {
+      if (!payload || payload.status === "skip_large") {
         skippedLargeFiles += 1;
-        if (existing) {
-          deleteFileIndex(statements, relativePath);
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
         }
         continue;
       }
-
-      const mtimeUnchanged =
-        existing &&
-        existing.size === stat.size &&
-        Math.abs(existing.mtime_ms - stat.mtimeMs) < MTIME_EPSILON_MS;
-      if (mtimeUnchanged) {
-        reusedFiles += 1;
-        continue;
-      }
-
-      const readResult = await readFileForIndex(workspaceRoot, relativePath, maxFileBytes);
-      if (readResult.status === "skip_large") {
-        skippedLargeFiles += 1;
-        if (existing) {
-          deleteFileIndex(statements, relativePath);
-        }
-        continue;
-      }
-      if (readResult.status === "skip_binary") {
+      if (payload.status === "skip_binary") {
         skippedBinaryFiles += 1;
-        if (existing) {
-          deleteFileIndex(statements, relativePath);
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
         }
         continue;
       }
-      if (readResult.status !== "ok") {
-        if (existing) {
-          deleteFileIndex(statements, relativePath);
+      if (payload.status !== "ok") {
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
           removedFiles += 1;
         }
         continue;
       }
 
-      if (existing && existing.hash === readResult.hash) {
-        statements.upsertFile.run(
-          relativePath,
-          existing.hash,
-          readResult.stat.mtimeMs,
-          readResult.stat.size,
-          detectLanguage(relativePath),
-          readResult.line_count,
-          readResult.token_count,
-          new Date().toISOString()
-        );
+      if (plan.existing && plan.existing.hash === payload.readResult.hash) {
+        upsertFileMetadataOnly(statements, plan.path, plan.existing.hash, payload.readResult);
         reusedFiles += 1;
         continue;
       }
 
-      await indexFileContent(workspaceRoot, relativePath, readResult, statements);
+      indexFileContent(plan.path, payload.readResult, payload.symbols, statements);
       reindexedFiles += 1;
     }
 
@@ -1102,73 +1211,87 @@ async function runEventRefresh(workspaceRoot, db, config, eventPaths) {
   let reusedFiles = 0;
   let reindexedFiles = 0;
   let removedFiles = 0;
+  const deletePlans = new Set();
+  const removeUnsupportedPlans = new Set();
+  const preparePlans = [];
+
+  for (const filePath of deletedSet) {
+    if (!existingByPath.has(filePath)) {
+      continue;
+    }
+    deletePlans.add(filePath);
+    existingByPath.delete(filePath);
+    removedFiles += 1;
+  }
+
+  for (const filePath of changedSet) {
+    const existing = existingByPath.get(filePath);
+    if (!shouldIndexPath(filePath)) {
+      if (existing) {
+        removeUnsupportedPlans.add(filePath);
+        existingByPath.delete(filePath);
+        removedFiles += 1;
+      }
+      continue;
+    }
+
+    preparePlans.push({
+      path: filePath,
+      existing
+    });
+  }
+
+  const preparedPayloads = await mapWithConcurrency(
+    preparePlans.map((plan) => plan.path),
+    getIndexPrepareConcurrency(),
+    async (relativePath) => prepareIndexingPayload(workspaceRoot, relativePath, maxFileBytes)
+  );
 
   db.exec("BEGIN IMMEDIATE;");
   try {
-    for (const filePath of deletedSet) {
-      if (!existingByPath.has(filePath)) {
-        continue;
-      }
+    for (const filePath of deletePlans) {
       deleteFileIndex(statements, filePath);
-      existingByPath.delete(filePath);
-      removedFiles += 1;
     }
 
-    for (const filePath of changedSet) {
-      const existing = existingByPath.get(filePath);
-      if (!shouldIndexPath(filePath)) {
-        if (existing) {
-          deleteFileIndex(statements, filePath);
-          existingByPath.delete(filePath);
-          removedFiles += 1;
-        }
-        continue;
-      }
+    for (const filePath of removeUnsupportedPlans) {
+      deleteFileIndex(statements, filePath);
+    }
 
-      const readResult = await readFileForIndex(workspaceRoot, filePath, maxFileBytes);
-      if (readResult.status === "skip_large") {
+    for (let i = 0; i < preparePlans.length; i += 1) {
+      const plan = preparePlans[i];
+      const payload = preparedPayloads[i];
+
+      if (!payload || payload.status === "skip_large") {
         skippedLargeFiles += 1;
-        if (existing) {
-          deleteFileIndex(statements, filePath);
-          existingByPath.delete(filePath);
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
           removedFiles += 1;
         }
         continue;
       }
-      if (readResult.status === "skip_binary") {
+      if (payload.status === "skip_binary") {
         skippedBinaryFiles += 1;
-        if (existing) {
-          deleteFileIndex(statements, filePath);
-          existingByPath.delete(filePath);
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
           removedFiles += 1;
         }
         continue;
       }
-      if (readResult.status !== "ok") {
-        if (existing) {
-          deleteFileIndex(statements, filePath);
-          existingByPath.delete(filePath);
+      if (payload.status !== "ok") {
+        if (plan.existing) {
+          deleteFileIndex(statements, plan.path);
           removedFiles += 1;
         }
         continue;
       }
 
-      if (existing && existing.hash === readResult.hash) {
-        statements.upsertFile.run(
-          filePath,
-          existing.hash,
-          readResult.stat.mtimeMs,
-          readResult.stat.size,
-          detectLanguage(filePath),
-          readResult.line_count,
-          readResult.token_count,
-          new Date().toISOString()
-        );
+      if (plan.existing && plan.existing.hash === payload.readResult.hash) {
+        upsertFileMetadataOnly(statements, plan.path, plan.existing.hash, payload.readResult);
         reusedFiles += 1;
         continue;
       }
 
-      await indexFileContent(workspaceRoot, filePath, readResult, statements);
+      indexFileContent(plan.path, payload.readResult, payload.symbols, statements);
       reindexedFiles += 1;
     }
 
@@ -1372,9 +1495,9 @@ function querySymbols(db, tokens, filters = {}) {
   const clauses = [];
   const params = [];
   for (const token of tokens) {
-    clauses.push("lower(name) = ?");
+    clauses.push("s.name_lc = ?");
     params.push(token);
-    clauses.push("lower(name) LIKE ?");
+    clauses.push("s.name_lc LIKE ?");
     params.push(`${token}%`);
   }
 

@@ -115,6 +115,7 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_LSP_TIMEOUT_MS`：默认 `5000`
 - `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
 - `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
+- `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）
 
 ## 配置系统
 
