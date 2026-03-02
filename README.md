@@ -109,14 +109,15 @@ npm run bench:semantic:check
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
 `build_syntax_index` / `refresh_syntax_index` 会基于 `files` 表提取 import/call 结构边（当前 provider：`tree-sitter-skeleton`），并写入同一数据库。
+可选 `parser_provider`：`skeleton`（默认）/ `tree-sitter` / `auto`；当 `tree-sitter` 不可用时默认回退到 `skeleton`（`parser_strict=true` 可改为失败）。
 `query_syntax_index` 按 symbol/path 关键词返回结构邻居（outgoing imports/calls、incoming importers/callers）。
 `get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 当 syntax index 可用时，`build_semantic_graph` 会自动摄取 syntax import/call 边（`source=syntax`）作为结构先验。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
-`query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsp > index_seed`）。
+`query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
-`query_semantic_graph` 在语义图为空时会自动回退到 `query_code_index`，保证可用性。
+`query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
 精确索引导入格式见 `docs/precise-index-import.md`。
 
 ## LSP 语义检索（TS/JS）

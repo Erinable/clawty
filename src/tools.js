@@ -438,7 +438,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     name: "query_semantic_graph",
     description:
-      "Query semantic graph seeds and return incoming/outgoing neighbors. Falls back to code index when graph is empty.",
+      "Query semantic graph seeds and return incoming/outgoing neighbors. Falls back to syntax index, then code index when graph is empty.",
     parameters: {
       type: "object",
       properties: {
@@ -506,6 +506,15 @@ export const TOOL_DEFINITIONS = [
           description: "Abort build after this many file parse errors.",
           minimum: 1,
           maximum: 1000
+        },
+        parser_provider: {
+          type: "string",
+          description: "Parser provider mode: skeleton (default), tree-sitter, or auto.",
+          enum: ["skeleton", "tree-sitter", "auto"]
+        },
+        parser_strict: {
+          type: "boolean",
+          description: "When true with tree-sitter provider, fail instead of falling back."
         }
       },
       additionalProperties: false
@@ -536,6 +545,15 @@ export const TOOL_DEFINITIONS = [
           description: "Abort refresh after this many file parse errors.",
           minimum: 1,
           maximum: 1000
+        },
+        parser_provider: {
+          type: "string",
+          description: "Parser provider mode: skeleton (default), tree-sitter, or auto.",
+          enum: ["skeleton", "tree-sitter", "auto"]
+        },
+        parser_strict: {
+          type: "boolean",
+          description: "When true with tree-sitter provider, fail instead of falling back."
         },
         changed_paths: {
           type: "array",

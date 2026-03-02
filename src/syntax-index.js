@@ -5,14 +5,17 @@ import { DatabaseSync } from "node:sqlite";
 
 const INDEX_DIR = ".clawty";
 const INDEX_DB_FILENAME = "index.db";
-const SYNTAX_PROVIDER = "tree-sitter-skeleton";
-const SYNTAX_PARSER_VERSION = "skeleton-v1";
+const SYNTAX_PROVIDER_SKELETON = "tree-sitter-skeleton";
+const SYNTAX_PROVIDER_TREE_SITTER = "tree-sitter";
+const SYNTAX_PARSER_VERSION_SKELETON = "skeleton-v1";
+const SYNTAX_PARSER_VERSION_TREE_SITTER = "ts-v1";
 const DEFAULT_MAX_FILES = 3000;
 const DEFAULT_MAX_CALLS_PER_FILE = 400;
 const DEFAULT_MAX_ERRORS = 80;
 const DEFAULT_QUERY_TOP_K = 5;
 const DEFAULT_QUERY_MAX_NEIGHBORS = 8;
 const DEFAULT_QUERY_SCAN_FACTOR = 8;
+const DEFAULT_PARSER_PROVIDER = "skeleton";
 const MAX_FILES_LIMIT = 20_000;
 const MAX_CALLS_LIMIT = 2000;
 const MAX_ERRORS_LIMIT = 1000;
@@ -26,6 +29,22 @@ function parsePositiveInt(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(max, Math.floor(n));
+}
+
+function parseBoolean(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
 }
 
 function toPosixPath(inputPath) {
@@ -86,6 +105,13 @@ function parsePathList(workspaceRoot, value) {
 }
 
 function resolveConfig(args = {}) {
+  const requestedProviderRaw =
+    typeof args.parser_provider === "string" && args.parser_provider.trim().length > 0
+      ? args.parser_provider.trim().toLowerCase()
+      : DEFAULT_PARSER_PROVIDER;
+  const parserProvider = ["tree-sitter", "skeleton", "auto"].includes(requestedProviderRaw)
+    ? requestedProviderRaw
+    : DEFAULT_PARSER_PROVIDER;
   return {
     max_files: parsePositiveInt(args.max_files, DEFAULT_MAX_FILES, 1, MAX_FILES_LIMIT),
     max_calls_per_file: parsePositiveInt(
@@ -94,7 +120,9 @@ function resolveConfig(args = {}) {
       1,
       MAX_CALLS_LIMIT
     ),
-    max_errors: parsePositiveInt(args.max_errors, DEFAULT_MAX_ERRORS, 1, MAX_ERRORS_LIMIT)
+    max_errors: parsePositiveInt(args.max_errors, DEFAULT_MAX_ERRORS, 1, MAX_ERRORS_LIMIT),
+    parser_provider: parserProvider,
+    parser_strict: parseBoolean(args.parser_strict, false)
   };
 }
 
@@ -234,7 +262,7 @@ function buildSyntaxSummary(relativePath, content, maxCalls) {
     })
   );
   const ast = {
-    parser: SYNTAX_PARSER_VERSION,
+    parser: SYNTAX_PARSER_VERSION_SKELETON,
     node_count: nodeCount,
     line_count: lineCount,
     imports,
@@ -245,10 +273,293 @@ function buildSyntaxSummary(relativePath, content, maxCalls) {
     node_count: nodeCount,
     import_count: imports.length,
     call_count: calls.length,
+    provider: SYNTAX_PROVIDER_SKELETON,
+    parser_version: SYNTAX_PARSER_VERSION_SKELETON,
     tree_fingerprint: fingerprint,
     imports,
     calls,
     ast_json: JSON.stringify(ast)
+  };
+}
+
+function dedupeImports(imports) {
+  const deduped = new Map();
+  for (const item of imports) {
+    const key = `${item.imported_path}:${item.line}:${item.source}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, item);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
+function dedupeCalls(calls) {
+  const deduped = new Map();
+  for (const item of calls) {
+    const key = `${item.callee}:${item.line}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, item);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
+let treeSitterRuntimePromise;
+
+async function loadLanguageModule(name) {
+  try {
+    const loaded = await import(name);
+    return loaded?.default || loaded || null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadTreeSitterRuntime() {
+  if (treeSitterRuntimePromise) {
+    return treeSitterRuntimePromise;
+  }
+  treeSitterRuntimePromise = (async () => {
+    try {
+      const parserModule = await import("tree-sitter");
+      const Parser = parserModule?.default || parserModule;
+      if (!Parser) {
+        return { ok: false, error: "tree-sitter parser module missing default export" };
+      }
+
+      const languages = {
+        javascript: await loadLanguageModule("tree-sitter-javascript"),
+        python: await loadLanguageModule("tree-sitter-python"),
+        go: await loadLanguageModule("tree-sitter-go")
+      };
+      const availableLanguageCount = Object.values(languages).filter(Boolean).length;
+      if (availableLanguageCount === 0) {
+        return { ok: false, error: "tree-sitter grammars not available" };
+      }
+
+      return {
+        ok: true,
+        Parser,
+        languages
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error.message || String(error)
+      };
+    }
+  })();
+  return treeSitterRuntimePromise;
+}
+
+function collectTreeChildren(node) {
+  if (!node) {
+    return [];
+  }
+  if (Array.isArray(node.namedChildren) && node.namedChildren.length > 0) {
+    return node.namedChildren;
+  }
+  if (Array.isArray(node.children) && node.children.length > 0) {
+    return node.children;
+  }
+  const children = [];
+  const childCount = Number(node.childCount || 0);
+  for (let i = 0; i < childCount; i += 1) {
+    const child = typeof node.child === "function" ? node.child(i) : null;
+    if (child) {
+      children.push(child);
+    }
+  }
+  return children;
+}
+
+function treeNodeText(content, node) {
+  if (!node) {
+    return "";
+  }
+  if (Number.isFinite(node.startIndex) && Number.isFinite(node.endIndex)) {
+    return content.slice(Number(node.startIndex), Number(node.endIndex));
+  }
+  if (typeof node.text === "string") {
+    return node.text;
+  }
+  return "";
+}
+
+function extractIdentifierFromCallee(raw) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return "";
+  }
+  const normalized = text
+    .replace(/\?.*$/, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .trim();
+  const parts = normalized.split(/[.\s:>]+/).filter(Boolean);
+  const candidate = parts[parts.length - 1] || normalized;
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(candidate)) {
+    return candidate;
+  }
+  return "";
+}
+
+function buildTreeSitterSummary(relativePath, content, runtime, language, maxCalls) {
+  const parser = new runtime.Parser();
+  parser.setLanguage(language);
+  const tree = parser.parse(content);
+  const root = tree?.rootNode;
+  if (!root) {
+    return null;
+  }
+
+  const imports = [];
+  const calls = [];
+  let nodeCount = 0;
+  const blockedCallNames = new Set([
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "function",
+    "return",
+    "new"
+  ]);
+
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) {
+      continue;
+    }
+    nodeCount += 1;
+    const nodeType = String(node.type || "");
+    const line = Number(node?.startPosition?.row || 0) + 1;
+    const nodeText = treeNodeText(content, node);
+
+    if (nodeType.includes("import")) {
+      const stringMatches = Array.from(nodeText.matchAll(/["']([^"']+)["']/g));
+      if (stringMatches.length > 0) {
+        for (const match of stringMatches) {
+          const importedPath = normalizeImportTarget(relativePath, match[1]);
+          if (importedPath) {
+            imports.push({ imported_path: importedPath, line, source: "ts" });
+          }
+        }
+      } else if (nodeType === "import_from_statement" || nodeType === "import_statement") {
+        const pyFromMatch = nodeText.match(/\bfrom\s+([A-Za-z0-9_.]+)\s+import\b/);
+        if (pyFromMatch) {
+          imports.push({ imported_path: `pkg:${pyFromMatch[1]}`, line, source: "ts" });
+        } else {
+          const pyImportMatch = nodeText.match(/\bimport\s+([A-Za-z0-9_.]+)/);
+          if (pyImportMatch) {
+            imports.push({ imported_path: `pkg:${pyImportMatch[1]}`, line, source: "ts" });
+          }
+        }
+      }
+    }
+
+    if (nodeType === "call_expression" || nodeType === "call") {
+      let functionNode = null;
+      if (typeof node.childForFieldName === "function") {
+        functionNode = node.childForFieldName("function");
+      }
+      if (!functionNode) {
+        const children = collectTreeChildren(node);
+        functionNode = children[0] || null;
+      }
+      const callee = extractIdentifierFromCallee(treeNodeText(content, functionNode));
+      if (callee && !blockedCallNames.has(callee)) {
+        calls.push({ callee, line });
+      }
+    }
+
+    const children = collectTreeChildren(node);
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push(children[i]);
+    }
+  }
+
+  const dedupedImports = dedupeImports(imports);
+  const dedupedCalls = dedupeCalls(calls).slice(0, maxCalls);
+  const lines = splitLines(content);
+  const lineCount = lines.length;
+  const fingerprint = hashContent(
+    JSON.stringify({
+      path: relativePath,
+      imports: dedupedImports,
+      calls: dedupedCalls,
+      node_count: nodeCount,
+      line_count: lineCount
+    })
+  );
+  return {
+    line_count: lineCount,
+    node_count: Math.max(1, nodeCount),
+    import_count: dedupedImports.length,
+    call_count: dedupedCalls.length,
+    provider: SYNTAX_PROVIDER_TREE_SITTER,
+    parser_version: SYNTAX_PARSER_VERSION_TREE_SITTER,
+    tree_fingerprint: fingerprint,
+    imports: dedupedImports,
+    calls: dedupedCalls,
+    ast_json: JSON.stringify({
+      parser: SYNTAX_PARSER_VERSION_TREE_SITTER,
+      provider: SYNTAX_PROVIDER_TREE_SITTER,
+      node_count: Math.max(1, nodeCount),
+      line_count: lineCount,
+      imports: dedupedImports,
+      calls: dedupedCalls
+    })
+  };
+}
+
+async function buildSyntaxSummaryWithProvider(relativePath, content, config) {
+  const lang = detectLanguageByPath(relativePath);
+  const requested = config.parser_provider;
+
+  if (requested === "skeleton") {
+    return {
+      summary: buildSyntaxSummary(relativePath, content, config.max_calls_per_file),
+      parser_info: {
+        requested,
+        actual: SYNTAX_PROVIDER_SKELETON,
+        fallback_used: false,
+        fallback_reason: null
+      }
+    };
+  }
+
+  const runtime = await loadTreeSitterRuntime();
+  const language = runtime?.ok ? runtime.languages?.[lang] : null;
+  if (runtime?.ok && language) {
+    const tsSummary = buildTreeSitterSummary(relativePath, content, runtime, language, config.max_calls_per_file);
+    if (tsSummary) {
+      return {
+        summary: tsSummary,
+        parser_info: {
+          requested,
+          actual: SYNTAX_PROVIDER_TREE_SITTER,
+          fallback_used: false,
+          fallback_reason: null
+        }
+      };
+    }
+  }
+
+  if (requested === "tree-sitter" && config.parser_strict) {
+    throw new Error(`tree-sitter parser unavailable for ${relativePath}: ${runtime?.error || "language grammar missing"}`);
+  }
+
+  return {
+    summary: buildSyntaxSummary(relativePath, content, config.max_calls_per_file),
+    parser_info: {
+      requested,
+      actual: SYNTAX_PROVIDER_SKELETON,
+      fallback_used: true,
+      fallback_reason: runtime?.error || `language grammar missing for ${lang}`
+    }
   };
 }
 
@@ -530,6 +841,42 @@ function dedupeRows(rows, keyFn) {
   return Array.from(deduped.values());
 }
 
+function createParserSummary(config) {
+  return {
+    requested: config.parser_provider,
+    actual: SYNTAX_PROVIDER_SKELETON,
+    fallback_used: false,
+    fallback_reasons: [],
+    provider_counts: {}
+  };
+}
+
+function parserVersionForProvider(provider) {
+  if (provider === SYNTAX_PROVIDER_TREE_SITTER) {
+    return SYNTAX_PARSER_VERSION_TREE_SITTER;
+  }
+  return SYNTAX_PARSER_VERSION_SKELETON;
+}
+
+function updateParserSummary(summary, parserInfo) {
+  if (!parserInfo) {
+    return;
+  }
+  const actual = parserInfo.actual || SYNTAX_PROVIDER_SKELETON;
+  summary.actual = actual;
+  summary.provider_counts[actual] = Number(summary.provider_counts[actual] || 0) + 1;
+  if (parserInfo.fallback_used) {
+    summary.fallback_used = true;
+    if (
+      typeof parserInfo.fallback_reason === "string" &&
+      parserInfo.fallback_reason.trim().length > 0 &&
+      !summary.fallback_reasons.includes(parserInfo.fallback_reason)
+    ) {
+      summary.fallback_reasons.push(parserInfo.fallback_reason);
+    }
+  }
+}
+
 async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
   const relativePath = fileRow.path;
   const fullPath = resolveSafePath(workspaceRoot, relativePath);
@@ -537,7 +884,11 @@ async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
   const content = await readTextFile(fullPath);
   const hash = hashContent(content);
   const lang = fileRow.lang || detectLanguageByPath(relativePath);
-  const summary = buildSyntaxSummary(relativePath, content, config.max_calls_per_file);
+  const { summary, parser_info: parserInfo } = await buildSyntaxSummaryWithProvider(
+    relativePath,
+    content,
+    config
+  );
   const updatedAt = new Date().toISOString();
 
   deleteSyntaxForFile(statements, relativePath);
@@ -551,8 +902,8 @@ async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
     summary.node_count,
     summary.import_count,
     summary.call_count,
-    SYNTAX_PROVIDER,
-    SYNTAX_PARSER_VERSION,
+    summary.provider,
+    summary.parser_version,
     summary.tree_fingerprint,
     summary.ast_json,
     updatedAt
@@ -568,7 +919,8 @@ async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
   return {
     hash,
     mtime_ms: stat.mtimeMs,
-    size: stat.size
+    size: stat.size,
+    parser_info: parserInfo
   };
 }
 
@@ -586,6 +938,7 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
   ensureSyntaxSchema(db);
   const statements = buildStatements(db);
   const startedAt = new Date().toISOString();
+  const parserSummary = createParserSummary(config);
 
   let parsedFiles = 0;
   let skippedFiles = 0;
@@ -602,9 +955,16 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
 
       for (const fileRow of fileRows) {
         try {
-          await upsertFileSyntax(workspaceRoot, statements, fileRow, config);
+          const parseResult = await upsertFileSyntax(workspaceRoot, statements, fileRow, config);
+          updateParserSummary(parserSummary, parseResult.parser_info);
           parsedFiles += 1;
-        } catch {
+        } catch (error) {
+          if (
+            config.parser_strict &&
+            /tree-sitter parser unavailable/i.test(String(error?.message || error))
+          ) {
+            throw error;
+          }
           skippedFiles += 1;
           errorCount += 1;
           if (errorCount >= config.max_errors) {
@@ -629,8 +989,8 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
         totalFiles,
         totalImports,
         totalCalls,
-        SYNTAX_PROVIDER,
-        SYNTAX_PARSER_VERSION,
+        parserSummary.actual,
+        parserVersionForProvider(parserSummary.actual),
         JSON.stringify(config),
         null
       );
@@ -639,8 +999,9 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
       return {
         ok: true,
         mode: "full",
-        provider: SYNTAX_PROVIDER,
-        parser_version: SYNTAX_PARSER_VERSION,
+        provider: parserSummary.actual,
+        parser_version: parserVersionForProvider(parserSummary.actual),
+        parser: parserSummary,
         index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
         parsed_files: parsedFiles,
         reused_files: 0,
@@ -655,6 +1016,15 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
       db.exec("ROLLBACK;");
       throw error;
     }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message || String(error),
+      mode: "full",
+      provider: parserSummary.actual,
+      parser_version: parserVersionForProvider(parserSummary.actual),
+      parser: parserSummary
+    };
   } finally {
     db.close();
   }
@@ -678,6 +1048,7 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
   ensureSyntaxSchema(db);
   const statements = buildStatements(db);
   const startedAt = new Date().toISOString();
+  const parserSummary = createParserSummary(config);
   let parsedFiles = 0;
   let reusedFiles = 0;
   let removedFiles = 0;
@@ -739,9 +1110,16 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
 
       for (const fileRow of parseCandidates) {
         try {
-          await upsertFileSyntax(workspaceRoot, statements, fileRow, config);
+          const parseResult = await upsertFileSyntax(workspaceRoot, statements, fileRow, config);
+          updateParserSummary(parserSummary, parseResult.parser_info);
           parsedFiles += 1;
-        } catch {
+        } catch (error) {
+          if (
+            config.parser_strict &&
+            /tree-sitter parser unavailable/i.test(String(error?.message || error))
+          ) {
+            throw error;
+          }
           skippedFiles += 1;
           errorCount += 1;
           if (syntaxFileMap.has(fileRow.path)) {
@@ -770,8 +1148,8 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
         totalFiles,
         totalImports,
         totalCalls,
-        SYNTAX_PROVIDER,
-        SYNTAX_PARSER_VERSION,
+        parserSummary.actual,
+        parserVersionForProvider(parserSummary.actual),
         JSON.stringify({
           ...config,
           changed_paths: changedPaths,
@@ -784,8 +1162,9 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
       return {
         ok: true,
         mode: eventMode ? "event" : "incremental",
-        provider: SYNTAX_PROVIDER,
-        parser_version: SYNTAX_PARSER_VERSION,
+        provider: parserSummary.actual,
+        parser_version: parserVersionForProvider(parserSummary.actual),
+        parser: parserSummary,
         index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
         parsed_files: parsedFiles,
         reused_files: reusedFiles,
@@ -802,6 +1181,15 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
       db.exec("ROLLBACK;");
       throw error;
     }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message || String(error),
+      mode: eventMode ? "event" : "incremental",
+      provider: parserSummary.actual,
+      parser_version: parserVersionForProvider(parserSummary.actual),
+      parser: parserSummary
+    };
   } finally {
     db.close();
   }
@@ -849,10 +1237,11 @@ export async function getSyntaxIndexStats(workspaceRoot, args = {}) {
         }
       : null;
 
+    const statsProvider = latestRun?.provider || SYNTAX_PROVIDER_SKELETON;
     return {
       ok: true,
-      provider: SYNTAX_PROVIDER,
-      parser_version: SYNTAX_PARSER_VERSION,
+      provider: statsProvider,
+      parser_version: latestRun?.parser_version || parserVersionForProvider(statsProvider),
       index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
       counts: {
         files: totalFiles,
@@ -909,6 +1298,10 @@ export async function querySyntaxIndex(workspaceRoot, args = {}) {
         error: "syntax index is empty; run build_syntax_index first"
       };
     }
+
+    const latestRun = statements.latestRun.get();
+    const provider = latestRun?.provider || SYNTAX_PROVIDER_SKELETON;
+    const parserVersion = latestRun?.parser_version || parserVersionForProvider(provider);
 
     const rawSeeds = statements.selectQuerySeeds.all(
       queryLike,
@@ -1022,8 +1415,8 @@ export async function querySyntaxIndex(workspaceRoot, args = {}) {
       filters: {
         path_prefix: pathPrefix
       },
-      provider: SYNTAX_PROVIDER,
-      parser_version: SYNTAX_PARSER_VERSION,
+      provider,
+      parser_version: parserVersion,
       scanned_candidates: rawSeeds.length,
       total_seeds: seeds.length,
       seeds

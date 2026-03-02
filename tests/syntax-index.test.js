@@ -82,11 +82,49 @@ test("buildSyntaxIndex extracts import and call edges", async (t) => {
 
   const stats = await getSyntaxIndexStats(workspaceRoot, { top_files: 5 });
   assert.equal(stats.ok, true);
-  assert.equal(stats.provider, "tree-sitter-skeleton");
+  assert.ok(["tree-sitter-skeleton", "tree-sitter"].includes(stats.provider));
   assert.ok(stats.counts.files >= 3);
   assert.ok(stats.counts.import_edges >= 4);
   assert.ok(stats.top_imported.some((item) => item.imported_path === "pkg:node:fs"));
   assert.equal(stats.latest_run.mode, "full");
+});
+
+test("buildSyntaxIndex supports tree-sitter provider request with fallback/strict modes", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/provider.ts",
+    "import { depToken } from './dep';\nexport function providerToken() { return depToken(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/dep.ts",
+    "export function depToken() { return true; }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const requested = await buildSyntaxIndex(workspaceRoot, {
+    parser_provider: "tree-sitter"
+  });
+  assert.equal(requested.ok, true);
+  assert.equal(requested.parser.requested, "tree-sitter");
+  assert.ok(["tree-sitter-skeleton", "tree-sitter"].includes(requested.provider));
+
+  const strict = await buildSyntaxIndex(workspaceRoot, {
+    parser_provider: "tree-sitter",
+    parser_strict: true
+  });
+  if (strict.ok) {
+    assert.equal(strict.provider, "tree-sitter");
+  } else {
+    assert.match(String(strict.error), /tree-sitter parser unavailable/i);
+  }
 });
 
 test("querySyntaxIndex returns structural neighbors and supports filters", async (t) => {
