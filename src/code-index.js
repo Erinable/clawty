@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +17,8 @@ const DEFAULT_CHUNK_OVERLAP = 16;
 const MTIME_EPSILON_MS = 1;
 const QUERY_CACHE_TTL_MS = 10_000;
 const QUERY_CACHE_MAX_ENTRIES = 200;
+const QUERY_SLOW_THRESHOLD_MS = 60;
+const QUERY_METRICS_MAX_SLOW_QUERIES = 20;
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -62,6 +65,7 @@ const CODE_EXTENSIONS = new Set([
 
 let ctagsAvailablePromise;
 const queryResultCache = new Map();
+const queryMetricsByWorkspace = new Map();
 
 function toPosixPath(inputPath) {
   return inputPath.split(path.sep).join("/");
@@ -130,6 +134,102 @@ function setCachedQuery(workspaceRoot, cacheKey, value) {
     value: cloneValue(value),
     expiresAt: Date.now() + QUERY_CACHE_TTL_MS
   });
+}
+
+function roundMs(value) {
+  return Number(value.toFixed(3));
+}
+
+function getWorkspaceQueryMetrics(workspaceRoot) {
+  const key = path.resolve(workspaceRoot);
+  if (!queryMetricsByWorkspace.has(key)) {
+    queryMetricsByWorkspace.set(key, {
+      total_queries: 0,
+      cache_hits: 0,
+      cache_misses: 0,
+      zero_hit_queries: 0,
+      total_latency_ms: 0,
+      last_query_at: null,
+      slow_query_threshold_ms: QUERY_SLOW_THRESHOLD_MS,
+      recent_slow_queries: []
+    });
+  }
+  return queryMetricsByWorkspace.get(key);
+}
+
+function clampQueryPreview(query) {
+  if (typeof query !== "string") {
+    return "";
+  }
+  const trimmed = query.trim();
+  if (trimmed.length <= 120) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 117)}...`;
+}
+
+function recordQueryMetrics(workspaceRoot, details) {
+  const metrics = getWorkspaceQueryMetrics(workspaceRoot);
+  metrics.total_queries += 1;
+  if (details.cache_hit) {
+    metrics.cache_hits += 1;
+  } else {
+    metrics.cache_misses += 1;
+  }
+  if (Number(details.total_hits || 0) === 0) {
+    metrics.zero_hit_queries += 1;
+  }
+  if (Number.isFinite(details.latency_ms)) {
+    metrics.total_latency_ms += details.latency_ms;
+  }
+  metrics.last_query_at = new Date().toISOString();
+
+  if (Number.isFinite(details.latency_ms) && details.latency_ms >= QUERY_SLOW_THRESHOLD_MS) {
+    metrics.recent_slow_queries.push({
+      query: clampQueryPreview(details.query),
+      latency_ms: roundMs(details.latency_ms),
+      cache_hit: Boolean(details.cache_hit),
+      total_hits: Number(details.total_hits || 0),
+      filters: {
+        path_prefix: details.filters?.path_prefix || null,
+        language: details.filters?.language || null
+      },
+      at: new Date().toISOString()
+    });
+    if (metrics.recent_slow_queries.length > QUERY_METRICS_MAX_SLOW_QUERIES) {
+      metrics.recent_slow_queries.shift();
+    }
+  }
+}
+
+function buildQueryMetricsSnapshot(workspaceRoot) {
+  const metrics = getWorkspaceQueryMetrics(workspaceRoot);
+  const total = Number(metrics.total_queries || 0);
+  const hitRate = total > 0 ? Number((metrics.cache_hits / total).toFixed(4)) : 0;
+  const avgLatency = total > 0 ? roundMs(metrics.total_latency_ms / total) : 0;
+
+  return {
+    total_queries: total,
+    cache_hits: Number(metrics.cache_hits || 0),
+    cache_misses: Number(metrics.cache_misses || 0),
+    cache_hit_rate: hitRate,
+    zero_hit_queries: Number(metrics.zero_hit_queries || 0),
+    avg_latency_ms: avgLatency,
+    slow_query_threshold_ms: Number(metrics.slow_query_threshold_ms || QUERY_SLOW_THRESHOLD_MS),
+    slow_query_count: metrics.recent_slow_queries.length,
+    recent_slow_queries: metrics.recent_slow_queries.map((item) => ({
+      query: item.query,
+      latency_ms: item.latency_ms,
+      cache_hit: item.cache_hit,
+      total_hits: item.total_hits,
+      filters: {
+        path_prefix: item.filters.path_prefix,
+        language: item.filters.language
+      },
+      at: item.at
+    })),
+    last_query_at: metrics.last_query_at
+  };
 }
 
 function parsePositiveInt(value, fallback, min, max) {
@@ -1174,9 +1274,35 @@ function buildFtsQuery(tokens) {
   return tokens.map((token) => `${token}*`).join(" OR ");
 }
 
-function computeChunkCandidateLimit({ topK, tokenCount, hasPathFilter, hasLanguageFilter, explain }) {
+function deriveQueryCandidateProfile({ tokenCount, queryLength }) {
+  if (tokenCount >= 4) {
+    return "semantic_broad";
+  }
+  if (tokenCount >= 2) {
+    return "hybrid";
+  }
+  if (tokenCount === 1 && queryLength >= 4 && queryLength <= 48) {
+    return "symbol_focused";
+  }
+  return "default";
+}
+
+function computeChunkCandidateLimit({
+  topK,
+  tokenCount,
+  hasPathFilter,
+  hasLanguageFilter,
+  explain,
+  profile
+}) {
   let limit = Math.max(40, topK * 10);
   limit += Math.min(100, tokenCount * 6);
+  if (profile === "hybrid") {
+    limit += 30;
+  }
+  if (profile === "semantic_broad") {
+    limit += 80;
+  }
   if (!hasPathFilter) {
     limit += 40;
   }
@@ -1186,13 +1312,37 @@ function computeChunkCandidateLimit({ topK, tokenCount, hasPathFilter, hasLangua
   if (explain) {
     limit += 40;
   }
+  if (hasPathFilter && hasLanguageFilter) {
+    limit = Math.max(30, Math.floor(limit * 0.85));
+  }
   return Math.min(3000, limit);
 }
 
-function computeSymbolCandidateLimit({ topK, tokenCount }) {
-  const base = Math.max(80, topK * 16);
-  const tokenBoost = Math.min(200, tokenCount * 20);
-  return Math.min(3000, base + tokenBoost);
+function computeSymbolCandidateLimit({
+  topK,
+  tokenCount,
+  hasPathFilter,
+  hasLanguageFilter,
+  queryLength,
+  profile
+}) {
+  let limit = Math.max(80, topK * 16);
+  limit += Math.min(200, tokenCount * 20);
+
+  if (profile === "symbol_focused" && topK <= 20 && queryLength >= 6) {
+    limit += 40;
+  }
+  if (profile === "hybrid") {
+    limit = Math.floor(limit * 0.85);
+  }
+  if (profile === "semantic_broad") {
+    limit = Math.floor(limit * 0.7);
+  }
+  if (hasPathFilter && hasLanguageFilter) {
+    limit = Math.floor(limit * 0.9);
+  }
+
+  return Math.min(3000, Math.max(60, limit));
 }
 
 function normalizePathPrefix(value) {
@@ -1422,6 +1572,7 @@ export async function getIndexStats(workspaceRoot, args = {}) {
         symbols: aggregates.symbol_count,
         unique_tokens: aggregates.unique_tokens
       },
+      query_metrics: buildQueryMetricsSnapshot(workspaceRoot),
       languages,
       top_files: topFiles
     };
@@ -1435,6 +1586,7 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
   if (!query) {
     return { ok: false, error: "query must be a non-empty string" };
   }
+  const queryStartMs = performance.now();
 
   const dbFile = indexDbPath(workspaceRoot);
   const exists = await fs
@@ -1464,6 +1616,14 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
   const pathPrefix = normalizePathPrefix(args.path_prefix);
   const languageFilter = normalizeLanguageFilter(args.language);
   const explain = Boolean(args.explain);
+  const queryProfile = deriveQueryCandidateProfile({
+    tokenCount: tokens.length,
+    queryLength: query.length
+  });
+  const filterSnapshot = {
+    path_prefix: pathPrefix,
+    language: languageFilter
+  };
   const dbStat = await fs.stat(dbFile).catch(() => null);
   const cacheKey = makeQueryCacheKey({
     query,
@@ -1475,10 +1635,20 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
   });
   const cached = getCachedQuery(workspaceRoot, cacheKey);
   if (cached) {
-    return {
+    const latencyMs = performance.now() - queryStartMs;
+    const response = {
       ...cached,
-      cache_hit: true
+      cache_hit: true,
+      query_time_ms: roundMs(latencyMs)
     };
+    recordQueryMetrics(workspaceRoot, {
+      query,
+      cache_hit: true,
+      total_hits: Number(cached.total_hits || 0),
+      latency_ms: latencyMs,
+      filters: filterSnapshot
+    });
+    return response;
   }
 
   const db = openIndexDb(workspaceRoot);
@@ -1498,7 +1668,8 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
       tokenCount: tokens.length,
       hasPathFilter: Boolean(pathPrefix),
       hasLanguageFilter: Boolean(languageFilter),
-      explain
+      explain,
+      profile: queryProfile
     });
     const chunkRows = db
       .prepare(
@@ -1517,7 +1688,11 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
 
     const symbolCandidateLimit = computeSymbolCandidateLimit({
       topK,
-      tokenCount: tokens.length
+      tokenCount: tokens.length,
+      hasPathFilter: Boolean(pathPrefix),
+      hasLanguageFilter: Boolean(languageFilter),
+      queryLength: query.length,
+      profile: queryProfile
     });
     const symbolRows = querySymbols(db, tokens, {
       pathPrefix,
@@ -1526,14 +1701,13 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
     });
     const ranked = buildFileRanking({ chunkRows, symbolRows, tokens, explain });
     const results = ranked.slice(0, topK);
+    const latencyMs = performance.now() - queryStartMs;
     const response = {
       ok: true,
       query,
       query_tokens: tokens,
-      filters: {
-        path_prefix: pathPrefix,
-        language: languageFilter
-      },
+      filters: filterSnapshot,
+      candidate_profile: queryProfile,
       candidate_limits: {
         chunks: chunkCandidateLimit,
         symbols: symbolCandidateLimit
@@ -1541,9 +1715,17 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
       total_hits: ranked.length,
       results,
       index_path: toPosixPath(path.relative(workspaceRoot, dbFile)),
-      cache_hit: false
+      cache_hit: false,
+      query_time_ms: roundMs(latencyMs)
     };
     setCachedQuery(workspaceRoot, cacheKey, response);
+    recordQueryMetrics(workspaceRoot, {
+      query,
+      cache_hit: false,
+      total_hits: ranked.length,
+      latency_ms: latencyMs,
+      filters: filterSnapshot
+    });
     return response;
   } finally {
     db.close();

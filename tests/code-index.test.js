@@ -530,3 +530,67 @@ test("refreshCodeIndex supports boolean force_rebuild values", async (t) => {
   assert.equal(incremental.ok, true);
   assert.equal(incremental.mode, "incremental");
 });
+
+test("queryCodeIndex applies layered candidate strategy and records query metrics", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/services/user-service.js",
+    "export function createUserProfile(payload) { return payload; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "docs/user-guide.md",
+    "create user profile workflow guide and troubleshooting.\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const focused = await queryCodeIndex(workspaceRoot, {
+    query: "createUserProfile",
+    top_k: 8
+  });
+  assert.equal(focused.ok, true);
+  assert.equal(focused.candidate_profile, "symbol_focused");
+  assert.equal(typeof focused.query_time_ms, "number");
+  assert.equal(focused.cache_hit, false);
+
+  const broad = await queryCodeIndex(workspaceRoot, {
+    query: "create user profile workflow guide",
+    top_k: 8
+  });
+  assert.equal(broad.ok, true);
+  assert.equal(broad.candidate_profile, "semantic_broad");
+  assert.equal(typeof broad.query_time_ms, "number");
+  assert.ok(broad.candidate_limits.chunks > focused.candidate_limits.chunks);
+  assert.ok(broad.candidate_limits.symbols < focused.candidate_limits.symbols);
+
+  const cachedFocused = await queryCodeIndex(workspaceRoot, {
+    query: "createUserProfile",
+    top_k: 8
+  });
+  assert.equal(cachedFocused.ok, true);
+  assert.equal(cachedFocused.cache_hit, true);
+
+  const noHits = await queryCodeIndex(workspaceRoot, {
+    query: "totallyNotFoundTokenForQueryMetrics",
+    top_k: 5
+  });
+  assert.equal(noHits.ok, true);
+  assert.equal(noHits.total_hits, 0);
+
+  const stats = await getIndexStats(workspaceRoot, {});
+  assert.equal(stats.ok, true);
+  assert.ok(stats.query_metrics);
+  assert.ok(stats.query_metrics.total_queries >= 4);
+  assert.ok(stats.query_metrics.cache_hits >= 1);
+  assert.ok(stats.query_metrics.cache_misses >= 3);
+  assert.ok(stats.query_metrics.cache_hit_rate >= 0);
+  assert.ok(stats.query_metrics.cache_hit_rate <= 1);
+  assert.ok(stats.query_metrics.zero_hit_queries >= 1);
+  assert.equal(typeof stats.query_metrics.avg_latency_ms, "number");
+  assert.ok(Array.isArray(stats.query_metrics.recent_slow_queries));
+});
