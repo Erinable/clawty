@@ -45,6 +45,10 @@ jobs:
         if: matrix.node == 24
         run: npm run bench:index:check
 
+      - name: Run semantic graph refresh consistency gate
+        if: matrix.node == 24
+        run: npm run bench:graph:refresh:check
+
       - name: Run coverage
         if: matrix.node == 24
         run: npm run test:coverage
