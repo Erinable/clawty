@@ -406,3 +406,127 @@ test("queryCodeIndex reports empty index when DB exists without indexed chunks",
   assert.equal(query.ok, false);
   assert.match(query.error, /index is empty/i);
 });
+
+test("queryCodeIndex evicts oldest cache entries when cache reaches max size", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/cache-evict.js", "const keepToken = true;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const first = await queryCodeIndex(workspaceRoot, { query: "keepToken", top_k: 5 });
+  assert.equal(first.ok, true);
+  assert.equal(first.cache_hit, false);
+
+  for (let i = 0; i < 210; i += 1) {
+    const result = await queryCodeIndex(workspaceRoot, {
+      query: `token${i}`,
+      top_k: 5
+    });
+    assert.equal(result.ok, true);
+  }
+
+  const afterEviction = await queryCodeIndex(workspaceRoot, { query: "keepToken", top_k: 5 });
+  assert.equal(afterEviction.ok, true);
+  assert.equal(afterEviction.cache_hit, false);
+});
+
+test("event refresh handles mixed changed paths and large files", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/base.js", "const baseToken = 1;\n");
+  await writeWorkspaceFile(workspaceRoot, "src/huge.js", "x".repeat(4096));
+  await buildCodeIndex(workspaceRoot, { max_file_size_kb: 8 });
+
+  const refreshed = await refreshCodeIndex(workspaceRoot, {
+    changed_paths: [123, "", "node_modules/pkg/index.js", "src/missing.js", "src/huge.js"],
+    deleted_paths: [null],
+    max_file_size_kb: 1
+  });
+
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.mode, "event");
+  assert.equal(refreshed.incremental, true);
+  assert.equal(refreshed.skipped_large_files, 1);
+  assert.equal(refreshed.reindexed_files, 0);
+  assert.equal(refreshed.removed_files, 1);
+  assert.ok(refreshed.changed_paths.includes("node_modules/pkg/index.js"));
+  assert.ok(refreshed.changed_paths.includes("src/missing.js"));
+  assert.ok(refreshed.changed_paths.includes("src/huge.js"));
+
+  const query = await queryCodeIndex(workspaceRoot, { query: "baseToken" });
+  assert.equal(query.ok, true);
+  assert.ok(query.results.some((item) => item.path === "src/base.js"));
+});
+
+test("buildCodeIndex indexes extension families for language buckets", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/model.js", "export class Car {}\n");
+  await writeWorkspaceFile(workspaceRoot, "src/util.py", "def helper():\n    return 1\n");
+  await writeWorkspaceFile(workspaceRoot, "src/worker.go", "func RunTask() {}\n");
+  await writeWorkspaceFile(workspaceRoot, "src/app.kt", "class App\n");
+  await writeWorkspaceFile(workspaceRoot, "src/native.rs", "fn main() {}\n");
+  await writeWorkspaceFile(workspaceRoot, "src/empty.js", "");
+
+  const build = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(build.ok, true);
+  assert.ok(build.indexed_files >= 6);
+
+  const stats = await getIndexStats(workspaceRoot, {});
+  assert.equal(stats.ok, true);
+  assert.ok(stats.languages.some((item) => item.language === "javascript"));
+  assert.ok(stats.languages.some((item) => item.language === "python"));
+  assert.ok(stats.languages.some((item) => item.language === "go"));
+  assert.ok(stats.languages.some((item) => item.language === "jvm"));
+  assert.ok(stats.languages.some((item) => item.language === "systems"));
+});
+
+test("getIndexStats handles missing index and invalid stored config JSON", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const missing = await getIndexStats(workspaceRoot, {});
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /build_code_index/i);
+
+  await writeWorkspaceFile(workspaceRoot, "src/main.js", "const statsToken = true;\n");
+  const built = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(built.ok, true);
+
+  const db = new DatabaseSync(path.join(workspaceRoot, ".clawty/index.db"));
+  db.prepare("UPDATE meta SET value = ? WHERE key = ?").run("{", "config");
+  db.close();
+
+  const stats = await getIndexStats(workspaceRoot, {});
+  assert.equal(stats.ok, true);
+  assert.deepEqual(stats.config, {});
+});
+
+test("refreshCodeIndex supports boolean force_rebuild values", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/force.js", "const forceValue = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const full = await refreshCodeIndex(workspaceRoot, { force_rebuild: true });
+  assert.equal(full.ok, true);
+  assert.equal(full.mode, "full");
+
+  const incremental = await refreshCodeIndex(workspaceRoot, { force_rebuild: false });
+  assert.equal(incremental.ok, true);
+  assert.equal(incremental.mode, "incremental");
+});
