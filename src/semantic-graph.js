@@ -13,6 +13,10 @@ const DEFAULT_MAX_SYNTAX_CALL_EDGES = 8000;
 const DEFAULT_MAX_IMPORT_NODES = 50_000;
 const DEFAULT_MAX_IMPORT_EDGES = 200_000;
 const DEFAULT_SEED_SCAN_FACTOR = 8;
+const DEFAULT_QUERY_MAX_HOPS = 1;
+const MAX_QUERY_MAX_HOPS = 4;
+const DEFAULT_QUERY_PER_HOP_LIMIT = 8;
+const MAX_QUERY_PER_HOP_LIMIT = 50;
 const MAX_SEED_SCAN_LIMIT = 400;
 const MAX_MAX_SYMBOLS = 5000;
 const MAX_MAX_REFERENCES = 200;
@@ -410,6 +414,7 @@ function buildStatements(db) {
     `),
     selectOutgoing: db.prepare(`
       SELECT
+        n.id AS node_id,
         e.edge_type,
         e.source AS edge_source,
         e.weight,
@@ -429,6 +434,7 @@ function buildStatements(db) {
     `),
     selectIncoming: db.prepare(`
       SELECT
+        n.id AS node_id,
         e.edge_type,
         e.source AS edge_source,
         e.weight,
@@ -835,6 +841,183 @@ function dedupeNeighborRows(rows) {
     const lineB = Number(b.line || 1);
     return lineA - lineB;
   });
+}
+
+function multiHopItemKey(item) {
+  return [
+    Number(item.hop || 0),
+    String(item.node?.path || ""),
+    String(item.node?.kind || ""),
+    String(item.node?.name || ""),
+    Number(item.node?.line || 1),
+    Number(item.node?.column || 1)
+  ].join("::");
+}
+
+function terminalStep(item) {
+  if (!Array.isArray(item.path) || item.path.length === 0) {
+    return null;
+  }
+  return item.path[item.path.length - 1];
+}
+
+function pickPreferredMultiHopItem(existing, candidate) {
+  const existingTerminal = terminalStep(existing);
+  const candidateTerminal = terminalStep(candidate);
+  const existingEdgeSourceRank = sourcePriority(existingTerminal?.edge_source);
+  const candidateEdgeSourceRank = sourcePriority(candidateTerminal?.edge_source);
+  if (candidateEdgeSourceRank < existingEdgeSourceRank) {
+    return candidate;
+  }
+  if (candidateEdgeSourceRank > existingEdgeSourceRank) {
+    return existing;
+  }
+  if (Number(candidate.cumulative_weight || 0) > Number(existing.cumulative_weight || 0)) {
+    return candidate;
+  }
+  return existing;
+}
+
+function sortMultiHopItems(a, b) {
+  const hopA = Number(a.hop || 0);
+  const hopB = Number(b.hop || 0);
+  if (hopA !== hopB) {
+    return hopA - hopB;
+  }
+  const sourceA = sourcePriority(terminalStep(a)?.edge_source);
+  const sourceB = sourcePriority(terminalStep(b)?.edge_source);
+  if (sourceA !== sourceB) {
+    return sourceA - sourceB;
+  }
+  const weightA = Number(a.cumulative_weight || 0);
+  const weightB = Number(b.cumulative_weight || 0);
+  if (weightA !== weightB) {
+    return weightB - weightA;
+  }
+  const pathCompare = String(a.node?.path || "").localeCompare(String(b.node?.path || ""));
+  if (pathCompare !== 0) {
+    return pathCompare;
+  }
+  return Number(a.node?.line || 1) - Number(b.node?.line || 1);
+}
+
+function expandMultiHopDirection({
+  seed,
+  direction,
+  statements,
+  edgeType,
+  maxHops,
+  perHopLimit
+}) {
+  if (maxHops <= 1) {
+    return [];
+  }
+
+  const selectDirection = direction === "incoming" ? statements.selectIncoming : statements.selectOutgoing;
+  const queue = [
+    {
+      node_id: Number(seed.id || 0),
+      hop: 0,
+      cumulative_weight: 0,
+      path: []
+    }
+  ];
+  const visitedHopByNode = new Map();
+  const multiHopByKey = new Map();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.hop >= maxHops || Number(current.node_id || 0) <= 0) {
+      continue;
+    }
+
+    const rows = dedupeNeighborRows(
+      selectDirection.all(current.node_id, edgeType, edgeType, perHopLimit)
+    );
+    for (const row of rows) {
+      const nodeId = Number(row.node_id || 0);
+      if (nodeId <= 0) {
+        continue;
+      }
+
+      const nextHop = current.hop + 1;
+      const seenHop = visitedHopByNode.get(nodeId);
+      if (typeof seenHop === "number" && seenHop <= nextHop) {
+        continue;
+      }
+      visitedHopByNode.set(nodeId, nextHop);
+
+      const step = toNeighbor(row);
+      const nextPath = current.path.concat(step);
+      const cumulativeWeight = Number(current.cumulative_weight || 0) + Number(step.weight || 0);
+      if (nextHop < maxHops) {
+        queue.push({
+          node_id: nodeId,
+          hop: nextHop,
+          cumulative_weight: cumulativeWeight,
+          path: nextPath
+        });
+      }
+
+      if (nextHop <= 1) {
+        continue;
+      }
+
+      const item = {
+        direction,
+        hop: nextHop,
+        cumulative_weight: Number(cumulativeWeight.toFixed(4)),
+        node: step.node,
+        path: nextPath
+      };
+      const key = multiHopItemKey(item);
+      const existing = multiHopByKey.get(key);
+      if (!existing) {
+        multiHopByKey.set(key, item);
+        continue;
+      }
+      multiHopByKey.set(key, pickPreferredMultiHopItem(existing, item));
+    }
+  }
+
+  return Array.from(multiHopByKey.values()).sort(sortMultiHopItems);
+}
+
+function buildSeedMultiHop({
+  seed,
+  statements,
+  edgeType,
+  maxHops,
+  perHopLimit
+}) {
+  if (maxHops <= 1) {
+    return null;
+  }
+
+  const outgoing = expandMultiHopDirection({
+    seed,
+    direction: "outgoing",
+    statements,
+    edgeType,
+    maxHops,
+    perHopLimit
+  });
+  const incoming = expandMultiHopDirection({
+    seed,
+    direction: "incoming",
+    statements,
+    edgeType,
+    maxHops,
+    perHopLimit
+  });
+
+  return {
+    max_hops: maxHops,
+    per_hop_limit: perHopLimit,
+    outgoing,
+    incoming,
+    total_paths: outgoing.length + incoming.length
+  };
 }
 
 async function checkIndexExists(workspaceRoot) {
@@ -1716,6 +1899,18 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
 
   const topK = parsePositiveInt(args.top_k, 5, 1, 30);
   const maxNeighbors = parsePositiveInt(args.max_neighbors, 8, 1, 100);
+  const maxHops = parsePositiveInt(
+    args.max_hops,
+    DEFAULT_QUERY_MAX_HOPS,
+    1,
+    MAX_QUERY_MAX_HOPS
+  );
+  const perHopLimit = parsePositiveInt(
+    args.per_hop_limit,
+    maxNeighbors || DEFAULT_QUERY_PER_HOP_LIMIT,
+    1,
+    MAX_QUERY_PER_HOP_LIMIT
+  );
   const edgeType = typeof args.edge_type === "string" && args.edge_type.trim() ? args.edge_type.trim() : null;
   const pathPrefix = normalizePathPrefix(args.path_prefix);
   const pathLike = pathPrefix ? `${pathPrefix}%` : null;
@@ -1773,6 +1968,13 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       column: Number(seed.column || 1),
       lang: seed.lang || null,
       source: seed.source || null,
+      multi_hop: buildSeedMultiHop({
+        seed,
+        statements,
+        edgeType,
+        maxHops,
+        perHopLimit
+      }),
       outgoing: statements
         .selectOutgoing
         .all(seed.id, edgeType, edgeType, maxNeighbors),
@@ -1792,7 +1994,9 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       query,
       filters: {
         edge_type: edgeType,
-        path_prefix: pathPrefix
+        path_prefix: pathPrefix,
+        max_hops: maxHops,
+        per_hop_limit: perHopLimit
       },
       priority_policy: SOURCE_PRIORITY_ORDER,
       total_seeds: finalizedSeeds.length,

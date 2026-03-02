@@ -339,6 +339,109 @@ test("importPreciseIndex imports SCIP-normalized nodes and edges", async (t) => 
   assert.ok(stats.edge_sources.some((item) => item.source === "scip"));
 });
 
+test("querySemanticGraph supports multi-hop expansion when max_hops > 1", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/multi-hop-a.ts",
+    "export function hopA() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/multi-hop-b.ts",
+    "export function hopB() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/multi-hop-c.ts",
+    "export function hopC() { return true; }\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const payload = {
+    format: "scip-normalized/v1",
+    nodes: [
+      {
+        symbol: "multi hop a",
+        path: "src/multi-hop-a.ts",
+        name: "hopA",
+        kind: "function",
+        line: 1,
+        column: 1
+      },
+      {
+        symbol: "multi hop b",
+        path: "src/multi-hop-b.ts",
+        name: "hopB",
+        kind: "function",
+        line: 1,
+        column: 1
+      },
+      {
+        symbol: "multi hop c",
+        path: "src/multi-hop-c.ts",
+        name: "hopC",
+        kind: "function",
+        line: 1,
+        column: 1
+      }
+    ],
+    edges: [
+      {
+        from: "multi hop a",
+        to: "multi hop b",
+        edge_type: "call",
+        weight: 2
+      },
+      {
+        from: "multi hop b",
+        to: "multi hop c",
+        edge_type: "call",
+        weight: 2
+      }
+    ]
+  };
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip-multi-hop.json",
+    `${JSON.stringify(payload, null, 2)}\n`
+  );
+
+  const imported = await importPreciseIndex(workspaceRoot, {
+    path: "artifacts/scip-multi-hop.json",
+    mode: "replace",
+    source: "scip"
+  });
+  assert.equal(imported.ok, true);
+  assert.equal(imported.imported.inserted_edges, 2);
+
+  const query = await querySemanticGraph(workspaceRoot, {
+    query: "hopA",
+    edge_type: "call",
+    top_k: 2,
+    max_neighbors: 5,
+    max_hops: 3,
+    per_hop_limit: 5
+  });
+  assert.equal(query.ok, true);
+  assert.equal(query.filters.max_hops, 3);
+  const seed = query.seeds.find((item) => item.name === "hopA");
+  assert.ok(seed);
+  assert.ok(seed.multi_hop);
+  assert.equal(seed.multi_hop.max_hops, 3);
+  const hop2 = seed.multi_hop.outgoing.find(
+    (item) => item.hop === 2 && item.node.name === "hopC"
+  );
+  assert.ok(hop2);
+  assert.equal(hop2.path.length, 2);
+  assert.equal(hop2.path[0].node.name, "hopB");
+  assert.equal(hop2.path[1].node.name, "hopC");
+});
+
 test("querySemanticGraph deduplicates seeds and prefers SCIP over index source", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

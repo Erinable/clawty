@@ -458,6 +458,18 @@ export const TOOL_DEFINITIONS = [
           minimum: 1,
           maximum: 100
         },
+        max_hops: {
+          type: "integer",
+          description: "Optional max traversal hops per seed (default 1, max 4).",
+          minimum: 1,
+          maximum: 4
+        },
+        per_hop_limit: {
+          type: "integer",
+          description: "Optional edge expansion cap per hop during multi-hop traversal.",
+          minimum: 1,
+          maximum: 50
+        },
         edge_type: {
           type: "string",
           description: "Optional edge type filter, e.g. definition or reference."
@@ -991,7 +1003,13 @@ async function querySemanticGraphTool(args, context) {
       query: syntaxResult.query,
       filters: {
         edge_type: args?.edge_type || null,
-        path_prefix: args?.path_prefix || null
+        path_prefix: args?.path_prefix || null,
+        max_hops: Number.isFinite(Number(args?.max_hops))
+          ? Math.max(1, Math.floor(Number(args.max_hops)))
+          : 1,
+        per_hop_limit: Number.isFinite(Number(args?.per_hop_limit))
+          ? Math.max(1, Math.floor(Number(args.per_hop_limit)))
+          : null
       },
       priority_policy: ["syntax", "index_fallback"],
       total_seeds: fallbackSeeds.length,
@@ -1029,7 +1047,13 @@ async function querySemanticGraphTool(args, context) {
     query: indexResult.query,
     filters: {
       edge_type: args?.edge_type || null,
-      path_prefix: args?.path_prefix || null
+      path_prefix: args?.path_prefix || null,
+      max_hops: Number.isFinite(Number(args?.max_hops))
+        ? Math.max(1, Math.floor(Number(args.max_hops)))
+        : 1,
+      per_hop_limit: Number.isFinite(Number(args?.per_hop_limit))
+        ? Math.max(1, Math.floor(Number(args.per_hop_limit)))
+        : null
     },
     priority_policy: ["index_fallback"],
     total_seeds: fallbackSeeds.length,
