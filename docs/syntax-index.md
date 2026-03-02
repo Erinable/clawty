@@ -26,6 +26,7 @@
 - `query`, `top_k`, `max_neighbors`, `path_prefix`: 结构查询参数
 - `parser_provider`: `auto`（默认）/ `skeleton` / `tree-sitter`
 - `parser_strict`: `tree-sitter` 不可用时是否直接失败（默认 false，回退 skeleton）
+- `auto` 策略：`TS/JS/Python/Go` 优先 tree-sitter，其他语言默认 skeleton
 
 ## 当前实现说明
 

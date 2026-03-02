@@ -145,6 +145,46 @@ test("buildSyntaxIndex defaults parser_provider to auto", async (t) => {
   assert.equal(built.ok, true);
   assert.equal(built.parser.requested, "auto");
   assert.ok(["tree-sitter-skeleton", "tree-sitter"].includes(built.provider));
+  const providerCounts = built.parser.provider_counts || {};
+  assert.ok(Object.keys(providerCounts).length >= 1);
+});
+
+test("parser summary actual provider is resolved from counts (not last file)", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/resolve-provider.ts",
+    "export function resolveProviderToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "docs/readme.custom.md",
+    "# Title\nsome markdown content\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSyntaxIndex(workspaceRoot, {
+    parser_provider: "auto",
+    max_files: 20
+  });
+  assert.equal(built.ok, true);
+  const treeCount = Number(built.parser.provider_counts["tree-sitter"] || 0);
+  const skeletonCount = Number(built.parser.provider_counts["tree-sitter-skeleton"] || 0);
+  if (treeCount > skeletonCount) {
+    assert.equal(built.provider, "tree-sitter");
+  } else if (skeletonCount > treeCount) {
+    assert.equal(built.provider, "tree-sitter-skeleton");
+  } else if (treeCount > 0) {
+    assert.equal(built.provider, "tree-sitter");
+  } else {
+    assert.equal(built.provider, "tree-sitter-skeleton");
+  }
 });
 
 test("querySyntaxIndex returns structural neighbors and supports filters", async (t) => {

@@ -22,6 +22,7 @@ const MAX_ERRORS_LIMIT = 1000;
 const MAX_QUERY_TOP_K = 30;
 const MAX_QUERY_MAX_NEIGHBORS = 100;
 const MAX_QUERY_SCAN_LIMIT = 400;
+const AUTO_TREE_SITTER_LANGS = new Set(["javascript", "python", "go"]);
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -527,15 +528,18 @@ function buildTreeSitterSummary(relativePath, content, runtime, language, maxCal
 async function buildSyntaxSummaryWithProvider(relativePath, content, config) {
   const lang = detectLanguageByPath(relativePath);
   const requested = config.parser_provider;
+  const treeSitterPreferred =
+    requested === "tree-sitter" || (requested === "auto" && AUTO_TREE_SITTER_LANGS.has(lang));
 
-  if (requested === "skeleton") {
+  if (!treeSitterPreferred) {
     return {
       summary: buildSyntaxSummary(relativePath, content, config.max_calls_per_file),
       parser_info: {
         requested,
         actual: SYNTAX_PROVIDER_SKELETON,
         fallback_used: false,
-        fallback_reason: null
+        fallback_reason: null,
+        lang
       }
     };
   }
@@ -551,14 +555,16 @@ async function buildSyntaxSummaryWithProvider(relativePath, content, config) {
           requested,
           actual: SYNTAX_PROVIDER_TREE_SITTER,
           fallback_used: false,
-          fallback_reason: null
+          fallback_reason: null,
+          lang
         }
       };
     }
   }
 
+  const fallbackReason = runtime?.error || `language grammar missing for ${lang}`;
   if (requested === "tree-sitter" && config.parser_strict) {
-    throw new Error(`tree-sitter parser unavailable for ${relativePath}: ${runtime?.error || "language grammar missing"}`);
+    throw new Error(`tree-sitter parser unavailable for ${relativePath}: ${fallbackReason}`);
   }
 
   return {
@@ -567,7 +573,8 @@ async function buildSyntaxSummaryWithProvider(relativePath, content, config) {
       requested,
       actual: SYNTAX_PROVIDER_SKELETON,
       fallback_used: true,
-      fallback_reason: runtime?.error || `language grammar missing for ${lang}`
+      fallback_reason: fallbackReason,
+      lang
     }
   };
 }
@@ -859,7 +866,7 @@ function dedupeRows(rows, keyFn) {
 function createParserSummary(config) {
   return {
     requested: config.parser_provider,
-    actual: SYNTAX_PROVIDER_SKELETON,
+    actual: null,
     fallback_used: false,
     fallback_reasons: [],
     provider_counts: {}
@@ -878,7 +885,6 @@ function updateParserSummary(summary, parserInfo) {
     return;
   }
   const actual = parserInfo.actual || SYNTAX_PROVIDER_SKELETON;
-  summary.actual = actual;
   summary.provider_counts[actual] = Number(summary.provider_counts[actual] || 0) + 1;
   if (parserInfo.fallback_used) {
     summary.fallback_used = true;
@@ -890,6 +896,21 @@ function updateParserSummary(summary, parserInfo) {
       summary.fallback_reasons.push(parserInfo.fallback_reason);
     }
   }
+}
+
+function resolveParserSummaryActual(summary) {
+  const skeletonCount = Number(summary.provider_counts[SYNTAX_PROVIDER_SKELETON] || 0);
+  const treeSitterCount = Number(summary.provider_counts[SYNTAX_PROVIDER_TREE_SITTER] || 0);
+  if (treeSitterCount > skeletonCount) {
+    return SYNTAX_PROVIDER_TREE_SITTER;
+  }
+  if (skeletonCount > treeSitterCount) {
+    return SYNTAX_PROVIDER_SKELETON;
+  }
+  if (treeSitterCount > 0) {
+    return SYNTAX_PROVIDER_TREE_SITTER;
+  }
+  return SYNTAX_PROVIDER_SKELETON;
 }
 
 async function upsertFileSyntax(workspaceRoot, statements, fileRow, config) {
@@ -992,6 +1013,8 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
       const totalFiles = Number(statements.countFiles.get().count || 0);
       const totalImports = Number(statements.countImportEdges.get().count || 0);
       const totalCalls = Number(statements.countCallEdges.get().count || 0);
+      const actualProvider = resolveParserSummaryActual(parserSummary);
+      parserSummary.actual = actualProvider;
       statements.insertRun.run(
         startedAt,
         completedAt,
@@ -1004,8 +1027,8 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
         totalFiles,
         totalImports,
         totalCalls,
-        parserSummary.actual,
-        parserVersionForProvider(parserSummary.actual),
+        actualProvider,
+        parserVersionForProvider(actualProvider),
         JSON.stringify(config),
         null
       );
@@ -1014,8 +1037,8 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
       return {
         ok: true,
         mode: "full",
-        provider: parserSummary.actual,
-        parser_version: parserVersionForProvider(parserSummary.actual),
+        provider: actualProvider,
+        parser_version: parserVersionForProvider(actualProvider),
         parser: parserSummary,
         index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
         parsed_files: parsedFiles,
@@ -1032,12 +1055,14 @@ export async function buildSyntaxIndex(workspaceRoot, args = {}) {
       throw error;
     }
   } catch (error) {
+    const actualProvider = resolveParserSummaryActual(parserSummary);
+    parserSummary.actual = actualProvider;
     return {
       ok: false,
       error: error.message || String(error),
       mode: "full",
-      provider: parserSummary.actual,
-      parser_version: parserVersionForProvider(parserSummary.actual),
+      provider: actualProvider,
+      parser_version: parserVersionForProvider(actualProvider),
       parser: parserSummary
     };
   } finally {
@@ -1151,6 +1176,8 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
       const totalFiles = Number(statements.countFiles.get().count || 0);
       const totalImports = Number(statements.countImportEdges.get().count || 0);
       const totalCalls = Number(statements.countCallEdges.get().count || 0);
+      const actualProvider = resolveParserSummaryActual(parserSummary);
+      parserSummary.actual = actualProvider;
       statements.insertRun.run(
         startedAt,
         completedAt,
@@ -1163,8 +1190,8 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
         totalFiles,
         totalImports,
         totalCalls,
-        parserSummary.actual,
-        parserVersionForProvider(parserSummary.actual),
+        actualProvider,
+        parserVersionForProvider(actualProvider),
         JSON.stringify({
           ...config,
           changed_paths: changedPaths,
@@ -1177,8 +1204,8 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
       return {
         ok: true,
         mode: eventMode ? "event" : "incremental",
-        provider: parserSummary.actual,
-        parser_version: parserVersionForProvider(parserSummary.actual),
+        provider: actualProvider,
+        parser_version: parserVersionForProvider(actualProvider),
         parser: parserSummary,
         index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
         parsed_files: parsedFiles,
@@ -1197,12 +1224,14 @@ export async function refreshSyntaxIndex(workspaceRoot, args = {}) {
       throw error;
     }
   } catch (error) {
+    const actualProvider = resolveParserSummaryActual(parserSummary);
+    parserSummary.actual = actualProvider;
     return {
       ok: false,
       error: error.message || String(error),
       mode: eventMode ? "event" : "incremental",
-      provider: parserSummary.actual,
-      parser_version: parserVersionForProvider(parserSummary.actual),
+      provider: actualProvider,
+      parser_version: parserVersionForProvider(actualProvider),
       parser: parserSummary
     };
   } finally {
