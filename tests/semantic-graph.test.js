@@ -270,3 +270,69 @@ test("importPreciseIndex imports SCIP-normalized nodes and edges", async (t) => 
   assert.equal(stats.ok, true);
   assert.ok(stats.edge_sources.some((item) => item.source === "scip"));
 });
+
+test("querySemanticGraph deduplicates seeds and prefers SCIP over index source", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/dedup.ts",
+    "export function dedupToken() { return true; }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    { max_symbols: 20, include_definitions: false, include_references: false },
+    { enabled: false }
+  );
+  assert.equal(built.ok, true);
+  assert.ok(built.seeded_nodes >= 1);
+
+  const precisePayload = {
+    format: "scip-normalized/v1",
+    nodes: [
+      {
+        symbol: "scip dedup token",
+        path: "src/dedup.ts",
+        name: "dedupToken",
+        kind: "function",
+        line: 1,
+        column: 1,
+        lang: "javascript"
+      }
+    ],
+    edges: []
+  };
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip-dedup.json",
+    `${JSON.stringify(precisePayload, null, 2)}\n`
+  );
+
+  const imported = await importPreciseIndex(workspaceRoot, {
+    path: "artifacts/scip-dedup.json",
+    mode: "merge",
+    source: "scip"
+  });
+  assert.equal(imported.ok, true);
+  assert.equal(imported.imported.inserted_nodes, 1);
+
+  const query = await querySemanticGraph(workspaceRoot, {
+    query: "dedupToken",
+    top_k: 5,
+    max_neighbors: 3
+  });
+  assert.equal(query.ok, true);
+  assert.ok(Array.isArray(query.priority_policy));
+  assert.equal(query.seeds.length, 1);
+  assert.equal(query.seeds[0].name, "dedupToken");
+  assert.equal(query.seeds[0].source, "scip");
+  assert.ok(query.scanned_candidates >= 2);
+  assert.ok(query.deduped_candidates >= 1);
+});

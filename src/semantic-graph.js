@@ -10,11 +10,20 @@ const DEFAULT_MAX_REFERENCES_PER_SYMBOL = 12;
 const DEFAULT_MAX_LSP_ERRORS = 12;
 const DEFAULT_MAX_IMPORT_NODES = 50_000;
 const DEFAULT_MAX_IMPORT_EDGES = 200_000;
+const DEFAULT_SEED_SCAN_FACTOR = 8;
+const MAX_SEED_SCAN_LIMIT = 400;
 const MAX_MAX_SYMBOLS = 5000;
 const MAX_MAX_REFERENCES = 200;
 const MAX_MAX_LSP_ERRORS = 200;
 const MAX_IMPORT_NODES = 500_000;
 const MAX_IMPORT_EDGES = 1_000_000;
+const SOURCE_PRIORITY_ORDER = Object.freeze([
+  "scip",
+  "lsif",
+  "lsp",
+  "index_seed",
+  "lsp_anchor"
+]);
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -304,7 +313,7 @@ function buildStatements(db) {
       LIMIT 1
     `),
     selectQuerySeeds: db.prepare(`
-      SELECT id, path, name, kind, line, column, lang, source
+      SELECT id, path, name, name_lc, kind, line, column, lang, source
       FROM semantic_nodes
       WHERE (
         name_lc = ?
@@ -415,6 +424,151 @@ function toNeighbor(row) {
       source: row.node_source
     }
   };
+}
+
+function sourcePriority(source) {
+  const normalized =
+    typeof source === "string" && source.trim().length > 0
+      ? source.trim().toLowerCase()
+      : "other";
+  const idx = SOURCE_PRIORITY_ORDER.indexOf(normalized);
+  return idx >= 0 ? idx : SOURCE_PRIORITY_ORDER.length;
+}
+
+function seedDedupKey(seed) {
+  return [
+    String(seed.path || ""),
+    String(seed.kind || ""),
+    String(seed.name_lc || String(seed.name || "").toLowerCase()),
+    Number(seed.line || 1)
+  ].join("::");
+}
+
+function seedMatchRank(seed, queryLower) {
+  const nameLc = String(seed.name_lc || String(seed.name || "").toLowerCase());
+  const pathLc = String(seed.path || "").toLowerCase();
+  if (nameLc === queryLower) {
+    return 0;
+  }
+  if (nameLc.startsWith(queryLower)) {
+    return 1;
+  }
+  if (pathLc.includes(queryLower)) {
+    return 2;
+  }
+  return 3;
+}
+
+function pickPreferredSeed(existing, candidate, queryLower) {
+  const existingRank = seedMatchRank(existing, queryLower);
+  const candidateRank = seedMatchRank(candidate, queryLower);
+  if (candidateRank < existingRank) {
+    return candidate;
+  }
+  if (candidateRank > existingRank) {
+    return existing;
+  }
+
+  const existingSourceRank = sourcePriority(existing.source);
+  const candidateSourceRank = sourcePriority(candidate.source);
+  if (candidateSourceRank < existingSourceRank) {
+    return candidate;
+  }
+  if (candidateSourceRank > existingSourceRank) {
+    return existing;
+  }
+
+  return existing;
+}
+
+function sortSeedsByPriority(a, b, queryLower) {
+  const rankA = seedMatchRank(a, queryLower);
+  const rankB = seedMatchRank(b, queryLower);
+  if (rankA !== rankB) {
+    return rankA - rankB;
+  }
+
+  const sourceA = sourcePriority(a.source);
+  const sourceB = sourcePriority(b.source);
+  if (sourceA !== sourceB) {
+    return sourceA - sourceB;
+  }
+
+  const lineA = Number(a.line || 1);
+  const lineB = Number(b.line || 1);
+  if (lineA !== lineB) {
+    return lineA - lineB;
+  }
+
+  return String(a.path || "").localeCompare(String(b.path || ""));
+}
+
+function neighborDedupKey(row) {
+  return [
+    String(row.edge_type || ""),
+    String(row.path || ""),
+    String(row.kind || ""),
+    String(row.name || ""),
+    Number(row.line || 1),
+    Number(row.column || 1)
+  ].join("::");
+}
+
+function pickPreferredNeighbor(existing, candidate) {
+  const existingEdgeSourceRank = sourcePriority(existing.edge_source);
+  const candidateEdgeSourceRank = sourcePriority(candidate.edge_source);
+  if (candidateEdgeSourceRank < existingEdgeSourceRank) {
+    return candidate;
+  }
+  if (candidateEdgeSourceRank > existingEdgeSourceRank) {
+    return existing;
+  }
+
+  const existingNodeSourceRank = sourcePriority(existing.node_source);
+  const candidateNodeSourceRank = sourcePriority(candidate.node_source);
+  if (candidateNodeSourceRank < existingNodeSourceRank) {
+    return candidate;
+  }
+  if (candidateNodeSourceRank > existingNodeSourceRank) {
+    return existing;
+  }
+
+  if (Number(candidate.weight || 0) > Number(existing.weight || 0)) {
+    return candidate;
+  }
+  return existing;
+}
+
+function dedupeNeighborRows(rows) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const key = neighborDedupKey(row);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    byKey.set(key, pickPreferredNeighbor(existing, row));
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    const sourceA = sourcePriority(a.edge_source);
+    const sourceB = sourcePriority(b.edge_source);
+    if (sourceA !== sourceB) {
+      return sourceA - sourceB;
+    }
+    const edgeCompare = String(a.edge_type || "").localeCompare(String(b.edge_type || ""));
+    if (edgeCompare !== 0) {
+      return edgeCompare;
+    }
+    const pathCompare = String(a.path || "").localeCompare(String(b.path || ""));
+    if (pathCompare !== 0) {
+      return pathCompare;
+    }
+    const lineA = Number(a.line || 1);
+    const lineB = Number(b.line || 1);
+    return lineA - lineB;
+  });
 }
 
 async function checkIndexExists(workspaceRoot) {
@@ -1148,6 +1302,10 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
   const pathPrefix = normalizePathPrefix(args.path_prefix);
   const pathLike = pathPrefix ? `${pathPrefix}%` : null;
   const queryLower = query.toLowerCase();
+  const seedScanLimit = Math.min(
+    MAX_SEED_SCAN_LIMIT,
+    Math.max(topK, topK * DEFAULT_SEED_SCAN_FACTOR)
+  );
 
   const db = openDb(workspaceRoot);
   try {
@@ -1161,7 +1319,7 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       };
     }
 
-    const seeds = statements.selectQuerySeeds.all(
+    const rawSeeds = statements.selectQuerySeeds.all(
       queryLower,
       `${queryLower}%`,
       `%${queryLower}%`,
@@ -1171,8 +1329,23 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       queryLower,
       `${queryLower}%`,
       `%${queryLower}%`,
-      topK
+      seedScanLimit
     );
+
+    const dedupedByKey = new Map();
+    for (const seed of rawSeeds) {
+      const key = seedDedupKey(seed);
+      const existing = dedupedByKey.get(key);
+      if (!existing) {
+        dedupedByKey.set(key, seed);
+        continue;
+      }
+      dedupedByKey.set(key, pickPreferredSeed(existing, seed, queryLower));
+    }
+
+    const seeds = Array.from(dedupedByKey.values())
+      .sort((a, b) => sortSeedsByPriority(a, b, queryLower))
+      .slice(0, topK);
 
     const enrichedSeeds = seeds.map((seed) => ({
       path: seed.path,
@@ -1184,12 +1357,16 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       source: seed.source || null,
       outgoing: statements
         .selectOutgoing
-        .all(seed.id, edgeType, edgeType, maxNeighbors)
-        .map(toNeighbor),
+        .all(seed.id, edgeType, edgeType, maxNeighbors),
       incoming: statements
         .selectIncoming
         .all(seed.id, edgeType, edgeType, maxNeighbors)
-        .map(toNeighbor)
+    }));
+
+    const finalizedSeeds = enrichedSeeds.map((seed) => ({
+      ...seed,
+      outgoing: dedupeNeighborRows(seed.outgoing).slice(0, maxNeighbors).map(toNeighbor),
+      incoming: dedupeNeighborRows(seed.incoming).slice(0, maxNeighbors).map(toNeighbor)
     }));
 
     return {
@@ -1199,8 +1376,11 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
         edge_type: edgeType,
         path_prefix: pathPrefix
       },
-      total_seeds: enrichedSeeds.length,
-      seeds: enrichedSeeds
+      priority_policy: SOURCE_PRIORITY_ORDER,
+      total_seeds: finalizedSeeds.length,
+      scanned_candidates: rawSeeds.length,
+      deduped_candidates: dedupedByKey.size,
+      seeds: finalizedSeeds
     };
   } finally {
     db.close();

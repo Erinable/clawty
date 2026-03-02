@@ -45,3 +45,4 @@
 - `nodes` 也可用 `symbols` 字段名。
 - `edges` 也可用 `relationships` 字段名。
 - `edge_type` 建议使用：`definition` / `reference` / `call` / `import`。
+- 查询阶段会对同实体做去重，优先返回精确来源（`scip > lsp > index_seed`）。

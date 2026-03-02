@@ -101,6 +101,7 @@ npm run bench:semantic:check
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
+`query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsp > index_seed`）。
 精确索引导入格式见 `docs/precise-index-import.md`。
 
 ## LSP 语义检索（TS/JS）
