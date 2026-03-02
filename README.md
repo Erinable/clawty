@@ -70,6 +70,7 @@ npm run bench:index:check
 测试文件位于 `tests/`，命名为 `*.test.js`。
 代码索引检索质量回归集位于 `tests/fixtures/index-cases/`。
 增量一致性回归位于 `tests/code-index-consistency.test.js`（比较 incremental/event 与 full rebuild 的查询签名）。
+代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
 
 ## 代码索引使用建议
 
