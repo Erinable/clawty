@@ -134,6 +134,7 @@ npm run precise:check:fixture
 - “代码改完后刷新 semantic graph（changed_paths/deleted_paths）再查多跳邻居”
 - “用 `query_hybrid_index` 融合 semantic/syntax/index，返回重排后的 Top5”
 - “启用 `query_hybrid_index` 的 embedding rerank（enable_embedding=true）再返回 Top5”
+- “启用 `query_hybrid_index` 的 freshness 降权（freshness_stale_after_ms=300000）再返回 Top5”
 - “先构建 vector index（layer=base），再查询语义近邻代码块”
 - “代码改完后刷新 vector index（changed_paths/deleted_paths, layer=delta）”
 - “合并 vector delta 到 base 后，再做 query_hybrid_index”
@@ -158,7 +159,9 @@ npm run precise:check:fixture
 `query_semantic_graph` 返回 `language_distribution`（`scanned_candidates` / `deduped_candidates` / `returned_seeds`），用于观察召回语言偏置。
 `query_hybrid_index` 会联合 `semantic + vector + syntax + index` 候选并做轻量重排，支持 `path_prefix`、`language`、`include_vector` 与 `explain`。
 可选启用 embedding 第二阶段重排（`enable_embedding` / `embedding_top_k` / `embedding_weight` / `embedding_model`），默认关闭。
+可选启用 freshness 重排（`enable_freshness` / `freshness_stale_after_ms` / `freshness_weight` / `freshness_vector_stale_penalty`），用于 stale 候选降权。
 返回 `sources.embedding` 观测字段（`status_code` / `error_code` / `latency_ms` / `rank_shift_count` / `top1_changed`），便于稳定性与效果追踪。
+返回 `sources.freshness` 观测字段（`stale_hit_rate` / `stale_vector_candidates` / `sampled_paths` / `missing_paths`），便于跟踪索引新鲜度。
 `build_vector_index` / `refresh_vector_index` 会将代码 chunk 生成 embedding 并写入离线向量层（`base` / `delta`），`merge_vector_delta` 可周期性合并增量层。
 `query_vector_index` 支持 `path_prefix`、`language`、`layers`、`max_candidates`，用于语义召回候选。
 `get_vector_index_stats` 返回向量层覆盖率与最近一次构建/刷新记录。
@@ -246,6 +249,11 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_SEMANTIC_SEED_LANG_FILTER`：语义图 seed 语言过滤，默认 `*`（不过滤）
 - `CLAWTY_PRECISE_STALE_AFTER_MINUTES`：精确索引新鲜度阈值（分钟），默认 `1440`
 - `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）
+- `CLAWTY_INDEX_FRESHNESS_ENABLED`：hybrid 检索是否启用 freshness 重排，默认 `true`
+- `CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS`：freshness stale 阈值（毫秒），默认 `300000`
+- `CLAWTY_INDEX_FRESHNESS_WEIGHT`：freshness 融合权重（0-1），默认 `0.12`
+- `CLAWTY_INDEX_FRESHNESS_VECTOR_STALE_PENALTY`：stale vector 候选额外降权（0-1），默认 `0.25`
+- `CLAWTY_INDEX_FRESHNESS_MAX_PATHS`：每次 hybrid 查询采样文件路径上限，默认 `200`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`
 - `CLAWTY_WATCH_MAX_BATCH_SIZE`：watch 增量批大小，默认 `300`

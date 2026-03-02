@@ -11,7 +11,12 @@
   },
   "index": {
     "maxFiles": 3000,
-    "maxFileSizeKb": 512
+    "maxFileSizeKb": 512,
+    "freshnessEnabled": true,
+    "freshnessStaleAfterMs": 300000,
+    "freshnessWeight": 0.12,
+    "freshnessVectorStalePenalty": 0.25,
+    "freshnessMaxPaths": 200
   },
   "lsp": {
     "enabled": true,

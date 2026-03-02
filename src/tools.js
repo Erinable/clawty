@@ -695,6 +695,36 @@ export const TOOL_DEFINITIONS = [
         embedding_model: {
           type: "string",
           description: "Optional embedding model override, e.g. text-embedding-3-small."
+        },
+        enable_freshness: {
+          type: "boolean",
+          description:
+            "Enable freshness-based rerank using file mtime metadata. Defaults to CLAWTY_INDEX_FRESHNESS_ENABLED."
+        },
+        freshness_stale_after_ms: {
+          type: "integer",
+          description: "Age threshold in milliseconds after which candidates are treated as stale.",
+          minimum: 1000,
+          maximum: 86_400_000
+        },
+        freshness_weight: {
+          type: "number",
+          description: "Blend weight for freshness score in final hybrid ranking (0-1).",
+          minimum: 0,
+          maximum: 1
+        },
+        freshness_vector_stale_penalty: {
+          type: "number",
+          description:
+            "Additional downweight factor for stale candidates supported by vector retrieval (0-1).",
+          minimum: 0,
+          maximum: 1
+        },
+        freshness_max_paths: {
+          type: "integer",
+          description: "Maximum unique candidate paths sampled for freshness metadata lookup.",
+          minimum: 1,
+          maximum: 1000
         }
       },
       required: ["query"],
@@ -1411,6 +1441,11 @@ const DEFAULT_HYBRID_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_HYBRID_EMBEDDING_TOP_K = 15;
 const DEFAULT_HYBRID_EMBEDDING_WEIGHT = 0.25;
 const DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS = 15_000;
+const DEFAULT_HYBRID_FRESHNESS_ENABLED = true;
+const DEFAULT_HYBRID_FRESHNESS_STALE_AFTER_MS = 300_000;
+const DEFAULT_HYBRID_FRESHNESS_WEIGHT = 0.12;
+const DEFAULT_HYBRID_FRESHNESS_VECTOR_STALE_PENALTY = 0.25;
+const DEFAULT_HYBRID_FRESHNESS_MAX_PATHS = 200;
 
 function roundHybridMetric(value) {
   const numeric = Number(value || 0);
@@ -1495,6 +1530,51 @@ function resolveHybridEmbeddingConfig(args, context) {
         ? embedding.baseUrl.trim()
         : "https://api.openai.com/v1",
     client: typeof embedding.client === "function" ? embedding.client : null
+  };
+}
+
+function resolveHybridFreshnessConfig(args, context) {
+  const index = context?.index || {};
+  const enabled = parseHybridBoolean(
+    args?.enable_freshness,
+    parseHybridBoolean(index.freshnessEnabled, DEFAULT_HYBRID_FRESHNESS_ENABLED)
+  );
+  return {
+    enabled,
+    stale_after_ms: parseHybridInt(
+      args?.freshness_stale_after_ms,
+      parseHybridInt(
+        index.freshnessStaleAfterMs,
+        DEFAULT_HYBRID_FRESHNESS_STALE_AFTER_MS,
+        1000,
+        86_400_000
+      ),
+      1000,
+      86_400_000
+    ),
+    weight: parseHybridFloat(
+      args?.freshness_weight,
+      parseHybridFloat(index.freshnessWeight, DEFAULT_HYBRID_FRESHNESS_WEIGHT, 0, 1),
+      0,
+      1
+    ),
+    vector_stale_penalty: parseHybridFloat(
+      args?.freshness_vector_stale_penalty,
+      parseHybridFloat(
+        index.freshnessVectorStalePenalty,
+        DEFAULT_HYBRID_FRESHNESS_VECTOR_STALE_PENALTY,
+        0,
+        1
+      ),
+      0,
+      1
+    ),
+    max_paths: parseHybridInt(
+      args?.freshness_max_paths,
+      parseHybridInt(index.freshnessMaxPaths, DEFAULT_HYBRID_FRESHNESS_MAX_PATHS, 1, 1000),
+      1,
+      1000
+    )
   };
 }
 
@@ -1833,6 +1913,215 @@ function buildEmbeddingSourceBase(config) {
     rank_shift_count: 0,
     top1_changed: false,
     score_delta_mean: 0
+  };
+}
+
+function buildFreshnessSourceBase(config) {
+  return {
+    enabled: Boolean(config.enabled),
+    attempted: false,
+    ok: false,
+    stale_after_ms: Number(config.stale_after_ms || 0),
+    weight: Number(config.weight || 0),
+    vector_stale_penalty: Number(config.vector_stale_penalty || 0),
+    sampled_paths: 0,
+    sampled_paths_limit: Number(config.max_paths || 0),
+    sampled_paths_with_stat: 0,
+    missing_paths: 0,
+    candidates_with_freshness: 0,
+    stale_candidates: 0,
+    stale_vector_candidates: 0,
+    stale_hit_rate: 0,
+    status_code: config.enabled ? "FRESHNESS_PENDING" : "FRESHNESS_DISABLED",
+    error: null
+  };
+}
+
+function normalizeCandidatePath(pathValue) {
+  if (typeof pathValue !== "string") {
+    return null;
+  }
+  const trimmed = pathValue.trim().replace(/\\/g, "/");
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function freshnessScoreFromAge(ageMs, staleAfterMs) {
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    return null;
+  }
+  const threshold = Math.max(1000, Number(staleAfterMs || DEFAULT_HYBRID_FRESHNESS_STALE_AFTER_MS));
+  const ratio = Math.min(1, ageMs / threshold);
+  return roundHybridMetric(1 - ratio);
+}
+
+async function collectFreshnessByPath(workspaceRoot, paths) {
+  const nowMs = Date.now();
+  const map = new Map();
+  await Promise.all(
+    paths.map(async (relativePath) => {
+      try {
+        const fullPath = resolveSafePath(workspaceRoot, relativePath);
+        const stat = await fs.stat(fullPath);
+        const mtimeMs = Number(stat.mtimeMs || 0);
+        map.set(relativePath, {
+          exists: true,
+          mtime_ms: mtimeMs,
+          age_ms: Number.isFinite(mtimeMs) && mtimeMs > 0 ? Math.max(0, nowMs - mtimeMs) : null
+        });
+      } catch {
+        map.set(relativePath, {
+          exists: false,
+          mtime_ms: null,
+          age_ms: null
+        });
+      }
+    })
+  );
+  return map;
+}
+
+async function rerankHybridCandidatesWithFreshness(ranked, args, context) {
+  const config = resolveHybridFreshnessConfig(args, context);
+  const base = buildFreshnessSourceBase(config);
+  if (!config.enabled) {
+    return {
+      ranked,
+      source: {
+        ...base,
+        status_code: "FRESHNESS_DISABLED"
+      }
+    };
+  }
+
+  if (!Array.isArray(ranked) || ranked.length === 0) {
+    return {
+      ranked,
+      source: {
+        ...base,
+        attempted: false,
+        ok: true,
+        status_code: "FRESHNESS_NOT_ATTEMPTED_NO_CANDIDATES"
+      }
+    };
+  }
+
+  const uniquePaths = [];
+  const seenPaths = new Set();
+  for (const candidate of ranked) {
+    const candidatePath = normalizeCandidatePath(candidate?.path);
+    if (!candidatePath || seenPaths.has(candidatePath)) {
+      continue;
+    }
+    seenPaths.add(candidatePath);
+    uniquePaths.push(candidatePath);
+    if (uniquePaths.length >= config.max_paths) {
+      break;
+    }
+  }
+
+  if (uniquePaths.length === 0) {
+    return {
+      ranked,
+      source: {
+        ...base,
+        attempted: false,
+        ok: true,
+        sampled_paths: 0,
+        status_code: "FRESHNESS_NOT_ATTEMPTED_NO_PATHS"
+      }
+    };
+  }
+
+  const freshnessByPath = await collectFreshnessByPath(context.workspaceRoot, uniquePaths);
+  const explain = Boolean(args?.explain);
+  let withFreshness = 0;
+  let staleCandidates = 0;
+  let staleVectorCandidates = 0;
+  let sampledWithStat = 0;
+
+  for (const value of freshnessByPath.values()) {
+    if (value?.exists) {
+      sampledWithStat += 1;
+    }
+  }
+
+  const reranked = ranked.map((candidate) => {
+    const pathValue = normalizeCandidatePath(candidate?.path);
+    const freshnessMeta = pathValue ? freshnessByPath.get(pathValue) : null;
+    const ageMs = Number(freshnessMeta?.age_ms);
+    const freshnessScore = freshnessScoreFromAge(ageMs, config.stale_after_ms);
+    const isStale = Number.isFinite(ageMs) && ageMs > config.stale_after_ms;
+
+    const providers = new Set(
+      [candidate?.source, ...(Array.isArray(candidate?.supporting_providers) ? candidate.supporting_providers : [])]
+        .map((item) => normalizeHybridSource(item))
+        .filter(Boolean)
+    );
+    const hasVectorSupport = providers.has("vector");
+
+    let nextScore = roundHybridMetric(candidate.hybrid_score);
+    let vectorPenaltyApplied = 0;
+    if (freshnessScore !== null) {
+      withFreshness += 1;
+      if (isStale) {
+        staleCandidates += 1;
+      }
+      nextScore = roundHybridMetric(
+        nextScore * (1 - config.weight) + freshnessScore * config.weight
+      );
+      if (hasVectorSupport && isStale) {
+        staleVectorCandidates += 1;
+        const staleOverMs = Math.max(0, ageMs - config.stale_after_ms);
+        const staleRatio = Math.min(1, staleOverMs / config.stale_after_ms);
+        vectorPenaltyApplied = roundHybridMetric(
+          config.vector_stale_penalty * (0.5 + staleRatio * 0.5)
+        );
+        nextScore = roundHybridMetric(nextScore * (1 - vectorPenaltyApplied));
+      }
+    }
+
+    const merged = {
+      ...candidate,
+      hybrid_score: nextScore,
+      freshness_score: freshnessScore,
+      freshness_age_ms: Number.isFinite(ageMs) ? Math.floor(ageMs) : null,
+      freshness_mtime_ms: Number.isFinite(Number(freshnessMeta?.mtime_ms))
+        ? Math.floor(Number(freshnessMeta?.mtime_ms))
+        : null,
+      freshness_stale: Boolean(isStale)
+    };
+    if (explain) {
+      merged.hybrid_explain = {
+        ...(candidate.hybrid_explain || {}),
+        freshness_score: freshnessScore,
+        freshness_age_ms: Number.isFinite(ageMs) ? Math.floor(ageMs) : null,
+        freshness_weight: roundHybridMetric(config.weight),
+        freshness_vector_penalty: vectorPenaltyApplied,
+        final_score: nextScore
+      };
+    }
+    return merged;
+  });
+
+  reranked.sort(sortHybridCandidates);
+
+  const missingPaths = uniquePaths.length - sampledWithStat;
+  return {
+    ranked: reranked,
+    source: {
+      ...base,
+      attempted: true,
+      ok: true,
+      sampled_paths: uniquePaths.length,
+      sampled_paths_with_stat: sampledWithStat,
+      missing_paths: missingPaths,
+      candidates_with_freshness: withFreshness,
+      stale_candidates: staleCandidates,
+      stale_vector_candidates: staleVectorCandidates,
+      stale_hit_rate:
+        withFreshness > 0 ? roundHybridMetric(staleCandidates / withFreshness) : 0,
+      status_code: "FRESHNESS_OK"
+    }
   };
 }
 
@@ -2176,12 +2465,27 @@ async function queryHybridIndexTool(args, context) {
     path_prefix: args?.path_prefix,
     explain: args?.explain
   });
-  const embeddingRerank = await rerankHybridCandidatesWithEmbedding(ranked, {
-    ...args,
-    query
-  }, context);
+  const embeddingRerank = await rerankHybridCandidatesWithEmbedding(
+    ranked,
+    {
+      ...args,
+      query
+    },
+    context
+  );
   const finalRanked = Array.isArray(embeddingRerank?.ranked) ? embeddingRerank.ranked : ranked;
-  const seeds = finalRanked.slice(0, topK);
+  const freshnessRerank = await rerankHybridCandidatesWithFreshness(
+    finalRanked,
+    {
+      ...args,
+      query
+    },
+    context
+  );
+  const freshnessRanked = Array.isArray(freshnessRerank?.ranked)
+    ? freshnessRerank.ranked
+    : finalRanked;
+  const seeds = freshnessRanked.slice(0, topK);
   const embeddingSource = embeddingRerank?.source || {
     enabled: false,
     attempted: false,
@@ -2199,6 +2503,31 @@ async function queryHybridIndexTool(args, context) {
     score_delta_mean: 0,
     error: null
   };
+  const freshnessSource = freshnessRerank?.source || {
+    enabled: false,
+    attempted: false,
+    ok: false,
+    stale_after_ms: DEFAULT_HYBRID_FRESHNESS_STALE_AFTER_MS,
+    weight: DEFAULT_HYBRID_FRESHNESS_WEIGHT,
+    vector_stale_penalty: DEFAULT_HYBRID_FRESHNESS_VECTOR_STALE_PENALTY,
+    sampled_paths: 0,
+    sampled_paths_limit: DEFAULT_HYBRID_FRESHNESS_MAX_PATHS,
+    sampled_paths_with_stat: 0,
+    missing_paths: 0,
+    candidates_with_freshness: 0,
+    stale_candidates: 0,
+    stale_vector_candidates: 0,
+    stale_hit_rate: 0,
+    status_code: "FRESHNESS_DISABLED",
+    error: null
+  };
+  const priorityPolicy = ["semantic", "vector", "syntax", "index"];
+  if (embeddingSource.ok) {
+    priorityPolicy.push("embedding_rerank");
+  }
+  if (freshnessSource.attempted) {
+    priorityPolicy.push("freshness_rerank");
+  }
 
   return {
     ok: true,
@@ -2222,6 +2551,14 @@ async function queryHybridIndexTool(args, context) {
         top_k: Number(embeddingSource.top_k || 0),
         weight: Number(embeddingSource.weight || 0),
         status_code: embeddingSource.status_code || null
+      },
+      freshness: {
+        enabled: Boolean(freshnessSource.enabled),
+        attempted: Boolean(freshnessSource.attempted),
+        stale_after_ms: Number(freshnessSource.stale_after_ms || 0),
+        weight: Number(freshnessSource.weight || 0),
+        vector_stale_penalty: Number(freshnessSource.vector_stale_penalty || 0),
+        status_code: freshnessSource.status_code || null
       }
     },
     sources: {
@@ -2262,12 +2599,27 @@ async function queryHybridIndexTool(args, context) {
         top1_changed: Boolean(embeddingSource.top1_changed),
         score_delta_mean: Number(embeddingSource.score_delta_mean || 0),
         error: embeddingSource.error || null
+      },
+      freshness: {
+        enabled: Boolean(freshnessSource.enabled),
+        attempted: Boolean(freshnessSource.attempted),
+        ok: Boolean(freshnessSource.ok),
+        stale_after_ms: Number(freshnessSource.stale_after_ms || 0),
+        weight: Number(freshnessSource.weight || 0),
+        vector_stale_penalty: Number(freshnessSource.vector_stale_penalty || 0),
+        sampled_paths: Number(freshnessSource.sampled_paths || 0),
+        sampled_paths_limit: Number(freshnessSource.sampled_paths_limit || 0),
+        sampled_paths_with_stat: Number(freshnessSource.sampled_paths_with_stat || 0),
+        missing_paths: Number(freshnessSource.missing_paths || 0),
+        candidates_with_freshness: Number(freshnessSource.candidates_with_freshness || 0),
+        stale_candidates: Number(freshnessSource.stale_candidates || 0),
+        stale_vector_candidates: Number(freshnessSource.stale_vector_candidates || 0),
+        stale_hit_rate: Number(freshnessSource.stale_hit_rate || 0),
+        status_code: freshnessSource.status_code || null,
+        error: freshnessSource.error || null
       }
     },
-    priority_policy:
-      embeddingSource.ok
-        ? ["semantic", "vector", "syntax", "index", "embedding_rerank"]
-        : ["semantic", "vector", "syntax", "index"],
+    priority_policy: priorityPolicy,
     total_seeds: seeds.length,
     scanned_candidates: scannedCandidates.length,
     deduped_candidates: deduped.size,

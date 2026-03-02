@@ -32,7 +32,12 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
         },
         index: {
           maxFiles: 1234,
-          maxFileSizeKb: 256
+          maxFileSizeKb: 256,
+          freshnessEnabled: false,
+          freshnessStaleAfterMs: 600000,
+          freshnessWeight: 0.2,
+          freshnessVectorStalePenalty: 0.35,
+          freshnessMaxPaths: 88
         },
         lsp: {
           enabled: false,
@@ -55,6 +60,11 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.maxToolIterations, 12);
   assert.equal(config.index.maxFiles, 1234);
   assert.equal(config.index.maxFileSizeKb, 256);
+  assert.equal(config.index.freshnessEnabled, false);
+  assert.equal(config.index.freshnessStaleAfterMs, 600000);
+  assert.equal(config.index.freshnessWeight, 0.2);
+  assert.equal(config.index.freshnessVectorStalePenalty, 0.35);
+  assert.equal(config.index.freshnessMaxPaths, 88);
   assert.equal(config.lsp.enabled, false);
   assert.equal(config.lsp.timeoutMs, 8000);
   assert.equal(config.lsp.maxResults, 33);
@@ -104,13 +114,15 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
     env: {
       OPENAI_API_KEY: "sk-from-env",
       CLAWTY_MODEL: "model-from-env",
-      CLAWTY_TOOL_TIMEOUT_MS: "3333"
+      CLAWTY_TOOL_TIMEOUT_MS: "3333",
+      CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000"
     }
   });
 
   assert.equal(config.apiKey, "sk-from-env");
   assert.equal(config.model, "model-from-env");
   assert.equal(config.toolTimeoutMs, 3333);
+  assert.equal(config.index.freshnessStaleAfterMs, 123000);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
 

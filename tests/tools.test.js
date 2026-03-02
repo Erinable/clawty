@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { runTool } from "../src/tools.js";
 import { EmbeddingError } from "../src/embedding-client.js";
 import {
@@ -641,6 +643,9 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   assert.ok(query.sources.semantic.ok);
   assert.ok(query.sources.syntax.ok);
   assert.ok(query.sources.index.ok);
+  assert.equal(query.sources.freshness.enabled, true);
+  assert.equal(query.sources.freshness.ok, true);
+  assert.ok(query.sources.freshness.sampled_paths >= 1);
   assert.ok(query.seeds[0].path.startsWith("src/"));
   assert.ok(Array.isArray(query.seeds[0].supporting_providers));
   assert.ok(query.seeds[0].supporting_providers.length >= 1);
@@ -690,6 +695,7 @@ test("query_hybrid_index still returns candidates when semantic graph is empty",
   assert.equal(query.sources.semantic.ok, false);
   assert.ok(query.sources.syntax.ok);
   assert.ok(query.sources.index.ok);
+  assert.equal(query.sources.freshness.enabled, true);
   assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-fallback.ts"));
 });
 
@@ -864,4 +870,73 @@ test("query_hybrid_index classifies embedding timeout errors and keeps fallback 
   assert.equal(query.sources.embedding.retryable, true);
   assert.ok(query.sources.embedding.latency_ms >= 0);
   assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-embed-timeout.ts"));
+});
+
+test("query_hybrid_index downweights stale vector-supported candidates with freshness rerank", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-freshness.ts",
+    "export function hybridFreshnessToken() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    embedding: {
+      enabled: false,
+      model: "mock-vector-freshness",
+      client: async ({ input }) =>
+        input.map((text) => {
+          const normalized = String(text || "").toLowerCase();
+          return [normalized.includes("hybridfreshnesstoken") ? 1 : 0, 0.1];
+        })
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+  const builtVector = await runTool(
+    "build_vector_index",
+    { layer: "base", model: "mock-vector-freshness" },
+    context
+  );
+  assert.equal(builtVector.ok, true);
+
+  const oldDate = new Date(Date.now() - 60 * 60 * 1000);
+  await fs.utimes(path.join(workspaceRoot, "src/hybrid-freshness.ts"), oldDate, oldDate);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridFreshnessToken",
+      include_vector: true,
+      explain: true,
+      enable_freshness: true,
+      freshness_stale_after_ms: 1000,
+      freshness_weight: 0.3,
+      freshness_vector_stale_penalty: 0.6
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.sources.freshness.enabled, true);
+  assert.equal(query.sources.freshness.attempted, true);
+  assert.equal(query.sources.freshness.ok, true);
+  assert.ok(query.sources.freshness.stale_candidates >= 1);
+  assert.ok(query.sources.freshness.stale_vector_candidates >= 1);
+  assert.ok(query.priority_policy.includes("freshness_rerank"));
+
+  const targetSeed = query.seeds.find((seed) => seed.path === "src/hybrid-freshness.ts");
+  assert.ok(targetSeed);
+  assert.ok(Array.isArray(targetSeed.supporting_providers));
+  assert.ok(targetSeed.supporting_providers.includes("vector"));
+  assert.equal(targetSeed.freshness_stale, true);
+  assert.equal(typeof targetSeed.freshness_score, "number");
+  assert.ok(targetSeed.hybrid_explain);
+  assert.ok(targetSeed.hybrid_explain.freshness_vector_penalty > 0);
 });

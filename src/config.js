@@ -227,6 +227,36 @@ export function loadConfig(options = {}) {
       512,
       1,
       8192
+    ),
+    freshnessEnabled: readBoolean(
+      env.CLAWTY_INDEX_FRESHNESS_ENABLED ?? deepPick(fileConfig.data, ["index", "freshnessEnabled"]),
+      true
+    ),
+    freshnessStaleAfterMs: readInt(
+      env.CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS ??
+        deepPick(fileConfig.data, ["index", "freshnessStaleAfterMs"]),
+      300_000,
+      1000,
+      86_400_000
+    ),
+    freshnessWeight: readFloat(
+      env.CLAWTY_INDEX_FRESHNESS_WEIGHT ?? deepPick(fileConfig.data, ["index", "freshnessWeight"]),
+      0.12,
+      0,
+      1
+    ),
+    freshnessVectorStalePenalty: readFloat(
+      env.CLAWTY_INDEX_FRESHNESS_VECTOR_STALE_PENALTY ??
+        deepPick(fileConfig.data, ["index", "freshnessVectorStalePenalty"]),
+      0.25,
+      0,
+      1
+    ),
+    freshnessMaxPaths: readInt(
+      env.CLAWTY_INDEX_FRESHNESS_MAX_PATHS ?? deepPick(fileConfig.data, ["index", "freshnessMaxPaths"]),
+      200,
+      1,
+      1000
     )
   };
 
