@@ -37,6 +37,7 @@ import {
   lspWorkspaceSymbols
 } from "./lsp-manager.js";
 import { createEmbeddings, EmbeddingError } from "./embedding-client.js";
+import { prepareHybridTunerDecision, recordHybridTunerOutcome } from "./online-tuner.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -46,6 +47,10 @@ const HYBRID_QUERY_METRICS_FILE = "hybrid-query.jsonl";
 const DEFAULT_METRICS_ENABLED = true;
 const DEFAULT_METRICS_PERSIST_HYBRID = true;
 const DEFAULT_METRICS_QUERY_PREVIEW_CHARS = 160;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 const BLOCKED_COMMAND_PATTERNS = [
   /\brm\s+-rf\b/i,
@@ -701,6 +706,12 @@ export const TOOL_DEFINITIONS = [
         embedding_model: {
           type: "string",
           description: "Optional embedding model override, e.g. text-embedding-3-small."
+        },
+        embedding_timeout_ms: {
+          type: "integer",
+          description: "Optional embedding request timeout override in milliseconds.",
+          minimum: 1000,
+          maximum: 120000
         },
         enable_freshness: {
           type: "boolean",
@@ -1509,8 +1520,13 @@ function resolveHybridEmbeddingConfig(args, context) {
     1
   );
   const timeoutMs = parseHybridInt(
-    embedding.timeoutMs,
-    DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS,
+    args?.embedding_timeout_ms,
+    parseHybridInt(
+      embedding.timeoutMs,
+      DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS,
+      1000,
+      120_000
+    ),
     1000,
     120_000
   );
@@ -1997,6 +2013,7 @@ function buildEmbeddingSourceBase(config) {
     model: config.model,
     top_k: config.top_k,
     weight: config.weight,
+    timeout_ms: Number(config.timeout_ms || 0),
     reranked_candidates: 0,
     latency_ms: 0,
     status_code: config.enabled ? "EMBEDDING_PENDING" : "EMBEDDING_DISABLED",
@@ -2466,19 +2483,52 @@ async function queryHybridIndexTool(args, context) {
   }
   const queryStartedAt = performance.now();
 
-  const topK = Number.isFinite(Number(args?.top_k))
-    ? Math.max(1, Math.min(30, Math.floor(Number(args.top_k))))
+  let tunerDecision = {
+    enabled: false,
+    mode: "off",
+    decision_id: null,
+    arm_id: null,
+    effective_args: isPlainObject(args) ? { ...args } : {},
+    applied_params: {},
+    explicit_override: false,
+    selection: {
+      strategy: "disabled",
+      candidates: [],
+      blocked: []
+    }
+  };
+  try {
+    tunerDecision = await prepareHybridTunerDecision(context.workspaceRoot, args, context);
+  } catch (error) {
+    tunerDecision = {
+      ...tunerDecision,
+      selection: {
+        strategy: "decision_failed",
+        candidates: [],
+        blocked: []
+      },
+      error: error.message || String(error)
+    };
+  }
+  const effectiveArgs = isPlainObject(tunerDecision?.effective_args)
+    ? tunerDecision.effective_args
+    : isPlainObject(args)
+      ? { ...args }
+      : {};
+
+  const topK = Number.isFinite(Number(effectiveArgs?.top_k))
+    ? Math.max(1, Math.min(30, Math.floor(Number(effectiveArgs.top_k))))
     : 5;
   const scanTopK = Math.max(topK * 3, 10);
-  const vectorEnabled = parseHybridBoolean(args?.include_vector, true);
+  const vectorEnabled = parseHybridBoolean(effectiveArgs?.include_vector, true);
   const semanticArgs = {
     query,
     top_k: Math.min(30, scanTopK),
-    max_neighbors: args?.max_neighbors,
-    max_hops: args?.max_hops,
-    per_hop_limit: args?.per_hop_limit,
-    edge_type: args?.edge_type,
-    path_prefix: args?.path_prefix
+    max_neighbors: effectiveArgs?.max_neighbors,
+    max_hops: effectiveArgs?.max_hops,
+    per_hop_limit: effectiveArgs?.per_hop_limit,
+    edge_type: effectiveArgs?.edge_type,
+    path_prefix: effectiveArgs?.path_prefix
   };
 
   const vectorQueryPromise = vectorEnabled
@@ -2487,11 +2537,11 @@ async function queryHybridIndexTool(args, context) {
         {
           query,
           top_k: Math.min(100, Math.max(scanTopK, topK * 4)),
-          max_candidates: args?.vector_max_candidates,
-          path_prefix: args?.path_prefix,
-          language: args?.language,
-          layers: args?.vector_layers,
-          model: args?.embedding_model
+          max_candidates: effectiveArgs?.vector_max_candidates,
+          path_prefix: effectiveArgs?.path_prefix,
+          language: effectiveArgs?.language,
+          layers: effectiveArgs?.vector_layers,
+          model: effectiveArgs?.embedding_model
         },
         {
           embedding: context.embedding || {}
@@ -2508,14 +2558,14 @@ async function queryHybridIndexTool(args, context) {
     querySyntaxIndex(context.workspaceRoot, {
       query,
       top_k: Math.min(30, scanTopK),
-      max_neighbors: args?.max_neighbors,
-      path_prefix: args?.path_prefix
+      max_neighbors: effectiveArgs?.max_neighbors,
+      path_prefix: effectiveArgs?.path_prefix
     }),
     queryCodeIndex(context.workspaceRoot, {
       query,
       top_k: Math.min(50, Math.max(scanTopK, 20)),
-      path_prefix: args?.path_prefix,
-      language: args?.language
+      path_prefix: effectiveArgs?.path_prefix,
+      language: effectiveArgs?.language
     }),
     vectorQueryPromise
   ]);
@@ -2532,7 +2582,7 @@ async function queryHybridIndexTool(args, context) {
 
   if (syntaxResult?.ok && Array.isArray(syntaxResult.seeds)) {
     for (const seed of syntaxResult.seeds) {
-      const mapped = mapSyntaxSeedToSemanticSeed(seed, args?.edge_type || null);
+      const mapped = mapSyntaxSeedToSemanticSeed(seed, effectiveArgs?.edge_type || null);
       scannedCandidates.push(mapped);
       addHybridCandidate(deduped, mapped, "syntax");
     }
@@ -2556,13 +2606,13 @@ async function queryHybridIndexTool(args, context) {
 
   const ranked = rankHybridCandidates(Array.from(deduped.values()), {
     query,
-    path_prefix: args?.path_prefix,
-    explain: args?.explain
+    path_prefix: effectiveArgs?.path_prefix,
+    explain: effectiveArgs?.explain
   });
   const embeddingRerank = await rerankHybridCandidatesWithEmbedding(
     ranked,
     {
-      ...args,
+      ...effectiveArgs,
       query
     },
     context
@@ -2571,7 +2621,7 @@ async function queryHybridIndexTool(args, context) {
   const freshnessRerank = await rerankHybridCandidatesWithFreshness(
     finalRanked,
     {
-      ...args,
+      ...effectiveArgs,
       query
     },
     context
@@ -2587,6 +2637,7 @@ async function queryHybridIndexTool(args, context) {
     model: DEFAULT_HYBRID_EMBEDDING_MODEL,
     top_k: DEFAULT_HYBRID_EMBEDDING_TOP_K,
     weight: DEFAULT_HYBRID_EMBEDDING_WEIGHT,
+    timeout_ms: DEFAULT_HYBRID_EMBEDDING_TIMEOUT_MS,
     reranked_candidates: 0,
     latency_ms: 0,
     status_code: "EMBEDDING_DISABLED",
@@ -2627,6 +2678,33 @@ async function queryHybridIndexTool(args, context) {
     freshnessSource
   );
   const queryTotalMs = roundHybridMs(performance.now() - queryStartedAt);
+  let tunerOutcome = {
+    recorded: false,
+    reason: "not_recorded"
+  };
+  try {
+    tunerOutcome = await recordHybridTunerOutcome(
+      context.workspaceRoot,
+      tunerDecision,
+      {
+        query_total_ms: queryTotalMs,
+        seeds,
+        sources: {
+          embedding: {
+            status_code: embeddingSource.status_code || null
+          }
+        },
+        degradation
+      },
+      context
+    );
+  } catch (error) {
+    tunerOutcome = {
+      recorded: false,
+      reason: "record_failed",
+      error: error.message || String(error)
+    };
+  }
   const metricsConfig = resolveMetricsConfig(context);
   const metricsWrite = await appendHybridQueryMetricEvent(
     context.workspaceRoot,
@@ -2641,8 +2719,8 @@ async function queryHybridIndexTool(args, context) {
       deduped_candidates: deduped.size,
       total_seeds: seeds.length,
       filters: {
-        path_prefix: args?.path_prefix || null,
-        language: args?.language || null
+        path_prefix: effectiveArgs?.path_prefix || null,
+        language: effectiveArgs?.language || null
       },
       sources: {
         semantic_ok: Boolean(semanticResult?.ok),
@@ -2663,6 +2741,7 @@ async function queryHybridIndexTool(args, context) {
           error_code: embeddingSource.error_code || null,
           retryable: Boolean(embeddingSource.retryable),
           reranked_candidates: Number(embeddingSource.reranked_candidates || 0),
+          timeout_ms: Number(embeddingSource.timeout_ms || 0),
           latency_ms: Number(embeddingSource.latency_ms || 0)
         },
         freshness: {
@@ -2676,7 +2755,19 @@ async function queryHybridIndexTool(args, context) {
           )
         }
       },
-      degradation
+      degradation,
+      tuner: {
+        enabled: Boolean(tunerDecision?.enabled),
+        mode: tunerDecision?.mode || "off",
+        decision_id: tunerDecision?.decision_id || null,
+        arm_id: tunerDecision?.arm_id || null,
+        explicit_override: Boolean(tunerDecision?.explicit_override),
+        params_applied: tunerDecision?.applied_params || {},
+        selection_strategy: tunerDecision?.selection?.strategy || null,
+        reward: Number(tunerOutcome?.reward || 0),
+        success: Boolean(tunerOutcome?.success),
+        outcome_recorded: Boolean(tunerOutcome?.recorded)
+      }
     },
     context
   );
@@ -2687,22 +2778,23 @@ async function queryHybridIndexTool(args, context) {
     query,
     query_total_ms: queryTotalMs,
     filters: {
-      edge_type: args?.edge_type || null,
-      path_prefix: args?.path_prefix || null,
-      language: args?.language || null,
-      max_hops: Number.isFinite(Number(args?.max_hops))
-        ? Math.max(1, Math.floor(Number(args.max_hops)))
+      edge_type: effectiveArgs?.edge_type || null,
+      path_prefix: effectiveArgs?.path_prefix || null,
+      language: effectiveArgs?.language || null,
+      max_hops: Number.isFinite(Number(effectiveArgs?.max_hops))
+        ? Math.max(1, Math.floor(Number(effectiveArgs.max_hops)))
         : 1,
-      per_hop_limit: Number.isFinite(Number(args?.per_hop_limit))
-        ? Math.max(1, Math.floor(Number(args.per_hop_limit)))
+      per_hop_limit: Number.isFinite(Number(effectiveArgs?.per_hop_limit))
+        ? Math.max(1, Math.floor(Number(effectiveArgs.per_hop_limit)))
         : null,
-      explain: Boolean(args?.explain),
+      explain: Boolean(effectiveArgs?.explain),
       embedding: {
         enabled: Boolean(embeddingSource.enabled),
         attempted: Boolean(embeddingSource.attempted),
         model: embeddingSource.model,
         top_k: Number(embeddingSource.top_k || 0),
         weight: Number(embeddingSource.weight || 0),
+        timeout_ms: Number(embeddingSource.timeout_ms || 0),
         status_code: embeddingSource.status_code || null
       },
       freshness: {
@@ -2744,6 +2836,7 @@ async function queryHybridIndexTool(args, context) {
         ok: Boolean(embeddingSource.ok),
         model: embeddingSource.model || null,
         reranked_candidates: Number(embeddingSource.reranked_candidates || 0),
+        timeout_ms: Number(embeddingSource.timeout_ms || 0),
         latency_ms: Number(embeddingSource.latency_ms || 0),
         status_code: embeddingSource.status_code || null,
         error_code: embeddingSource.error_code || null,
@@ -2776,7 +2869,27 @@ async function queryHybridIndexTool(args, context) {
     observability: {
       metrics_logged: Boolean(metricsWrite.logged),
       metrics_reason: metricsWrite.reason || null,
-      metrics_error: metricsWrite.error || null
+      metrics_error: metricsWrite.error || null,
+      online_tuner: {
+        enabled: Boolean(tunerDecision?.enabled),
+        mode: tunerDecision?.mode || "off",
+        decision_id: tunerDecision?.decision_id || null,
+        arm_id: tunerDecision?.arm_id || null,
+        explicit_override: Boolean(tunerDecision?.explicit_override),
+        params_applied: tunerDecision?.applied_params || {},
+        selection_strategy: tunerDecision?.selection?.strategy || null,
+        selection_candidates: Array.isArray(tunerDecision?.selection?.candidates)
+          ? tunerDecision.selection.candidates.length
+          : 0,
+        selection_blocked: Array.isArray(tunerDecision?.selection?.blocked)
+          ? tunerDecision.selection.blocked.length
+          : 0,
+        reward: Number(tunerOutcome?.reward || 0),
+        success: Boolean(tunerOutcome?.success),
+        outcome_recorded: Boolean(tunerOutcome?.recorded),
+        outcome_reason: tunerOutcome?.reason || null,
+        outcome_error: tunerOutcome?.error || null
+      }
     },
     priority_policy: priorityPolicy,
     total_seeds: seeds.length,

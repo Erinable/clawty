@@ -46,6 +46,19 @@
     "persistMemory": true,
     "queryPreviewChars": 160
   },
+  "onlineTuner": {
+    "enabled": false,
+    "mode": "off",
+    "dbPath": ".clawty/tuner.db",
+    "epsilon": 0.08,
+    "globalPriorWeight": 0.35,
+    "localWarmupSamples": 50,
+    "minConstraintSamples": 30,
+    "maxDegradeRate": 0.1,
+    "maxTimeoutRate": 0.08,
+    "maxNetworkRate": 0.05,
+    "successRewardThreshold": 0.35
+  },
   "memory": {
     "enabled": true,
     "maxInjectedItems": 5,

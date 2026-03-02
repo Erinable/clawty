@@ -206,7 +206,25 @@ npm run metrics:check -- --max-embedding-timeout-rate=0.05 --max-embedding-netwo
 3. `--runbook-enforce` 会在出现未映射 embedding `status_code` 时直接失败，便于及时补 runbook。
 4. runbook 见 `docs/hybrid-degrade-runbook.md`。
 
-## 7. 常见问题
+## 7. 在线调参（Bandit，阶段化）
+
+建议按 `off -> shadow -> active` 顺序启用：
+
+```bash
+# 仅记录决策/回报，不改参数
+CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=shadow node src/index.js run "..."
+
+# 生效参数（仅在无显式 embedding/freshness 参数时注入）
+CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=active node src/index.js run "..."
+```
+
+说明：
+
+1. 状态库默认在 `.clawty/tuner.db`。
+2. 约束由 `CLAWTY_TUNER_MAX_DEGRADE_RATE / MAX_TIMEOUT_RATE / MAX_NETWORK_RATE` 控制。
+3. `query_hybrid_index` 结果会返回 `observability.online_tuner`，可用于观察决策与回报。
+
+## 8. 常见问题
 
 ### Q1：为什么回答有时“像没看到最新改动”？
 
@@ -235,7 +253,7 @@ npm run metrics:check -- --max-embedding-timeout-rate=0.05 --max-embedding-netwo
 3. 用 `node src/index.js memory stats --json` 查看当前记忆库条目是否存在。
 4. 如历史经验过多，调大 `--top-k` 或在配置中提高 `maxInjectedItems`。
 
-## 8. 当前边界
+## 9. 当前边界
 
 1. 目前是本地 CLI 形态，不是 MCP Server 形态。
 2. 长期记忆已是 MVP 形态，当前仍需继续优化学习策略与排序质量。

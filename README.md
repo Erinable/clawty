@@ -317,6 +317,7 @@ hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
 可选启用 freshness 重排（`enable_freshness` / `freshness_stale_after_ms` / `freshness_weight` / `freshness_vector_stale_penalty`），用于 stale 候选降权。
 返回 `sources.embedding` 观测字段（`status_code` / `error_code` / `latency_ms` / `rank_shift_count` / `top1_changed`），便于稳定性与效果追踪。
 返回 `sources.freshness` 观测字段（`stale_hit_rate` / `stale_vector_candidates` / `sampled_paths` / `missing_paths`），便于跟踪索引新鲜度。
+返回 `observability.online_tuner` 字段（`mode` / `decision_id` / `arm_id` / `reward`），便于观察在线调参决策与回报。
 返回 `query_total_ms` 与 `degradation`（`degraded` / `failed_sources`）字段，并将 hybrid 查询指标按 JSONL 记录到 `.clawty/metrics/hybrid-query.jsonl`（可配置关闭）。
 `build_vector_index` / `refresh_vector_index` 会将代码 chunk 生成 embedding 并写入离线向量层（`base` / `delta`），`merge_vector_delta` 可周期性合并增量层。
 `query_vector_index` 支持 `path_prefix`、`language`、`layers`、`max_candidates`，用于语义召回候选。
@@ -419,6 +420,17 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_METRICS_PERSIST_WATCH`：是否落盘 watch flush 指标事件，默认 `true`
 - `CLAWTY_METRICS_PERSIST_MEMORY`：是否落盘 memory 查询指标事件，默认 `true`
 - `CLAWTY_METRICS_QUERY_PREVIEW_CHARS`：指标事件中 `query_preview` 长度上限，默认 `160`
+- `CLAWTY_TUNER_ENABLED`：是否启用在线调参引擎，默认 `false`
+- `CLAWTY_TUNER_MODE`：在线调参模式（`off|shadow|active`），默认 `off`
+- `CLAWTY_TUNER_DB_PATH`：在线调参状态库路径，默认 `.clawty/tuner.db`
+- `CLAWTY_TUNER_EPSILON`：Bandit 探索率，默认 `0.08`
+- `CLAWTY_TUNER_GLOBAL_PRIOR_WEIGHT`：全局先验权重，默认 `0.35`
+- `CLAWTY_TUNER_LOCAL_WARMUP_SAMPLES`：仓库级后验暖启动样本数，默认 `50`
+- `CLAWTY_TUNER_MIN_CONSTRAINT_SAMPLES`：约束判定最小样本数，默认 `30`
+- `CLAWTY_TUNER_MAX_DEGRADE_RATE`：调参可行域 degrade 上限，默认 `0.1`
+- `CLAWTY_TUNER_MAX_TIMEOUT_RATE`：调参可行域 timeout 上限，默认 `0.08`
+- `CLAWTY_TUNER_MAX_NETWORK_RATE`：调参可行域 network 上限，默认 `0.05`
+- `CLAWTY_TUNER_SUCCESS_REWARD_THRESHOLD`：在线成功阈值（reward），默认 `0.35`
 - `CLAWTY_MEMORY_ENABLED`：是否启用长期记忆检索与注入，默认 `true`
 - `CLAWTY_MEMORY_MAX_INJECTED_ITEMS`：每轮注入的 memory 条目数上限，默认 `5`
 - `CLAWTY_MEMORY_MAX_INJECTED_CHARS`：每轮注入的 memory 文本上限，默认 `2400`

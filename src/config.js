@@ -212,6 +212,14 @@ function readString(value, fallback) {
   return fallback;
 }
 
+function readEnumString(value, fallback, allowedValues) {
+  const normalized = readString(value, "").toLowerCase();
+  if (normalized && Array.isArray(allowedValues) && allowedValues.includes(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
 function readHttpUrl(value, fallback, label) {
   const candidate = readString(value, fallback);
   if (typeof candidate !== "string" || candidate.trim().length === 0) {
@@ -459,6 +467,82 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const onlineTunerEnabled = readBoolean(
+    env.CLAWTY_TUNER_ENABLED ?? deepPick(fileConfig, ["onlineTuner", "enabled"]),
+    false
+  );
+  const onlineTunerMode = readEnumString(
+    env.CLAWTY_TUNER_MODE ?? deepPick(fileConfig, ["onlineTuner", "mode"]),
+    onlineTunerEnabled ? "shadow" : "off",
+    ["off", "shadow", "active"]
+  );
+  const onlineTuner = {
+    enabled: onlineTunerEnabled,
+    mode: onlineTunerEnabled ? onlineTunerMode : "off",
+    dbPath: readString(
+      env.CLAWTY_TUNER_DB_PATH ?? deepPick(fileConfig, ["onlineTuner", "dbPath"]),
+      path.join(".clawty", "tuner.db")
+    ),
+    epsilon: readFloat(
+      env.CLAWTY_TUNER_EPSILON ?? deepPick(fileConfig, ["onlineTuner", "epsilon"]),
+      0.08,
+      0,
+      1
+    ),
+    globalPriorWeight: readFloat(
+      env.CLAWTY_TUNER_GLOBAL_PRIOR_WEIGHT ??
+        deepPick(fileConfig, ["onlineTuner", "globalPriorWeight"]),
+      0.35,
+      0,
+      3
+    ),
+    localWarmupSamples: readInt(
+      env.CLAWTY_TUNER_LOCAL_WARMUP_SAMPLES ??
+        deepPick(fileConfig, ["onlineTuner", "localWarmupSamples"]),
+      50,
+      1,
+      100000
+    ),
+    minConstraintSamples: readInt(
+      env.CLAWTY_TUNER_MIN_CONSTRAINT_SAMPLES ??
+        deepPick(fileConfig, ["onlineTuner", "minConstraintSamples"]),
+      30,
+      1,
+      100000
+    ),
+    maxDegradeRate: readFloat(
+      env.CLAWTY_TUNER_MAX_DEGRADE_RATE ??
+        deepPick(fileConfig, ["onlineTuner", "maxDegradeRate"]),
+      0.1,
+      0,
+      1
+    ),
+    maxTimeoutRate: readFloat(
+      env.CLAWTY_TUNER_MAX_TIMEOUT_RATE ??
+        deepPick(fileConfig, ["onlineTuner", "maxTimeoutRate"]),
+      0.08,
+      0,
+      1
+    ),
+    maxNetworkRate: readFloat(
+      env.CLAWTY_TUNER_MAX_NETWORK_RATE ??
+        deepPick(fileConfig, ["onlineTuner", "maxNetworkRate"]),
+      0.05,
+      0,
+      1
+    ),
+    successRewardThreshold: readFloat(
+      env.CLAWTY_TUNER_SUCCESS_REWARD_THRESHOLD ??
+        deepPick(fileConfig, ["onlineTuner", "successRewardThreshold"]),
+      0.35,
+      -1,
+      1
+    ),
+    arms: Array.isArray(deepPick(fileConfig, ["onlineTuner", "arms"]))
+      ? deepPick(fileConfig, ["onlineTuner", "arms"])
+      : null
+  };
+
   const memoryScopeRaw = readString(
     env.CLAWTY_MEMORY_SCOPE ?? deepPick(fileConfig, ["memory", "scope"]),
     "project+global"
@@ -613,6 +697,7 @@ export function loadConfig(options = {}) {
     embedding,
     agentContext,
     metrics,
+    onlineTuner,
     memory,
     sources: {
       cwd: rootDir,

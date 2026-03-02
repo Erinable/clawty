@@ -31,11 +31,13 @@ const ROOT_COMMANDS = [
   ["clawty completion [shell]", "generate shell completion script"],
   ["clawty config <command>", "manage configuration"],
   ["clawty memory <command>", "manage long-term memory"],
+  ["clawty monitor [subcommand]", "show runtime metrics and tuner stats"],
   ["clawty run [message..]", "run clawty with a message"],
   ["clawty chat", "start interactive chat mode"],
   ["clawty init", "bootstrap repository analysis"],
   ["clawty doctor", "run diagnostics and health checks"],
   ["clawty watch-index", "auto refresh indexes on file changes"],
+  ["clawty mcp-server", "start MCP stdio server for monitoring tools"],
   ["clawty upgrade [target]", "upgrade clawty via npm"],
   ["clawty uninstall", "uninstall clawty and cleanup files"]
 ];
@@ -216,6 +218,37 @@ function printMemoryHelp() {
         ["--reason <wrong|stale|unsafe|irrelevant|good>", "feedback reason (optional)"],
         ["--note <text>", "optional feedback note"],
         ["--days <n>", "retention days (for prune command)"],
+        ["-h, --help", "show help"]
+      ]
+    })
+  );
+}
+
+function printMonitorHelp() {
+  console.log(
+    renderHelp({
+      commands: [
+        ["clawty monitor report", "combined metrics+tuner report (default)"],
+        ["clawty monitor metrics", "metrics report only"],
+        ["clawty monitor tuner", "tuner report only"]
+      ],
+      options: [
+        ["--json", "output JSON"],
+        ["--window-hours <n>", "time window in hours (default 24)"],
+        ["--watch", "refresh report periodically"],
+        ["--interval-ms <n>", "watch refresh interval (default 5000ms)"],
+        ["-h, --help", "show help"]
+      ]
+    })
+  );
+}
+
+function printMcpServerHelp() {
+  console.log(
+    renderHelp({
+      commands: [["clawty mcp-server", "start MCP stdio server"]],
+      options: [
+        ["--workspace <path>", "workspace root for monitoring tools"],
         ["-h, --help", "show help"]
       ]
     })
@@ -514,7 +547,7 @@ function generateBashCompletion(binary = "clawty") {
     "  COMPREPLY=()",
     "  cur=\"${COMP_WORDS[COMP_CWORD]}\"",
     "  prev=\"${COMP_WORDS[COMP_CWORD-1]}\"",
-    "  local cmds=\"chat run init doctor watch-index config memory completion upgrade uninstall help\"",
+    "  local cmds=\"chat run init doctor watch-index config memory monitor mcp-server completion upgrade uninstall help\"",
     "  local config_sub=\"show path validate\"",
     "  local memory_sub=\"search stats inspect feedback prune reindex\"",
     "  case \"$prev\" in",
@@ -552,6 +585,8 @@ function generateZshCompletion(binary = "clawty") {
     "  'watch-index:auto refresh indexes on file changes'",
     "  'config:manage configuration'",
     "  'memory:manage long-term memory'",
+    "  'monitor:show runtime metrics and tuner stats'",
+    "  'mcp-server:start MCP stdio server for monitoring tools'",
     "  'completion:generate shell completion script'",
     "  'upgrade:upgrade clawty via npm'",
     "  'uninstall:uninstall clawty and cleanup files'",
@@ -570,6 +605,8 @@ function generateFishCompletion(binary = "clawty") {
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a watch-index -d \"auto refresh indexes on file changes\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a config -d \"manage configuration\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a memory -d \"manage long-term memory\"`,
+    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a monitor -d \"show runtime metrics and tuner stats\"`,
+    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a mcp-server -d \"start MCP stdio server for monitoring tools\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a completion -d \"generate shell completion script\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a upgrade -d \"upgrade clawty via npm\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a uninstall -d \"uninstall clawty and cleanup files\"`,
@@ -940,6 +977,177 @@ async function handleMemoryCommand(argv) {
   );
 }
 
+function parseMonitorArgs(argv = []) {
+  const state = {
+    help: false,
+    format: "text",
+    windowHours: 24,
+    watch: false,
+    intervalMs: 5000,
+    rest: []
+  };
+
+  for (let idx = 0; idx < argv.length; idx += 1) {
+    const arg = argv[idx];
+    if (arg === "-h" || arg === "--help") {
+      state.help = true;
+      continue;
+    }
+    if (arg === "--json" || arg === "--format=json") {
+      state.format = "json";
+      continue;
+    }
+    if (arg === "--format=text") {
+      state.format = "text";
+      continue;
+    }
+    if (arg === "--watch") {
+      state.watch = true;
+      continue;
+    }
+    if (arg === "--window-hours") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --window-hours");
+      }
+      state.windowHours = Number(raw);
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--window-hours=")) {
+      state.windowHours = Number(arg.slice("--window-hours=".length));
+      continue;
+    }
+    if (arg === "--interval-ms") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --interval-ms");
+      }
+      state.intervalMs = Number(raw);
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--interval-ms=")) {
+      state.intervalMs = Number(arg.slice("--interval-ms=".length));
+      continue;
+    }
+    state.rest.push(arg);
+  }
+
+  if (!Number.isFinite(state.windowHours) || state.windowHours <= 0 || state.windowHours > 24 * 30) {
+    throw new Error("Invalid --window-hours: expected 0 < hours <= 720");
+  }
+  if (!Number.isFinite(state.intervalMs) || state.intervalMs < 500 || state.intervalMs > 60_000) {
+    throw new Error("Invalid --interval-ms: expected 500-60000");
+  }
+
+  return state;
+}
+
+async function handleMonitorCommand(argv) {
+  const parsed = parseMonitorArgs(argv);
+  const sub = parsed.rest[0] || "report";
+  if (parsed.help) {
+    printMonitorHelp();
+    return;
+  }
+
+  if (!["report", "metrics", "tuner"].includes(sub)) {
+    throw new Error(`Unknown monitor command: ${sub}. Use: clawty monitor <report|metrics|tuner>`);
+  }
+
+  const config = loadConfig({ allowMissingApiKey: true });
+  const workspaceRoot = config.workspaceRoot;
+  const { buildReport } = await import("../scripts/metrics-report.mjs");
+  const { buildTunerReport } = await import("../scripts/tuner-report.mjs");
+
+  const buildOnce = async () => {
+    if (sub === "metrics") {
+      return buildReport({
+        workspaceRoot,
+        windowHours: parsed.windowHours,
+        format: "json"
+      });
+    }
+    if (sub === "tuner") {
+      return buildTunerReport({
+        workspaceRoot,
+        windowHours: parsed.windowHours,
+        format: "json"
+      });
+    }
+    const [metrics, tuner] = await Promise.all([
+      buildReport({
+        workspaceRoot,
+        windowHours: parsed.windowHours,
+        format: "json"
+      }),
+      buildTunerReport({
+        workspaceRoot,
+        windowHours: parsed.windowHours,
+        format: "json"
+      })
+    ]);
+    return {
+      generated_at: new Date().toISOString(),
+      workspace_root: workspaceRoot,
+      window_hours: parsed.windowHours,
+      metrics,
+      tuner
+    };
+  };
+
+  const render = (payload) => {
+    if (parsed.format === "json") {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(JSON.stringify(payload, null, 2));
+  };
+
+  if (!parsed.watch) {
+    render(await buildOnce());
+    return;
+  }
+
+  while (true) {
+    render(await buildOnce());
+    await new Promise((resolve) => setTimeout(resolve, parsed.intervalMs));
+  }
+}
+
+async function handleMcpServerCommand(argv) {
+  if (argv.includes("-h") || argv.includes("--help")) {
+    printMcpServerHelp();
+    return;
+  }
+
+  const { runMcpServer } = await import("./mcp-server.js");
+  let workspaceRoot = null;
+  for (let idx = 0; idx < argv.length; idx += 1) {
+    const arg = argv[idx];
+    if (arg === "--workspace") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --workspace");
+      }
+      workspaceRoot = path.resolve(raw);
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--workspace=")) {
+      workspaceRoot = path.resolve(arg.slice("--workspace=".length));
+      continue;
+    }
+    throw new Error(`Unknown mcp-server argument: ${arg}`);
+  }
+
+  const config = loadConfig({ allowMissingApiKey: true });
+  await runMcpServer({
+    workspaceRoot: workspaceRoot || config.workspaceRoot
+  });
+}
+
 async function handleCompletionCommand(argv) {
   const args = argv.slice();
   if (args.includes("-h") || args.includes("--help")) {
@@ -1143,6 +1351,11 @@ async function main() {
     return;
   }
 
+  if (first === "monitor") {
+    await handleMonitorCommand(args.slice(1));
+    return;
+  }
+
   if (first === "watch-index") {
     await handleWatchIndexCommand(args.slice(1));
     return;
@@ -1165,6 +1378,11 @@ async function main() {
 
   if (first === "uninstall") {
     await handleUninstallCommand(args.slice(1));
+    return;
+  }
+
+  if (first === "mcp-server") {
+    await handleMcpServerCommand(args.slice(1));
     return;
   }
 

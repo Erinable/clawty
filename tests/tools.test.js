@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { runTool } from "../src/tools.js";
 import { EmbeddingError } from "../src/embedding-client.js";
 import {
@@ -795,6 +796,145 @@ test("query_hybrid_index supports optional embedding rerank with mock client", a
   assert.equal(query.seeds[0].path, "tests/hybrid-embed.spec.ts");
   assert.ok(query.seeds[0].hybrid_explain);
   assert.equal(typeof query.seeds[0].hybrid_explain.embedding_score, "number");
+});
+
+test("query_hybrid_index records online tuner decision and outcome in shadow mode", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-tuner-shadow.ts",
+    "export function hybridTunerShadow() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    onlineTuner: {
+      enabled: true,
+      mode: "shadow",
+      epsilon: 0,
+      arms: [{ id: "safe_shadow", params: {} }]
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridTunerShadow",
+      top_k: 3
+    },
+    context
+  );
+
+  assert.equal(query.ok, true);
+  assert.equal(query.observability.online_tuner.enabled, true);
+  assert.equal(query.observability.online_tuner.mode, "shadow");
+  assert.equal(query.observability.online_tuner.arm_id, "safe_shadow");
+  assert.equal(query.observability.online_tuner.outcome_recorded, true);
+
+  const tunerDbPath = path.join(workspaceRoot, ".clawty", "tuner.db");
+  const db = new DatabaseSync(tunerDbPath);
+  try {
+    const decisionCount = db.prepare("SELECT COUNT(1) AS c FROM tuner_decisions").get().c;
+    const outcomeCount = db.prepare("SELECT COUNT(1) AS c FROM tuner_outcomes").get().c;
+    assert.equal(Number(decisionCount), 1);
+    assert.equal(Number(outcomeCount), 1);
+  } finally {
+    db.close();
+  }
+});
+
+test("query_hybrid_index active tuner applies arm params when no explicit override", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-tuner-active.ts",
+    "export function hybridTunerActiveToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "tests/hybrid-tuner-active.spec.ts",
+    "export function hybridTunerActiveToken() { return false; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    embedding: {
+      enabled: true,
+      model: "mock-tuner-embedding",
+      client: async ({ input }) =>
+        input.map((text, idx) => {
+          if (idx === 0) {
+            return [1, 0];
+          }
+          return String(text).includes("tests/hybrid-tuner-active.spec.ts") ? [1, 0] : [0, 1];
+        })
+    },
+    onlineTuner: {
+      enabled: true,
+      mode: "active",
+      epsilon: 0,
+      arms: [
+        {
+          id: "embed_force",
+          params: {
+            enable_embedding: true,
+            embedding_top_k: 3,
+            embedding_weight: 0.95,
+            embedding_timeout_ms: 20000
+          }
+        }
+      ]
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+  const builtGraph = await runTool(
+    "build_semantic_graph",
+    {
+      max_symbols: 50,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true,
+      precise_preferred: false
+    },
+    context
+  );
+  assert.equal(builtGraph.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridTunerActiveToken",
+      top_k: 3,
+      explain: true
+    },
+    context
+  );
+
+  assert.equal(query.ok, true);
+  assert.equal(query.observability.online_tuner.mode, "active");
+  assert.equal(query.observability.online_tuner.arm_id, "embed_force");
+  assert.equal(query.observability.online_tuner.params_applied.enable_embedding, true);
+  assert.equal(query.sources.embedding.enabled, true);
+  assert.equal(query.sources.embedding.attempted, true);
+  assert.equal(query.sources.embedding.status_code, "EMBEDDING_OK");
+  assert.equal(query.seeds[0].path, "tests/hybrid-tuner-active.spec.ts");
 });
 
 test("query_hybrid_index degrades gracefully when embedding is enabled without key", async (t) => {

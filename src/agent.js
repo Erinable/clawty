@@ -589,6 +589,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
             index: config.index,
             embedding: config.embedding,
             metrics: config.metrics,
+            onlineTuner: config.onlineTuner,
             memory: config.memory,
             sources: config.sources
           });

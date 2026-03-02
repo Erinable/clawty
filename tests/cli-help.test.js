@@ -15,6 +15,8 @@ test("root help follows normalized sections and logo", async () => {
   assert.match(stdout, /Options:/);
   assert.match(stdout, /clawty completion \[shell\]/);
   assert.match(stdout, /clawty config <command>/);
+  assert.match(stdout, /clawty monitor \[subcommand\]/);
+  assert.match(stdout, /clawty mcp-server/);
   assert.match(stdout, /-h, --help/);
   assert.match(stdout, /-v, --version/);
 });
@@ -39,6 +41,8 @@ test("memory help exposes inspect/reindex and reason option", async () => {
 test("completion command emits shell script", async () => {
   const { stdout } = await execFileAsync("node", [CLI_PATH, "completion", "bash"]);
   assert.match(stdout, /complete -F _clawty_completion clawty/);
+  assert.match(stdout, /monitor/);
+  assert.match(stdout, /mcp-server/);
 });
 
 test("version flag prints semantic version", async () => {

@@ -12,6 +12,8 @@
     "chat": "node src/index.js chat",
     "run": "node src/index.js run",
     "init": "node src/index.js init",
+    "monitor": "node src/index.js monitor report",
+    "mcp:server": "node src/index.js mcp-server",
     "completion:bash": "node src/index.js completion bash",
     "completion:zsh": "node src/index.js completion zsh",
     "completion:fish": "node src/index.js completion fish",

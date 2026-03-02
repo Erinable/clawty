@@ -58,6 +58,19 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           persistMemory: false,
           queryPreviewChars: 120
         },
+        onlineTuner: {
+          enabled: true,
+          mode: "shadow",
+          dbPath: ".clawty/custom-tuner.db",
+          epsilon: 0.12,
+          globalPriorWeight: 0.4,
+          localWarmupSamples: 60,
+          minConstraintSamples: 45,
+          maxDegradeRate: 0.11,
+          maxTimeoutRate: 0.09,
+          maxNetworkRate: 0.06,
+          successRewardThreshold: 0.42
+        },
         memory: {
           enabled: true,
           maxInjectedItems: 7,
@@ -116,6 +129,17 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.persistMemory, false);
   assert.equal(config.metrics.queryPreviewChars, 120);
+  assert.equal(config.onlineTuner.enabled, true);
+  assert.equal(config.onlineTuner.mode, "shadow");
+  assert.equal(config.onlineTuner.dbPath, ".clawty/custom-tuner.db");
+  assert.equal(config.onlineTuner.epsilon, 0.12);
+  assert.equal(config.onlineTuner.globalPriorWeight, 0.4);
+  assert.equal(config.onlineTuner.localWarmupSamples, 60);
+  assert.equal(config.onlineTuner.minConstraintSamples, 45);
+  assert.equal(config.onlineTuner.maxDegradeRate, 0.11);
+  assert.equal(config.onlineTuner.maxTimeoutRate, 0.09);
+  assert.equal(config.onlineTuner.maxNetworkRate, 0.06);
+  assert.equal(config.onlineTuner.successRewardThreshold, 0.42);
   assert.equal(config.memory.enabled, true);
   assert.equal(config.memory.maxInjectedItems, 7);
   assert.equal(config.memory.maxInjectedChars, 2800);
@@ -183,7 +207,12 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_MEMORY_DEDUPE_ENABLED: "false",
       CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6",
       CLAWTY_MEMORY_RANK_RECENCY_WEIGHT: "0.9",
-      CLAWTY_MEMORY_RANK_BM25_WEIGHT: "0.1"
+      CLAWTY_MEMORY_RANK_BM25_WEIGHT: "0.1",
+      CLAWTY_TUNER_ENABLED: "true",
+      CLAWTY_TUNER_MODE: "active",
+      CLAWTY_TUNER_EPSILON: "0.03",
+      CLAWTY_TUNER_MAX_TIMEOUT_RATE: "0.06",
+      CLAWTY_TUNER_SUCCESS_REWARD_THRESHOLD: "0.25"
     }
   });
 
@@ -200,6 +229,11 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.memory.quarantineThreshold, 6);
   assert.equal(config.memory.ranking.recencyWeight, 0.9);
   assert.equal(config.memory.ranking.bm25Weight, 0.1);
+  assert.equal(config.onlineTuner.enabled, true);
+  assert.equal(config.onlineTuner.mode, "active");
+  assert.equal(config.onlineTuner.epsilon, 0.03);
+  assert.equal(config.onlineTuner.maxTimeoutRate, 0.06);
+  assert.equal(config.onlineTuner.successRewardThreshold, 0.25);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
 
