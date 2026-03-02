@@ -16,6 +16,11 @@ import {
   querySemanticGraph
 } from "./semantic-graph.js";
 import {
+  buildSyntaxIndex,
+  refreshSyntaxIndex,
+  getSyntaxIndexStats
+} from "./syntax-index.js";
+import {
   lspDefinition,
   lspHealth,
   lspReferences,
@@ -461,6 +466,95 @@ export const TOOL_DEFINITIONS = [
   },
   {
     type: "function",
+    name: "build_syntax_index",
+    description:
+      "Build syntax index from indexed files and extract import/call edges for structural analysis.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_files: {
+          type: "integer",
+          description: "Optional scan limit to cap parsed file count.",
+          minimum: 1,
+          maximum: 20000
+        },
+        max_calls_per_file: {
+          type: "integer",
+          description: "Optional per-file cap for extracted call edges.",
+          minimum: 1,
+          maximum: 2000
+        },
+        max_errors: {
+          type: "integer",
+          description: "Abort build after this many file parse errors.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "refresh_syntax_index",
+    description:
+      "Incrementally refresh syntax index. Optionally pass changed_paths/deleted_paths for event-driven updates.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_files: {
+          type: "integer",
+          description: "Optional scan limit to cap parsed file count.",
+          minimum: 1,
+          maximum: 20000
+        },
+        max_calls_per_file: {
+          type: "integer",
+          description: "Optional per-file cap for extracted call edges.",
+          minimum: 1,
+          maximum: 2000
+        },
+        max_errors: {
+          type: "integer",
+          description: "Abort refresh after this many file parse errors.",
+          minimum: 1,
+          maximum: 1000
+        },
+        changed_paths: {
+          type: "array",
+          description:
+            "Optional changed file paths (workspace-relative). When provided, refresh runs in event mode.",
+          items: { type: "string" }
+        },
+        deleted_paths: {
+          type: "array",
+          description:
+            "Optional deleted file paths (workspace-relative). Only used when event mode is enabled.",
+          items: { type: "string" }
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "get_syntax_index_stats",
+    description: "Return syntax index coverage and structural edge statistics.",
+    parameters: {
+      type: "object",
+      properties: {
+        top_files: {
+          type: "integer",
+          description: "Optional number of top callers/imported targets to include.",
+          minimum: 1,
+          maximum: 50
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
     name: "lsp_definition",
     description:
       "Find symbol definition using LSP (TypeScript/JavaScript). Falls back to index search when LSP is unavailable.",
@@ -763,6 +857,18 @@ async function getSemanticGraphStatsTool(context) {
   return getSemanticGraphStats(context.workspaceRoot);
 }
 
+async function buildSyntaxIndexTool(args, context) {
+  return buildSyntaxIndex(context.workspaceRoot, args);
+}
+
+async function refreshSyntaxIndexTool(args, context) {
+  return refreshSyntaxIndex(context.workspaceRoot, args);
+}
+
+async function getSyntaxIndexStatsTool(args, context) {
+  return getSyntaxIndexStats(context.workspaceRoot, args);
+}
+
 async function lspDefinitionTool(args, context) {
   return lspDefinition(context.workspaceRoot, args, context.lsp || {});
 }
@@ -815,6 +921,15 @@ export async function runTool(name, args, context) {
   }
   if (name === "get_semantic_graph_stats") {
     return getSemanticGraphStatsTool(context);
+  }
+  if (name === "build_syntax_index") {
+    return buildSyntaxIndexTool(args, context);
+  }
+  if (name === "refresh_syntax_index") {
+    return refreshSyntaxIndexTool(args, context);
+  }
+  if (name === "get_syntax_index_stats") {
+    return getSyntaxIndexStatsTool(args, context);
   }
   if (name === "lsp_definition") {
     return lspDefinitionTool(args, context);

@@ -180,6 +180,62 @@ test("index tools are callable through runTool", async (t) => {
   assert.ok(stats.counts.files >= 1);
 });
 
+test("syntax index tools are callable through runTool", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-main.js",
+    "import { syntaxDep } from './syntax-dep.js';\nexport function syntaxMain() { return syntaxDep(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-dep.js",
+    "export function syntaxDep() { return true; }\n"
+  );
+
+  const context = createContext(workspaceRoot);
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const builtSyntax = await runTool(
+    "build_syntax_index",
+    { max_files: 20, max_calls_per_file: 20 },
+    context
+  );
+  assert.equal(builtSyntax.ok, true);
+  assert.equal(builtSyntax.mode, "full");
+  assert.ok(builtSyntax.total_import_edges >= 1);
+
+  const statsBefore = await runTool("get_syntax_index_stats", { top_files: 5 }, context);
+  assert.equal(statsBefore.ok, true);
+  assert.ok(statsBefore.counts.files >= 2);
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/syntax-main.js",
+    "import { syntaxDep } from './syntax-dep.js';\nexport function syntaxMain() { return syntaxDep() && syntaxDep(); }\n"
+  );
+  const refreshedIndex = await runTool(
+    "refresh_code_index",
+    { changed_paths: ["src/syntax-main.js"] },
+    context
+  );
+  assert.equal(refreshedIndex.ok, true);
+
+  const refreshedSyntax = await runTool(
+    "refresh_syntax_index",
+    { changed_paths: ["src/syntax-main.js"] },
+    context
+  );
+  assert.equal(refreshedSyntax.ok, true);
+  assert.equal(refreshedSyntax.mode, "event");
+  assert.ok(refreshedSyntax.parsed_files >= 1);
+});
+
 test("semantic graph tools are callable through runTool", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

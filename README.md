@@ -15,6 +15,9 @@
   - `refresh_code_index`
   - `query_code_index`
   - `get_index_stats`
+  - `build_syntax_index`
+  - `refresh_syntax_index`
+  - `get_syntax_index_stats`
   - `build_semantic_graph`
   - `import_precise_index`
   - `query_semantic_graph`
@@ -81,6 +84,7 @@ npm run bench:semantic:check
 增量一致性回归位于 `tests/code-index-consistency.test.js`（比较 incremental/event 与 full rebuild 的查询签名）。
 代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
 语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
+语法索引说明位于 `docs/syntax-index.md`。
 
 ## 代码索引使用建议
 
@@ -91,6 +95,8 @@ npm run bench:semantic:check
 - “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
 - “刷新索引（changed_paths: [src/a.js], deleted_paths: [src/b.js]）后给我索引统计”
 - “只查 `src/` 下 `javascript` 结果，并输出 explain 评分明细”
+- “先构建 syntax index，再看 import/call 结构统计”
+- “代码改完后刷新 syntax index（changed_paths: [src/a.js]）并返回最新 stats”
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
@@ -99,6 +105,8 @@ npm run bench:semantic:check
 `query_code_index` 支持 `path_prefix`、`language`、`explain`，并返回 `cache_hit`、`query_time_ms`、`candidate_profile` 与候选召回上限信息。`get_index_stats` 会返回查询命中率与慢查询摘要（`query_metrics`）。
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
+`build_syntax_index` / `refresh_syntax_index` 会基于 `files` 表提取 import/call 结构边（当前 provider：`tree-sitter-skeleton`），并写入同一数据库。
+`get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsp > index_seed`）。
