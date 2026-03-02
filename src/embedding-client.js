@@ -13,11 +13,22 @@ function normalizeNumberArray(value) {
   return output;
 }
 
+export class EmbeddingError extends Error {
+  constructor(code, message, options = {}) {
+    super(message);
+    this.name = "EmbeddingError";
+    this.code = code;
+    this.status = Number.isInteger(options.status) ? options.status : null;
+    this.retryable = Boolean(options.retryable);
+  }
+}
+
 function normalizeEmbeddingVectors(payload, expectedCount) {
   if (Array.isArray(payload)) {
     const vectors = payload.map((item) => normalizeNumberArray(item)).filter(Boolean);
     if (vectors.length !== expectedCount) {
-      throw new Error(
+      throw new EmbeddingError(
+        "EMBEDDING_RESPONSE_INVALID",
         `Embedding client returned ${vectors.length} vectors, expected ${expectedCount}`
       );
     }
@@ -29,7 +40,10 @@ function normalizeEmbeddingVectors(payload, expectedCount) {
     .map((row) => normalizeNumberArray(row?.embedding))
     .filter(Boolean);
   if (vectors.length !== expectedCount) {
-    throw new Error(`Embedding API returned ${vectors.length} vectors, expected ${expectedCount}`);
+    throw new EmbeddingError(
+      "EMBEDDING_RESPONSE_INVALID",
+      `Embedding API returned ${vectors.length} vectors, expected ${expectedCount}`
+    );
   }
   return vectors;
 }
@@ -61,7 +75,10 @@ export async function createEmbeddings({
 }) {
   const inputs = Array.isArray(input) ? input.filter((item) => typeof item === "string") : [];
   if (inputs.length === 0) {
-    throw new Error("embedding input must be a non-empty string array");
+    throw new EmbeddingError(
+      "EMBEDDING_INPUT_INVALID",
+      "embedding input must be a non-empty string array"
+    );
   }
 
   if (typeof client === "function") {
@@ -76,7 +93,7 @@ export async function createEmbeddings({
   }
 
   if (!apiKey || typeof apiKey !== "string") {
-    throw new Error("embedding api key is missing");
+    throw new EmbeddingError("EMBEDDING_API_KEY_MISSING", "embedding api key is missing");
   }
 
   const controller = new AbortController();
@@ -100,16 +117,31 @@ export async function createEmbeddings({
     });
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw new Error(`embedding request timeout after ${timeoutMs}ms`);
+      throw new EmbeddingError(
+        "EMBEDDING_REQUEST_TIMEOUT",
+        `embedding request timeout after ${timeoutMs}ms`,
+        { retryable: true }
+      );
     }
-    throw new Error(`embedding request failed: ${error.message || String(error)}`);
+    throw new EmbeddingError(
+      "EMBEDDING_REQUEST_NETWORK",
+      `embedding request failed: ${error.message || String(error)}`,
+      { retryable: true }
+    );
   } finally {
     clearTimeout(timer);
   }
 
   const data = await safeParseJson(response);
   if (!response.ok) {
-    throw new Error(`embedding API error (${response.status}): ${JSON.stringify(data)}`);
+    throw new EmbeddingError(
+      "EMBEDDING_API_HTTP_ERROR",
+      `embedding API error (${response.status}): ${JSON.stringify(data)}`,
+      {
+        status: response.status,
+        retryable: response.status >= 500 || response.status === 429
+      }
+    );
   }
   return normalizeEmbeddingVectors(data, inputs.length);
 }

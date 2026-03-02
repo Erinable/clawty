@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runTool } from "../src/tools.js";
+import { EmbeddingError } from "../src/embedding-client.js";
 import {
   createWorkspace,
   initGitRepo,
@@ -648,7 +649,11 @@ test("query_hybrid_index supports optional embedding rerank with mock client", a
   assert.equal(query.sources.embedding.attempted, true);
   assert.equal(query.sources.embedding.ok, true);
   assert.equal(query.sources.embedding.model, "mock-embedding");
+  assert.equal(query.sources.embedding.status_code, "EMBEDDING_OK");
   assert.ok(query.sources.embedding.reranked_candidates >= 1);
+  assert.ok(query.sources.embedding.rank_shift_count >= 1);
+  assert.equal(query.sources.embedding.top1_changed, true);
+  assert.ok(query.sources.embedding.score_delta_mean > 0);
   assert.equal(query.seeds[0].path, "tests/hybrid-embed.spec.ts");
   assert.ok(query.seeds[0].hybrid_explain);
   assert.equal(typeof query.seeds[0].hybrid_explain.embedding_score, "number");
@@ -691,6 +696,59 @@ test("query_hybrid_index degrades gracefully when embedding is enabled without k
   assert.equal(query.sources.embedding.enabled, true);
   assert.equal(query.sources.embedding.attempted, false);
   assert.equal(query.sources.embedding.ok, false);
+  assert.equal(query.sources.embedding.status_code, "EMBEDDING_NOT_ATTEMPTED_NO_API_KEY");
+  assert.equal(query.sources.embedding.error_code, "EMBEDDING_API_KEY_MISSING");
   assert.match(String(query.sources.embedding.error), /api key is missing/i);
   assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-embed-fallback.ts"));
+});
+
+test("query_hybrid_index classifies embedding timeout errors and keeps fallback results", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-embed-timeout.ts",
+    "export function hybridEmbedTimeout() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false },
+    embedding: {
+      enabled: true,
+      model: "mock-timeout",
+      topK: 5,
+      weight: 0.5,
+      client: async () => {
+        throw new EmbeddingError("EMBEDDING_REQUEST_TIMEOUT", "mock timeout", {
+          retryable: true
+        });
+      }
+    }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridEmbedTimeout",
+      top_k: 3,
+      enable_embedding: true
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.sources.embedding.enabled, true);
+  assert.equal(query.sources.embedding.attempted, true);
+  assert.equal(query.sources.embedding.ok, false);
+  assert.equal(query.sources.embedding.status_code, "EMBEDDING_ERROR_TIMEOUT");
+  assert.equal(query.sources.embedding.error_code, "EMBEDDING_REQUEST_TIMEOUT");
+  assert.equal(query.sources.embedding.retryable, true);
+  assert.ok(query.sources.embedding.latency_ms >= 0);
+  assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-embed-timeout.ts"));
 });

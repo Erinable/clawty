@@ -28,7 +28,7 @@ import {
   lspReferences,
   lspWorkspaceSymbols
 } from "./lsp-manager.js";
-import { createEmbeddings } from "./embedding-client.js";
+import { createEmbeddings, EmbeddingError } from "./embedding-client.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -1552,20 +1552,86 @@ function rankHybridCandidates(entries, options) {
   return ranked;
 }
 
+function classifyEmbeddingFailure(error) {
+  const code = String(error?.code || "").trim();
+  if (code === "EMBEDDING_REQUEST_TIMEOUT") {
+    return {
+      status_code: "EMBEDDING_ERROR_TIMEOUT",
+      error_code: code,
+      retryable: true
+    };
+  }
+  if (code === "EMBEDDING_REQUEST_NETWORK") {
+    return {
+      status_code: "EMBEDDING_ERROR_NETWORK",
+      error_code: code,
+      retryable: true
+    };
+  }
+  if (code === "EMBEDDING_API_HTTP_ERROR") {
+    return {
+      status_code: "EMBEDDING_ERROR_API",
+      error_code: code,
+      retryable: Boolean(error?.retryable)
+    };
+  }
+  if (code === "EMBEDDING_RESPONSE_INVALID") {
+    return {
+      status_code: "EMBEDDING_ERROR_RESPONSE",
+      error_code: code,
+      retryable: false
+    };
+  }
+  if (code === "EMBEDDING_INPUT_INVALID") {
+    return {
+      status_code: "EMBEDDING_ERROR_INPUT",
+      error_code: code,
+      retryable: false
+    };
+  }
+  if (code === "EMBEDDING_API_KEY_MISSING") {
+    return {
+      status_code: "EMBEDDING_NOT_ATTEMPTED_NO_API_KEY",
+      error_code: code,
+      retryable: false
+    };
+  }
+  return {
+    status_code: "EMBEDDING_ERROR_UNKNOWN",
+    error_code: code || "EMBEDDING_UNKNOWN",
+    retryable: false
+  };
+}
+
+function buildEmbeddingSourceBase(config) {
+  return {
+    enabled: Boolean(config.enabled),
+    attempted: false,
+    ok: false,
+    model: config.model,
+    top_k: config.top_k,
+    weight: config.weight,
+    reranked_candidates: 0,
+    latency_ms: 0,
+    status_code: config.enabled ? "EMBEDDING_PENDING" : "EMBEDDING_DISABLED",
+    error_code: null,
+    retryable: false,
+    error: null,
+    rank_shift_count: 0,
+    top1_changed: false,
+    score_delta_mean: 0
+  };
+}
+
 async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
   const config = resolveHybridEmbeddingConfig(args, context);
+  const base = buildEmbeddingSourceBase(config);
   if (!config.enabled) {
     return {
       ranked,
       source: {
-        enabled: false,
-        attempted: false,
-        ok: false,
-        model: config.model,
-        top_k: config.top_k,
-        weight: config.weight,
-        reranked_candidates: 0,
-        error: null
+        ...base,
+        status_code: "EMBEDDING_DISABLED"
       }
     };
   }
@@ -1574,13 +1640,9 @@ async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
     return {
       ranked,
       source: {
-        enabled: true,
-        attempted: false,
-        ok: false,
-        model: config.model,
-        top_k: config.top_k,
-        weight: config.weight,
-        reranked_candidates: 0,
+        ...base,
+        status_code: "EMBEDDING_NOT_ATTEMPTED_NO_API_KEY",
+        error_code: "EMBEDDING_API_KEY_MISSING",
         error: "embedding api key is missing"
       }
     };
@@ -1591,13 +1653,9 @@ async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
     return {
       ranked,
       source: {
-        enabled: true,
-        attempted: false,
-        ok: false,
-        model: config.model,
-        top_k: config.top_k,
-        weight: config.weight,
-        reranked_candidates: 0,
+        ...base,
+        status_code: "EMBEDDING_NOT_ATTEMPTED_NO_CANDIDATES",
+        error_code: "EMBEDDING_NO_CANDIDATES",
         error: "no hybrid candidates available"
       }
     };
@@ -1612,6 +1670,7 @@ async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
     ...pool.map((candidate) => buildHybridEmbeddingText(candidate))
   ];
 
+  const startedAt = Date.now();
   let vectors;
   try {
     vectors = await createEmbeddings({
@@ -1623,27 +1682,31 @@ async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
       client: config.client
     });
   } catch (error) {
+    const classified = classifyEmbeddingFailure(
+      error instanceof EmbeddingError ? error : error
+    );
     return {
       ranked,
       source: {
-        enabled: true,
+        ...base,
         attempted: true,
-        ok: false,
-        model: config.model,
-        top_k: config.top_k,
-        weight: config.weight,
-        reranked_candidates: 0,
+        latency_ms: Math.max(0, Date.now() - startedAt),
+        status_code: classified.status_code,
+        error_code: classified.error_code,
+        retryable: classified.retryable,
         error: error.message || String(error)
       }
     };
   }
 
   const queryVector = vectors[0];
+  let scoreDeltaTotal = 0;
   const rerankedPool = pool.map((candidate, idx) => {
     const baseScore = roundHybridMetric(candidate.hybrid_score);
     const candidateVector = vectors[idx + 1];
     const embeddingScore = normalizedCosineScore(cosineSimilarity(queryVector, candidateVector));
     const finalScore = roundHybridMetric(baseScore * (1 - config.weight) + embeddingScore * config.weight);
+    scoreDeltaTotal += Math.abs(finalScore - baseScore);
     const next = {
       ...candidate,
       hybrid_score: finalScore
@@ -1662,16 +1725,39 @@ async function rerankHybridCandidatesWithEmbedding(ranked, args, context) {
 
   const merged = [...rerankedPool, ...rest];
   merged.sort(sortHybridCandidates);
+  const beforeOrder = pool.map((candidate) => hybridCandidateKey(candidate));
+  const afterPosition = new Map(
+    merged.map((candidate, idx) => [hybridCandidateKey(candidate), idx])
+  );
+  let rankShiftCount = 0;
+  for (let idx = 0; idx < beforeOrder.length; idx += 1) {
+    const key = beforeOrder[idx];
+    if (!afterPosition.has(key)) {
+      continue;
+    }
+    if (afterPosition.get(key) !== idx) {
+      rankShiftCount += 1;
+    }
+  }
+  const top1Changed =
+    beforeOrder.length > 0 &&
+    merged.length > 0 &&
+    beforeOrder[0] !== hybridCandidateKey(merged[0]);
+
   return {
     ranked: merged,
     source: {
-      enabled: true,
+      ...base,
       attempted: true,
       ok: true,
-      model: config.model,
-      top_k: config.top_k,
-      weight: config.weight,
+      latency_ms: Math.max(0, Date.now() - startedAt),
+      status_code: "EMBEDDING_OK",
+      error_code: null,
+      retryable: false,
       reranked_candidates: rerankCount,
+      rank_shift_count: rankShiftCount,
+      top1_changed: top1Changed,
+      score_delta_mean: rerankCount > 0 ? roundHybridMetric(scoreDeltaTotal / rerankCount) : 0,
       error: null
     }
   };
@@ -1858,6 +1944,13 @@ async function queryHybridIndexTool(args, context) {
     top_k: DEFAULT_HYBRID_EMBEDDING_TOP_K,
     weight: DEFAULT_HYBRID_EMBEDDING_WEIGHT,
     reranked_candidates: 0,
+    latency_ms: 0,
+    status_code: "EMBEDDING_DISABLED",
+    error_code: null,
+    retryable: false,
+    rank_shift_count: 0,
+    top1_changed: false,
+    score_delta_mean: 0,
     error: null
   };
 
@@ -1880,7 +1973,8 @@ async function queryHybridIndexTool(args, context) {
         attempted: Boolean(embeddingSource.attempted),
         model: embeddingSource.model,
         top_k: Number(embeddingSource.top_k || 0),
-        weight: Number(embeddingSource.weight || 0)
+        weight: Number(embeddingSource.weight || 0),
+        status_code: embeddingSource.status_code || null
       }
     },
     sources: {
@@ -1906,6 +2000,13 @@ async function queryHybridIndexTool(args, context) {
         ok: Boolean(embeddingSource.ok),
         model: embeddingSource.model || null,
         reranked_candidates: Number(embeddingSource.reranked_candidates || 0),
+        latency_ms: Number(embeddingSource.latency_ms || 0),
+        status_code: embeddingSource.status_code || null,
+        error_code: embeddingSource.error_code || null,
+        retryable: Boolean(embeddingSource.retryable),
+        rank_shift_count: Number(embeddingSource.rank_shift_count || 0),
+        top1_changed: Boolean(embeddingSource.top1_changed),
+        score_delta_mean: Number(embeddingSource.score_delta_mean || 0),
         error: embeddingSource.error || null
       }
     },

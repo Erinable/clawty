@@ -178,6 +178,38 @@ test("loadConfig resolves embedding config and honors env overrides", async (t) 
   assert.equal(config.embedding.baseUrl, "https://example.invalid/v1");
 });
 
+test("loadConfig validates OPENAI_BASE_URL and embedding base URL", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  assert.throws(
+    () =>
+      loadConfig({
+        cwd: workspaceRoot,
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          OPENAI_BASE_URL: "notaurl"
+        }
+      }),
+    /Invalid OPENAI_BASE_URL/
+  );
+
+  assert.throws(
+    () =>
+      loadConfig({
+        cwd: workspaceRoot,
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          OPENAI_BASE_URL: "https://api.openai.com/v1",
+          CLAWTY_EMBEDDING_BASE_URL: "ftp://example.com/v1"
+        }
+      }),
+    /Invalid CLAWTY_EMBEDDING_BASE_URL/
+  );
+});
+
 test("loadConfig throws on invalid JSON config", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

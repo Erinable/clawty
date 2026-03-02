@@ -109,6 +109,23 @@ function readString(value, fallback) {
   return fallback;
 }
 
+function readHttpUrl(value, fallback, label) {
+  const candidate = readString(value, fallback);
+  if (typeof candidate !== "string" || candidate.trim().length === 0) {
+    throw new Error(`Invalid ${label}: URL is empty`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error(`Invalid ${label}: ${candidate}`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Invalid ${label}: protocol must be http or https`);
+  }
+  return candidate.replace(/\/+$/, "");
+}
+
 function deepPick(object, pathList) {
   let current = object;
   for (const key of pathList) {
@@ -153,10 +170,11 @@ export function loadConfig(options = {}) {
     );
   }
 
-  const baseUrl = readString(
+  const baseUrl = readHttpUrl(
     env.OPENAI_BASE_URL,
-    readString(deepPick(fileConfig.data, ["openai", "baseUrl"]), "https://api.openai.com/v1")
-  ).replace(/\/$/, "");
+    readString(deepPick(fileConfig.data, ["openai", "baseUrl"]), "https://api.openai.com/v1"),
+    "OPENAI_BASE_URL"
+  );
 
   const model = readString(env.CLAWTY_MODEL, readString(fileConfig.data.model, "gpt-4.1-mini"));
 
@@ -224,10 +242,11 @@ export function loadConfig(options = {}) {
       false
     ),
     apiKey: embeddingApiKey,
-    baseUrl: readString(
+    baseUrl: readHttpUrl(
       env.CLAWTY_EMBEDDING_BASE_URL,
-      readString(deepPick(fileConfig.data, ["embedding", "baseUrl"]), baseUrl)
-    ).replace(/\/$/, ""),
+      readString(deepPick(fileConfig.data, ["embedding", "baseUrl"]), baseUrl),
+      "CLAWTY_EMBEDDING_BASE_URL"
+    ),
     model: readString(
       env.CLAWTY_EMBEDDING_MODEL,
       readString(deepPick(fileConfig.data, ["embedding", "model"]), "text-embedding-3-small")
