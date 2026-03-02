@@ -6,6 +6,7 @@
 
 - `chat`：多轮对话模式
 - `run "<任务>"`：单次任务执行模式
+- `watch-index`：监听文件变更并自动刷新索引
 - 模型可调用本地工具：
   - `read_file`
   - `write_file`
@@ -60,7 +61,9 @@ node src/index.js run "读取 package.json 并总结这个项目"
 node src/index.js chat
 node src/index.js run "your task"
 node src/index.js config show
+node src/index.js watch-index
 node src/index.js --help
+npm run watch:index
 npm test
 npm run test:coverage
 npm run coverage:check
@@ -151,6 +154,33 @@ npm run precise:check:fixture
 `get_semantic_graph_stats` 返回 `source_mix` 与 `precise_freshness`，可观测精确来源占比与产物时效。
 精确索引导入格式见 `docs/precise-index-import.md`。
 
+## 实时索引监听（watch-index）
+
+`watch-index` 会定时扫描工作区并自动执行：
+
+1. `refresh_code_index`
+2. `refresh_syntax_index`（可关闭）
+3. `refresh_semantic_graph`（可关闭）
+
+常用命令：
+
+```bash
+node src/index.js watch-index
+node src/index.js watch-index --interval-ms 1000 --max-batch-size 200
+node src/index.js watch-index --no-semantic --quiet
+npm run watch:index
+```
+
+常用参数：
+
+- `--interval-ms <n>`：轮询间隔（毫秒）
+- `--max-files <n>`：最大跟踪文件数
+- `--max-batch-size <n>`：单次增量刷新批大小
+- `--no-build-on-start`：跳过启动时全量构建
+- `--no-syntax`：关闭 syntax 刷新
+- `--no-semantic`：关闭 semantic 刷新
+- `--quiet`：关闭日志输出
+
 ## LSP 语义检索（TS/JS）
 
 先安装 TypeScript LSP（可选但推荐）：
@@ -183,6 +213,15 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_SEMANTIC_SEED_LANG_FILTER`：语义图 seed 语言过滤，默认 `*`（不过滤）
 - `CLAWTY_PRECISE_STALE_AFTER_MINUTES`：精确索引新鲜度阈值（分钟），默认 `1440`
 - `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）
+- `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
+- `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`
+- `CLAWTY_WATCH_MAX_BATCH_SIZE`：watch 增量批大小，默认 `300`
+- `CLAWTY_WATCH_BUILD_ON_START`：watch 启动时是否先全量构建，默认 `true`
+- `CLAWTY_WATCH_INCLUDE_SYNTAX`：watch 是否刷新 syntax index，默认 `true`
+- `CLAWTY_WATCH_INCLUDE_SEMANTIC`：watch 是否刷新 semantic graph，默认 `true`
+- `CLAWTY_WATCH_SEMANTIC_INCLUDE_DEFINITIONS`：watch 语义刷新是否包含 definition，默认 `false`
+- `CLAWTY_WATCH_SEMANTIC_INCLUDE_REFERENCES`：watch 语义刷新是否包含 references，默认 `false`
+- `CLAWTY_WATCH_QUIET`：watch 是否静默模式，默认 `false`
 
 ## 配置系统
 

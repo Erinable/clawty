@@ -11,6 +11,7 @@
     "start": "node src/index.js",
     "chat": "node src/index.js chat",
     "run": "node src/index.js run",
+    "watch:index": "node src/index.js watch-index",
     "help": "node src/index.js --help",
     "test": "node --test",
     "test:watch": "node --test --watch",
