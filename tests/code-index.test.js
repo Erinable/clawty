@@ -57,9 +57,19 @@ test("buildCodeIndex builds index and queryCodeIndex returns ranked matches", as
   });
 
   assert.equal(query.ok, true);
+  assert.equal(query.cache_hit, false);
   assert.ok(query.total_hits >= 1);
   assert.equal(query.results[0].path, "src/main.js");
   assert.match(query.results[0].snippet, /^\d+:/m);
+  assert.ok(query.candidate_limits.chunks >= 40);
+  assert.ok(query.candidate_limits.symbols >= 80);
+
+  const cachedQuery = await queryCodeIndex(workspaceRoot, {
+    query: "applyPatch refreshIndex",
+    top_k: 5
+  });
+  assert.equal(cachedQuery.ok, true);
+  assert.equal(cachedQuery.cache_hit, true);
 });
 
 test("queryCodeIndex supports path/language filters and explain mode", async (t) => {
@@ -86,6 +96,7 @@ test("queryCodeIndex supports path/language filters and explain mode", async (t)
     top_k: 5
   });
   assert.equal(filteredByPath.ok, true);
+  assert.equal(filteredByPath.filters.path_prefix, "docs/");
   assert.ok(filteredByPath.results.length >= 1);
   assert.ok(filteredByPath.results.every((item) => item.path.startsWith("docs/")));
 
@@ -95,6 +106,7 @@ test("queryCodeIndex supports path/language filters and explain mode", async (t)
     top_k: 5
   });
   assert.equal(filteredByLanguage.ok, true);
+  assert.equal(filteredByLanguage.filters.language, "javascript");
   assert.ok(filteredByLanguage.results.length >= 1);
   assert.ok(filteredByLanguage.results.every((item) => item.path.endsWith(".js")));
 

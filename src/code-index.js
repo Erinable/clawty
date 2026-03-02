@@ -14,6 +14,8 @@ const DEFAULT_MAX_FILE_SIZE_KB = 512;
 const DEFAULT_CHUNK_LINES = 80;
 const DEFAULT_CHUNK_OVERLAP = 16;
 const MTIME_EPSILON_MS = 1;
+const QUERY_CACHE_TTL_MS = 10_000;
+const QUERY_CACHE_MAX_ENTRIES = 200;
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -59,9 +61,75 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 let ctagsAvailablePromise;
+const queryResultCache = new Map();
 
 function toPosixPath(inputPath) {
   return inputPath.split(path.sep).join("/");
+}
+
+function cloneValue(value) {
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getWorkspaceQueryCache(workspaceRoot) {
+  const key = path.resolve(workspaceRoot);
+  if (!queryResultCache.has(key)) {
+    queryResultCache.set(key, new Map());
+  }
+  return queryResultCache.get(key);
+}
+
+function clearQueryCache(workspaceRoot) {
+  const key = path.resolve(workspaceRoot);
+  queryResultCache.delete(key);
+}
+
+function makeQueryCacheKey({
+  query,
+  topK,
+  pathPrefix,
+  language,
+  explain,
+  indexMtimeMs
+}) {
+  return JSON.stringify({
+    q: query.toLowerCase(),
+    top_k: topK,
+    path_prefix: pathPrefix || null,
+    language: language || null,
+    explain: Boolean(explain),
+    index_mtime_ms: Number(indexMtimeMs || 0)
+  });
+}
+
+function getCachedQuery(workspaceRoot, cacheKey) {
+  const cache = getWorkspaceQueryCache(workspaceRoot);
+  const entry = cache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(cacheKey);
+    return null;
+  }
+  return cloneValue(entry.value);
+}
+
+function setCachedQuery(workspaceRoot, cacheKey, value) {
+  const cache = getWorkspaceQueryCache(workspaceRoot);
+  if (cache.size >= QUERY_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
+  cache.set(cacheKey, {
+    value: cloneValue(value),
+    expiresAt: Date.now() + QUERY_CACHE_TTL_MS
+  });
 }
 
 function parsePositiveInt(value, fallback, min, max) {
@@ -1047,6 +1115,7 @@ export async function buildCodeIndex(workspaceRoot, args = {}) {
 
   try {
     const stats = await runFullBuild(workspaceRoot, db, config);
+    clearQueryCache(workspaceRoot);
     return buildResult(workspaceRoot, stats);
   } finally {
     db.close();
@@ -1074,6 +1143,7 @@ export async function refreshCodeIndex(workspaceRoot, args = {}) {
 
     if (!dbExists || forceRebuild) {
       const stats = await runFullBuild(workspaceRoot, db, config);
+      clearQueryCache(workspaceRoot);
       return buildResult(workspaceRoot, stats, {
         mode: "full",
         fallback_full_rebuild: !dbExists
@@ -1085,10 +1155,12 @@ export async function refreshCodeIndex(workspaceRoot, args = {}) {
         changed_paths: args.changed_paths,
         deleted_paths: args.deleted_paths
       });
+      clearQueryCache(workspaceRoot);
       return buildResult(workspaceRoot, stats);
     }
 
     const stats = await runIncrementalRefresh(workspaceRoot, db, config);
+    clearQueryCache(workspaceRoot);
     return buildResult(workspaceRoot, stats);
   } finally {
     db.close();
@@ -1100,6 +1172,27 @@ function buildFtsQuery(tokens) {
     return "";
   }
   return tokens.map((token) => `${token}*`).join(" OR ");
+}
+
+function computeChunkCandidateLimit({ topK, tokenCount, hasPathFilter, hasLanguageFilter, explain }) {
+  let limit = Math.max(40, topK * 10);
+  limit += Math.min(100, tokenCount * 6);
+  if (!hasPathFilter) {
+    limit += 40;
+  }
+  if (!hasLanguageFilter) {
+    limit += 25;
+  }
+  if (explain) {
+    limit += 40;
+  }
+  return Math.min(3000, limit);
+}
+
+function computeSymbolCandidateLimit({ topK, tokenCount }) {
+  const base = Math.max(80, topK * 16);
+  const tokenBoost = Math.min(200, tokenCount * 20);
+  return Math.min(3000, base + tokenBoost);
 }
 
 function normalizePathPrefix(value) {
@@ -1142,13 +1235,14 @@ function querySymbols(db, tokens, filters = {}) {
     WHERE (${clauses.join(" OR ")})
       AND (? IS NULL OR s.file_path LIKE ?)
       AND (? IS NULL OR f.lang = ?)
-    LIMIT 2000
+    LIMIT ?
   `;
 
   const pathLike = filters.pathPrefix ? `${filters.pathPrefix}%` : null;
+  const limit = parsePositiveInt(filters.limit, 2000, 1, 5000);
   return db
     .prepare(sql)
-    .all(...params, filters.pathPrefix, pathLike, filters.language, filters.language);
+    .all(...params, filters.pathPrefix, pathLike, filters.language, filters.language, limit);
 }
 
 function buildFileRanking({ chunkRows, symbolRows, tokens, explain = false }) {
@@ -1370,6 +1464,22 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
   const pathPrefix = normalizePathPrefix(args.path_prefix);
   const languageFilter = normalizeLanguageFilter(args.language);
   const explain = Boolean(args.explain);
+  const dbStat = await fs.stat(dbFile).catch(() => null);
+  const cacheKey = makeQueryCacheKey({
+    query,
+    topK,
+    pathPrefix,
+    language: languageFilter,
+    explain,
+    indexMtimeMs: dbStat?.mtimeMs || 0
+  });
+  const cached = getCachedQuery(workspaceRoot, cacheKey);
+  if (cached) {
+    return {
+      ...cached,
+      cache_hit: true
+    };
+  }
 
   const db = openIndexDb(workspaceRoot);
   try {
@@ -1383,6 +1493,13 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
 
     const ftsQuery = buildFtsQuery(tokens);
     const pathLike = pathPrefix ? `${pathPrefix}%` : null;
+    const chunkCandidateLimit = computeChunkCandidateLimit({
+      topK,
+      tokenCount: tokens.length,
+      hasPathFilter: Boolean(pathPrefix),
+      hasLanguageFilter: Boolean(languageFilter),
+      explain
+    });
     const chunkRows = db
       .prepare(
         `
@@ -1396,16 +1513,20 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
         LIMIT ?
       `
       )
-      .all(ftsQuery, pathPrefix, pathLike, languageFilter, languageFilter, Math.max(50, topK * 25));
+      .all(ftsQuery, pathPrefix, pathLike, languageFilter, languageFilter, chunkCandidateLimit);
 
+    const symbolCandidateLimit = computeSymbolCandidateLimit({
+      topK,
+      tokenCount: tokens.length
+    });
     const symbolRows = querySymbols(db, tokens, {
       pathPrefix,
-      language: languageFilter
+      language: languageFilter,
+      limit: symbolCandidateLimit
     });
     const ranked = buildFileRanking({ chunkRows, symbolRows, tokens, explain });
     const results = ranked.slice(0, topK);
-
-    return {
+    const response = {
       ok: true,
       query,
       query_tokens: tokens,
@@ -1413,10 +1534,17 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
         path_prefix: pathPrefix,
         language: languageFilter
       },
+      candidate_limits: {
+        chunks: chunkCandidateLimit,
+        symbols: symbolCandidateLimit
+      },
       total_hits: ranked.length,
       results,
-      index_path: toPosixPath(path.relative(workspaceRoot, dbFile))
+      index_path: toPosixPath(path.relative(workspaceRoot, dbFile)),
+      cache_hit: false
     };
+    setCachedQuery(workspaceRoot, cacheKey, response);
+    return response;
   } finally {
     db.close();
   }

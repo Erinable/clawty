@@ -76,6 +76,7 @@ npm run test:coverage
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
 索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
+`query_code_index` 支持 `path_prefix`、`language`、`explain`，并返回 `cache_hit` 与候选召回上限信息。
 
 ## LSP 语义检索（TS/JS）
 
