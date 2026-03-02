@@ -11,6 +11,8 @@
   - `write_file`
   - `run_shell`
   - `apply_patch`
+  - `build_code_index`
+  - `query_code_index`
 - 默认工作目录沙箱（禁止访问工作区外路径）
 - 常见危险命令拦截（如 `rm -rf`, `sudo`）
 
@@ -44,6 +46,15 @@ node src/index.js run "your task"
 node src/index.js --help
 ```
 
+## 代码索引使用建议
+
+在 `chat` 模式中可直接下达：
+
+- “先构建代码索引，再查找和 apply patch 相关的实现”
+- “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
+
+模型会自动调用 `build_code_index` 和 `query_code_index` 完成索引检索。
+
 ## 可配置项
 
 - `OPENAI_API_KEY`：必填
@@ -56,4 +67,5 @@ node src/index.js --help
 ## 说明
 
 - 当前是 MVP，目标是先跑通“模型 + 工具调用 + 基础安全约束”的闭环。
-- 后续可继续扩展：Git 工作流、测试驱动修复、会话记忆等能力。
+- 当前已支持代码索引：先构建索引，再按关键词检索相关文件与片段。
+- 后续可继续扩展：增量索引、Git 工作流、测试驱动修复、会话记忆等能力。

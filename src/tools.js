@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { buildCodeIndex, queryCodeIndex } from "./code-index.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -160,6 +161,52 @@ export const TOOL_DEFINITIONS = [
       required: ["patch"],
       additionalProperties: false
     }
+  },
+  {
+    type: "function",
+    name: "build_code_index",
+    description:
+      "Scan workspace code files and build a searchable index at .clawty/code-index.json.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_files: {
+          type: "integer",
+          description: "Optional scan limit to cap indexed file count.",
+          minimum: 1,
+          maximum: 20000
+        },
+        max_file_size_kb: {
+          type: "integer",
+          description: "Optional max file size (KB) included in index.",
+          minimum: 1,
+          maximum: 8192
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "query_code_index",
+    description: "Search the code index by keywords and return ranked file matches.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query such as symbol, module name, or feature keyword."
+        },
+        top_k: {
+          type: "integer",
+          description: "Optional number of top results to return.",
+          minimum: 1,
+          maximum: 50
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -261,6 +308,14 @@ async function applyPatchTool(args, context) {
   }
 }
 
+async function buildCodeIndexTool(args, context) {
+  return buildCodeIndex(context.workspaceRoot, args);
+}
+
+async function queryCodeIndexTool(args, context) {
+  return queryCodeIndex(context.workspaceRoot, args);
+}
+
 export async function runTool(name, args, context) {
   if (name === "read_file") {
     return readFileTool(args, context);
@@ -273,6 +328,12 @@ export async function runTool(name, args, context) {
   }
   if (name === "apply_patch") {
     return applyPatchTool(args, context);
+  }
+  if (name === "build_code_index") {
+    return buildCodeIndexTool(args, context);
+  }
+  if (name === "query_code_index") {
+    return queryCodeIndexTool(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }
