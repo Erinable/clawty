@@ -8,9 +8,13 @@ const INDEX_DB_FILENAME = "index.db";
 const DEFAULT_MAX_SYMBOLS = 120;
 const DEFAULT_MAX_REFERENCES_PER_SYMBOL = 12;
 const DEFAULT_MAX_LSP_ERRORS = 12;
+const DEFAULT_MAX_IMPORT_NODES = 50_000;
+const DEFAULT_MAX_IMPORT_EDGES = 200_000;
 const MAX_MAX_SYMBOLS = 5000;
 const MAX_MAX_REFERENCES = 200;
 const MAX_MAX_LSP_ERRORS = 200;
+const MAX_IMPORT_NODES = 500_000;
+const MAX_IMPORT_EDGES = 1_000_000;
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -49,6 +53,15 @@ function normalizePathPrefix(value) {
     return null;
   }
   return cleaned.endsWith("/") ? cleaned : `${cleaned}/`;
+}
+
+function resolveSafePath(workspaceRoot, inputPath) {
+  const fullPath = path.resolve(workspaceRoot, inputPath);
+  const normalizedRoot = path.resolve(workspaceRoot);
+  if (fullPath !== normalizedRoot && !fullPath.startsWith(`${normalizedRoot}${path.sep}`)) {
+    throw new Error(`Path escapes workspace root: ${inputPath}`);
+  }
+  return fullPath;
 }
 
 function indexDbPath(workspaceRoot) {
@@ -119,6 +132,17 @@ function makeSymbolStableKey(node) {
 
 function makeAnchorStableKey(pathValue, line, column) {
   return `anchor:${pathValue}:${line}:${column}`;
+}
+
+function normalizeEdgeType(value) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!raw) {
+    return "reference";
+  }
+  if (!/^[a-z][a-z0-9_:-]{0,63}$/.test(raw)) {
+    return "reference";
+  }
+  return raw;
 }
 
 function openDb(workspaceRoot) {
@@ -208,6 +232,13 @@ function buildStatements(db) {
     `),
     selectNodeIdByStableKey: db.prepare(`
       SELECT id FROM semantic_nodes WHERE stable_key = ?
+    `),
+    selectNearestNodeByPathLine: db.prepare(`
+      SELECT id, line
+      FROM semantic_nodes
+      WHERE path = ?
+      ORDER BY ABS(line - ?), id ASC
+      LIMIT 1
     `),
     insertEdge: db.prepare(`
       INSERT OR IGNORE INTO semantic_edges(from_node_id, to_node_id, edge_type, source, weight)
@@ -793,6 +824,302 @@ export async function getSemanticGraphStats(workspaceRoot) {
       edge_sources: edgeSources,
       latest_run: latestRun
     };
+  } finally {
+    db.close();
+  }
+}
+
+function resolveEdgeEndpointNodeId({
+  workspaceRoot,
+  endpoint,
+  symbolMap,
+  statements
+}) {
+  if (typeof endpoint === "string" && endpoint.trim().length > 0) {
+    return symbolMap.get(endpoint.trim()) || null;
+  }
+
+  if (!endpoint || typeof endpoint !== "object") {
+    return null;
+  }
+
+  const symbolCandidates = [
+    endpoint.symbol,
+    endpoint.symbol_id,
+    endpoint.id
+  ];
+  for (const candidate of symbolCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      const nodeId = symbolMap.get(candidate.trim());
+      if (nodeId) {
+        return nodeId;
+      }
+    }
+  }
+
+  const pathCandidates = [endpoint.path, endpoint.file, endpoint.relative_path];
+  for (const candidate of pathCandidates) {
+    const normalizedPath = normalizeGraphPath(workspaceRoot, candidate);
+    if (!normalizedPath) {
+      continue;
+    }
+    const line = parsePositiveInt(endpoint.line, 1, 1, 10_000_000);
+    const nearest = statements.selectNearestNodeByPathLine.get(normalizedPath, line);
+    if (!nearest) {
+      continue;
+    }
+    const nearestLine = Number(nearest.line || 1);
+    if (Math.abs(nearestLine - line) > 30) {
+      continue;
+    }
+    return Number(nearest.id || 0) || null;
+  }
+
+  return null;
+}
+
+function resolvePreciseItems(payload) {
+  const nodeItems = Array.isArray(payload?.nodes)
+    ? payload.nodes
+    : Array.isArray(payload?.symbols)
+      ? payload.symbols
+      : [];
+  const edgeItems = Array.isArray(payload?.edges)
+    ? payload.edges
+    : Array.isArray(payload?.relationships)
+      ? payload.relationships
+      : [];
+  return {
+    nodeItems,
+    edgeItems
+  };
+}
+
+export async function importPreciseIndex(workspaceRoot, args = {}) {
+  const indexExists = await checkIndexExists(workspaceRoot);
+  if (!indexExists) {
+    return {
+      ok: false,
+      error: "code index not found; run build_code_index first"
+    };
+  }
+
+  if (typeof args.path !== "string" || args.path.trim().length === 0) {
+    return {
+      ok: false,
+      error: "path is required"
+    };
+  }
+
+  const mode = args.mode === "replace" ? "replace" : "merge";
+  const source =
+    typeof args.source === "string" && args.source.trim().length > 0
+      ? args.source.trim().toLowerCase()
+      : "scip";
+  const maxNodes = parsePositiveInt(args.max_nodes, DEFAULT_MAX_IMPORT_NODES, 1, MAX_IMPORT_NODES);
+  const maxEdges = parsePositiveInt(args.max_edges, DEFAULT_MAX_IMPORT_EDGES, 1, MAX_IMPORT_EDGES);
+
+  let payload;
+  const importFile = resolveSafePath(workspaceRoot, args.path.trim());
+  const importPathRelative = toPosixPath(path.relative(workspaceRoot, importFile));
+  try {
+    payload = JSON.parse(await fs.readFile(importFile, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      error: `failed to read/parse precise index file: ${error.message || String(error)}`
+    };
+  }
+
+  const { nodeItems, edgeItems } = resolvePreciseItems(payload);
+  const limitedNodes = nodeItems.slice(0, maxNodes);
+  const limitedEdges = edgeItems.slice(0, maxEdges);
+
+  const db = openDb(workspaceRoot);
+  try {
+    ensureSemanticSchema(db);
+    const statements = buildStatements(db);
+    const startedAt = new Date().toISOString();
+    const symbolMap = new Map();
+    let insertedNodes = 0;
+    let reusedNodes = 0;
+    let skippedNodes = 0;
+    let insertedEdges = 0;
+    let reusedEdges = 0;
+    let skippedEdges = 0;
+
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      if (mode === "replace") {
+        clearSemanticGraph(db);
+      }
+
+      for (const rawNode of limitedNodes) {
+        if (!rawNode || typeof rawNode !== "object") {
+          skippedNodes += 1;
+          continue;
+        }
+
+        const nodePath = normalizeGraphPath(
+          workspaceRoot,
+          rawNode.path || rawNode.file || rawNode.relative_path
+        );
+        if (!nodePath) {
+          skippedNodes += 1;
+          continue;
+        }
+
+        const symbolKey =
+          typeof rawNode.symbol === "string" && rawNode.symbol.trim().length > 0
+            ? rawNode.symbol.trim()
+            : typeof rawNode.id === "string" && rawNode.id.trim().length > 0
+              ? rawNode.id.trim()
+              : null;
+        const line = parsePositiveInt(rawNode.line, 1, 1, 10_000_000);
+        const column = parsePositiveInt(rawNode.column, 1, 1, 10_000_000);
+        const name =
+          typeof rawNode.name === "string" && rawNode.name.trim().length > 0
+            ? rawNode.name.trim()
+            : symbolKey || path.basename(nodePath, path.extname(nodePath));
+        const kind =
+          typeof rawNode.kind === "string" && rawNode.kind.trim().length > 0
+            ? rawNode.kind.trim().toLowerCase()
+            : "symbol";
+        const lang =
+          typeof rawNode.lang === "string" && rawNode.lang.trim().length > 0
+            ? rawNode.lang.trim().toLowerCase()
+            : inferLangFromPath(nodePath);
+        const stableKey = symbolKey
+          ? `${source}:symbol:${symbolKey}`
+          : `${source}:node:${nodePath}:${line}:${column}:${kind}:${name}`;
+
+        const insertNode = statements.insertNode.run(
+          nodePath,
+          name,
+          name.toLowerCase(),
+          kind,
+          line,
+          column,
+          lang,
+          source,
+          stableKey
+        );
+
+        let nodeId = Number(insertNode.lastInsertRowid || 0);
+        if (nodeId <= 0) {
+          const existing = statements.selectNodeIdByStableKey.get(stableKey);
+          nodeId = Number(existing?.id || 0);
+        }
+        if (nodeId <= 0) {
+          skippedNodes += 1;
+          continue;
+        }
+        if (Number(insertNode.changes || 0) > 0) {
+          insertedNodes += 1;
+        } else {
+          reusedNodes += 1;
+        }
+        if (symbolKey) {
+          symbolMap.set(symbolKey, nodeId);
+        }
+      }
+
+      for (const rawEdge of limitedEdges) {
+        if (!rawEdge || typeof rawEdge !== "object") {
+          skippedEdges += 1;
+          continue;
+        }
+
+        const fromEndpoint = rawEdge.from ?? rawEdge.from_symbol ?? rawEdge.source;
+        const toEndpoint = rawEdge.to ?? rawEdge.to_symbol ?? rawEdge.target;
+        const fromNodeId = resolveEdgeEndpointNodeId({
+          workspaceRoot,
+          endpoint: fromEndpoint,
+          symbolMap,
+          statements
+        });
+        const toNodeId = resolveEdgeEndpointNodeId({
+          workspaceRoot,
+          endpoint: toEndpoint,
+          symbolMap,
+          statements
+        });
+        if (!fromNodeId || !toNodeId) {
+          skippedEdges += 1;
+          continue;
+        }
+
+        const edgeType = normalizeEdgeType(rawEdge.edge_type || rawEdge.type);
+        const defaultWeight = edgeType === "definition" ? 4 : 1;
+        const rawWeight = Number(rawEdge.weight);
+        const weight = Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : defaultWeight;
+
+        const edgeInsert = statements.insertEdge.run(fromNodeId, toNodeId, edgeType, source, weight);
+        if (Number(edgeInsert.changes || 0) > 0) {
+          insertedEdges += 1;
+        } else {
+          reusedEdges += 1;
+        }
+      }
+
+      const totalNodes = Number(statements.countNodes.get().count || 0);
+      const totalEdges = Number(statements.countEdges.get().count || 0);
+      const completedAt = new Date().toISOString();
+      statements.insertRun.run(
+        startedAt,
+        completedAt,
+        "ok_precise_import",
+        0,
+        insertedNodes,
+        totalNodes,
+        totalEdges,
+        0,
+        0,
+        0,
+        JSON.stringify({
+          type: "precise_import",
+          source,
+          mode,
+          import_path: importPathRelative,
+          format: payload?.format || null,
+          max_nodes: maxNodes,
+          max_edges: maxEdges
+        }),
+        null
+      );
+
+      db.exec("COMMIT;");
+      return {
+        ok: true,
+        source,
+        mode,
+        import_path: importPathRelative,
+        format: payload?.format || null,
+        input_counts: {
+          nodes: nodeItems.length,
+          edges: edgeItems.length
+        },
+        applied_limits: {
+          nodes: maxNodes,
+          edges: maxEdges
+        },
+        imported: {
+          inserted_nodes: insertedNodes,
+          reused_nodes: reusedNodes,
+          skipped_nodes: skippedNodes,
+          inserted_edges: insertedEdges,
+          reused_edges: reusedEdges,
+          skipped_edges: skippedEdges
+        },
+        totals: {
+          nodes: Number(statements.countNodes.get().count || 0),
+          edges: Number(statements.countEdges.get().count || 0)
+        }
+      };
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      throw error;
+    }
   } finally {
     db.close();
   }

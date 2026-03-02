@@ -11,6 +11,7 @@ import {
 } from "./code-index.js";
 import {
   buildSemanticGraph,
+  importPreciseIndex,
   getSemanticGraphStats,
   querySemanticGraph
 } from "./semantic-graph.js";
@@ -337,6 +338,44 @@ export const TOOL_DEFINITIONS = [
   },
   {
     type: "function",
+    name: "import_precise_index",
+    description:
+      "Import precise index facts (SCIP-normalized JSON) into semantic graph as semantic nodes/edges.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Workspace-relative path to precise index JSON file."
+        },
+        mode: {
+          type: "string",
+          description: "Import mode: merge (default) or replace existing semantic graph.",
+          enum: ["merge", "replace"]
+        },
+        source: {
+          type: "string",
+          description: "Fact source label, default scip."
+        },
+        max_nodes: {
+          type: "integer",
+          description: "Maximum nodes loaded from import payload.",
+          minimum: 1,
+          maximum: 500000
+        },
+        max_edges: {
+          type: "integer",
+          description: "Maximum edges loaded from import payload.",
+          minimum: 1,
+          maximum: 1000000
+        }
+      },
+      required: ["path"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
     name: "query_semantic_graph",
     description:
       "Query semantic graph seeds and return incoming/outgoing neighbors for semantic reasoning.",
@@ -630,6 +669,10 @@ async function buildSemanticGraphTool(args, context) {
   return buildSemanticGraph(context.workspaceRoot, args, context.lsp || {});
 }
 
+async function importPreciseIndexTool(args, context) {
+  return importPreciseIndex(context.workspaceRoot, args);
+}
+
 async function querySemanticGraphTool(args, context) {
   return querySemanticGraph(context.workspaceRoot, args);
 }
@@ -681,6 +724,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "build_semantic_graph") {
     return buildSemanticGraphTool(args, context);
+  }
+  if (name === "import_precise_index") {
+    return importPreciseIndexTool(args, context);
   }
   if (name === "query_semantic_graph") {
     return querySemanticGraphTool(args, context);

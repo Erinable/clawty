@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSemanticGraph,
+  importPreciseIndex,
   getSemanticGraphStats,
   querySemanticGraph
 } from "../src/semantic-graph.js";
@@ -184,4 +185,88 @@ test("buildSemanticGraph ingests LSP facts when provider is available", async (t
   const fooSeed = query.seeds.find((seed) => seed.name === "fooToken");
   assert.ok(fooSeed);
   assert.ok(fooSeed.outgoing.some((item) => item.edge_type === "definition"));
+});
+
+test("importPreciseIndex imports SCIP-normalized nodes and edges", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/alpha.ts",
+    "export class AlphaService {}\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/beta.ts",
+    "export function betaWorker() { return true; }\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const payload = {
+    format: "scip-normalized/v1",
+    nodes: [
+      {
+        symbol: "local alpha",
+        path: "src/alpha.ts",
+        name: "AlphaService",
+        kind: "class",
+        line: 1,
+        column: 1,
+        lang: "javascript"
+      },
+      {
+        symbol: "local beta",
+        path: "src/beta.ts",
+        name: "betaWorker",
+        kind: "function",
+        line: 1,
+        column: 1,
+        lang: "javascript"
+      }
+    ],
+    edges: [
+      {
+        from: "local alpha",
+        to: "local beta",
+        edge_type: "call",
+        weight: 3
+      }
+    ]
+  };
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip.normalized.json",
+    `${JSON.stringify(payload, null, 2)}\n`
+  );
+
+  const imported = await importPreciseIndex(workspaceRoot, {
+    path: "artifacts/scip.normalized.json",
+    mode: "replace",
+    source: "scip"
+  });
+  assert.equal(imported.ok, true);
+  assert.equal(imported.mode, "replace");
+  assert.equal(imported.imported.inserted_nodes, 2);
+  assert.equal(imported.imported.inserted_edges, 1);
+
+  const query = await querySemanticGraph(workspaceRoot, {
+    query: "AlphaService",
+    edge_type: "call",
+    top_k: 3,
+    max_neighbors: 5
+  });
+  assert.equal(query.ok, true);
+  const alphaSeed = query.seeds.find((seed) => seed.name === "AlphaService");
+  assert.ok(alphaSeed);
+  const callEdge = alphaSeed.outgoing.find((item) => item.edge_type === "call");
+  assert.ok(callEdge);
+  assert.equal(callEdge.node.name, "betaWorker");
+  assert.equal(callEdge.edge_source, "scip");
+
+  const stats = await getSemanticGraphStats(workspaceRoot);
+  assert.equal(stats.ok, true);
+  assert.ok(stats.edge_sources.some((item) => item.source === "scip"));
 });

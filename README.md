@@ -16,6 +16,7 @@
   - `query_code_index`
   - `get_index_stats`
   - `build_semantic_graph`
+  - `import_precise_index`
   - `query_semantic_graph`
   - `get_semantic_graph_stats`
   - `lsp_definition`
@@ -91,6 +92,7 @@ npm run bench:semantic:check
 - “刷新索引（changed_paths: [src/a.js], deleted_paths: [src/b.js]）后给我索引统计”
 - “只查 `src/` 下 `javascript` 结果，并输出 explain 评分明细”
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
+- “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
 索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
@@ -98,6 +100,8 @@ npm run bench:semantic:check
 符号检索支持 camelCase / snake_case 分词召回（例如查询 `user profile` 可命中 `createUserProfile` / `sync_user_profile`）。
 `get_index_stats.counts` 新增 `symbol_terms` 字段，表示符号词项索引规模。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
+`import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
+精确索引导入格式见 `docs/precise-index-import.md`。
 
 ## LSP 语义检索（TS/JS）
 

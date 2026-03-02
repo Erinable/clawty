@@ -213,13 +213,60 @@ test("semantic graph tools are callable through runTool", async (t) => {
   assert.equal(builtGraph.ok, true);
   assert.ok(builtGraph.seeded_nodes >= 2);
 
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "artifacts/scip.normalized.json",
+    JSON.stringify(
+      {
+        format: "scip-normalized/v1",
+        nodes: [
+          {
+            symbol: "tool semanticA",
+            path: "src/semantic-a.ts",
+            name: "semanticA",
+            kind: "function",
+            line: 2,
+            column: 1
+          },
+          {
+            symbol: "tool semanticB",
+            path: "src/semantic-b.ts",
+            name: "semanticB",
+            kind: "function",
+            line: 1,
+            column: 1
+          }
+        ],
+        edges: [
+          {
+            from: "tool semanticA",
+            to: "tool semanticB",
+            edge_type: "call",
+            weight: 2
+          }
+        ]
+      },
+      null,
+      2
+    )
+  );
+
+  const imported = await runTool(
+    "import_precise_index",
+    { path: "artifacts/scip.normalized.json", mode: "merge", source: "scip" },
+    context
+  );
+  assert.equal(imported.ok, true);
+  assert.equal(imported.imported.inserted_edges, 1);
+
   const graphStats = await runTool("get_semantic_graph_stats", {}, context);
   assert.equal(graphStats.ok, true);
   assert.ok(graphStats.counts.nodes >= 2);
+  assert.ok(graphStats.edge_sources.some((item) => item.source === "scip"));
 
   const query = await runTool(
     "query_semantic_graph",
-    { query: "semanticA", top_k: 3, max_neighbors: 5 },
+    { query: "semanticA", edge_type: "call", top_k: 3, max_neighbors: 5 },
     context
   );
   assert.equal(query.ok, true);
