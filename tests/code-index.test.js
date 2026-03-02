@@ -62,6 +62,55 @@ test("buildCodeIndex builds index and queryCodeIndex returns ranked matches", as
   assert.match(query.results[0].snippet, /^\d+:/m);
 });
 
+test("queryCodeIndex supports path/language filters and explain mode", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/indexer.js",
+    "export function indexTokenCore() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "docs/indexer.md",
+    "indexTokenCore is mentioned in docs.\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const filteredByPath = await queryCodeIndex(workspaceRoot, {
+    query: "indexTokenCore",
+    path_prefix: "docs",
+    top_k: 5
+  });
+  assert.equal(filteredByPath.ok, true);
+  assert.ok(filteredByPath.results.length >= 1);
+  assert.ok(filteredByPath.results.every((item) => item.path.startsWith("docs/")));
+
+  const filteredByLanguage = await queryCodeIndex(workspaceRoot, {
+    query: "indexTokenCore",
+    language: "javascript",
+    top_k: 5
+  });
+  assert.equal(filteredByLanguage.ok, true);
+  assert.ok(filteredByLanguage.results.length >= 1);
+  assert.ok(filteredByLanguage.results.every((item) => item.path.endsWith(".js")));
+
+  const explained = await queryCodeIndex(workspaceRoot, {
+    query: "indexTokenCore",
+    language: "javascript",
+    explain: true,
+    top_k: 1
+  });
+  assert.equal(explained.ok, true);
+  assert.equal(explained.results.length, 1);
+  assert.ok(explained.results[0].explain);
+  assert.ok(typeof explained.results[0].explain.chunk_match_count === "number");
+  assert.ok(typeof explained.results[0].explain.score_breakdown.chunk_score === "number");
+});
+
 test("refreshCodeIndex performs incremental update for changed and deleted files", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

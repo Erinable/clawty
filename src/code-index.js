@@ -1102,7 +1102,26 @@ function buildFtsQuery(tokens) {
   return tokens.map((token) => `${token}*`).join(" OR ");
 }
 
-function querySymbols(db, tokens) {
+function normalizePathPrefix(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!cleaned) {
+    return null;
+  }
+  return cleaned.endsWith("/") ? cleaned : `${cleaned}/`;
+}
+
+function normalizeLanguageFilter(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim().toLowerCase();
+  return cleaned || null;
+}
+
+function querySymbols(db, tokens, filters = {}) {
   if (tokens.length === 0) {
     return [];
   }
@@ -1117,29 +1136,44 @@ function querySymbols(db, tokens) {
   }
 
   const sql = `
-    SELECT file_path, name, kind, start_line, end_line
-    FROM symbols
-    WHERE ${clauses.join(" OR ")}
+    SELECT s.file_path, s.name, s.kind, s.start_line, s.end_line
+    FROM symbols s
+    JOIN files f ON f.path = s.file_path
+    WHERE (${clauses.join(" OR ")})
+      AND (? IS NULL OR s.file_path LIKE ?)
+      AND (? IS NULL OR f.lang = ?)
     LIMIT 2000
   `;
 
-  return db.prepare(sql).all(...params);
+  const pathLike = filters.pathPrefix ? `${filters.pathPrefix}%` : null;
+  return db
+    .prepare(sql)
+    .all(...params, filters.pathPrefix, pathLike, filters.language, filters.language);
 }
 
-function buildFileRanking({ chunkRows, symbolRows, tokens }) {
+function buildFileRanking({ chunkRows, symbolRows, tokens, explain = false }) {
   const files = new Map();
 
   for (const row of chunkRows) {
     const current = files.get(row.file_path) || {
       path: row.file_path,
       score: 0,
+      score_breakdown: {
+        chunk_score: 0,
+        symbol_score: 0,
+        path_score: 0
+      },
+      chunk_match_count: 0,
       matched_tokens: new Set(),
       symbol_hits: [],
       snippet: "",
       hit_line: Number(row.start_line) || 1
     };
 
-    current.score += scoreFromBm25(row.rank);
+    const chunkScore = scoreFromBm25(row.rank);
+    current.score += chunkScore;
+    current.score_breakdown.chunk_score += chunkScore;
+    current.chunk_match_count += 1;
 
     const snippet = formatSnippet(String(row.text || ""), Number(row.start_line) || 1);
     if (!current.snippet) {
@@ -1161,6 +1195,12 @@ function buildFileRanking({ chunkRows, symbolRows, tokens }) {
     const current = files.get(symbol.file_path) || {
       path: symbol.file_path,
       score: 0,
+      score_breakdown: {
+        chunk_score: 0,
+        symbol_score: 0,
+        path_score: 0
+      },
+      chunk_match_count: 0,
       matched_tokens: new Set(),
       symbol_hits: [],
       snippet: "",
@@ -1171,9 +1211,11 @@ function buildFileRanking({ chunkRows, symbolRows, tokens }) {
     for (const token of tokens) {
       if (nameLower === token) {
         current.score += 4;
+        current.score_breakdown.symbol_score += 4;
         current.matched_tokens.add(token);
       } else if (nameLower.startsWith(token)) {
         current.score += 2;
+        current.score_breakdown.symbol_score += 2;
         current.matched_tokens.add(token);
       }
     }
@@ -1199,6 +1241,7 @@ function buildFileRanking({ chunkRows, symbolRows, tokens }) {
     for (const token of tokens) {
       if (basename.includes(token)) {
         current.score += 0.5;
+        current.score_breakdown.path_score += 0.5;
         current.matched_tokens.add(token);
       }
     }
@@ -1206,14 +1249,31 @@ function buildFileRanking({ chunkRows, symbolRows, tokens }) {
 
   return Array.from(files.values())
     .sort((a, b) => b.score - a.score)
-    .map((item) => ({
-      path: item.path,
-      score: Number(item.score.toFixed(3)),
-      matched_tokens: Array.from(item.matched_tokens),
-      hit_line: item.hit_line,
-      snippet: item.snippet,
-      symbol_hits: item.symbol_hits
-    }));
+    .map((item) => {
+      const base = {
+        path: item.path,
+        score: Number(item.score.toFixed(3)),
+        matched_tokens: Array.from(item.matched_tokens),
+        hit_line: item.hit_line,
+        snippet: item.snippet,
+        symbol_hits: item.symbol_hits
+      };
+      if (!explain) {
+        return base;
+      }
+      return {
+        ...base,
+        explain: {
+          chunk_match_count: item.chunk_match_count,
+          symbol_match_count: item.symbol_hits.length,
+          score_breakdown: {
+            chunk_score: Number(item.score_breakdown.chunk_score.toFixed(3)),
+            symbol_score: Number(item.score_breakdown.symbol_score.toFixed(3)),
+            path_score: Number(item.score_breakdown.path_score.toFixed(3))
+          }
+        }
+      };
+    });
 }
 
 export async function getIndexStats(workspaceRoot, args = {}) {
@@ -1307,6 +1367,9 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
     Number.isFinite(args.top_k) && args.top_k > 0
       ? Math.min(50, Math.floor(args.top_k))
       : 8;
+  const pathPrefix = normalizePathPrefix(args.path_prefix);
+  const languageFilter = normalizeLanguageFilter(args.language);
+  const explain = Boolean(args.explain);
 
   const db = openIndexDb(workspaceRoot);
   try {
@@ -1319,26 +1382,37 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
     }
 
     const ftsQuery = buildFtsQuery(tokens);
+    const pathLike = pathPrefix ? `${pathPrefix}%` : null;
     const chunkRows = db
       .prepare(
         `
-        SELECT file_path, start_line, end_line, text, bm25(chunks_fts) AS rank
+        SELECT chunks_fts.file_path, chunks_fts.start_line, chunks_fts.end_line, chunks_fts.text, bm25(chunks_fts) AS rank
         FROM chunks_fts
+        JOIN files ON files.path = chunks_fts.file_path
         WHERE chunks_fts MATCH ?
+          AND (? IS NULL OR chunks_fts.file_path LIKE ?)
+          AND (? IS NULL OR files.lang = ?)
         ORDER BY rank
         LIMIT ?
       `
       )
-      .all(ftsQuery, Math.max(50, topK * 25));
+      .all(ftsQuery, pathPrefix, pathLike, languageFilter, languageFilter, Math.max(50, topK * 25));
 
-    const symbolRows = querySymbols(db, tokens);
-    const ranked = buildFileRanking({ chunkRows, symbolRows, tokens });
+    const symbolRows = querySymbols(db, tokens, {
+      pathPrefix,
+      language: languageFilter
+    });
+    const ranked = buildFileRanking({ chunkRows, symbolRows, tokens, explain });
     const results = ranked.slice(0, topK);
 
     return {
       ok: true,
       query,
       query_tokens: tokens,
+      filters: {
+        path_prefix: pathPrefix,
+        language: languageFilter
+      },
       total_hits: ranked.length,
       results,
       index_path: toPosixPath(path.relative(workspaceRoot, dbFile))

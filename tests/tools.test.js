@@ -153,6 +153,20 @@ test("index tools are callable through runTool", async (t) => {
   assert.equal(queried.ok, true);
   assert.equal(queried.results[0].path, "src/indexable.js");
 
+  const queriedWithExplain = await runTool(
+    "query_code_index",
+    {
+      query: "symbolAlpha",
+      language: "javascript",
+      path_prefix: "src",
+      explain: true,
+      top_k: 1
+    },
+    context
+  );
+  assert.equal(queriedWithExplain.ok, true);
+  assert.ok(queriedWithExplain.results[0].explain);
+
   const eventRefreshed = await runTool(
     "refresh_code_index",
     { changed_paths: ["src/indexable.js"], deleted_paths: ["src/missing.js"] },

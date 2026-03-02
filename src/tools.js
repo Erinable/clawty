@@ -213,6 +213,18 @@ export const TOOL_DEFINITIONS = [
           description: "Optional number of top results to return.",
           minimum: 1,
           maximum: 50
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter, e.g. src/ or tests/."
+        },
+        language: {
+          type: "string",
+          description: "Optional language filter, e.g. javascript, python, text."
+        },
+        explain: {
+          type: "boolean",
+          description: "Include score breakdown for each result."
         }
       },
       required: ["query"],
