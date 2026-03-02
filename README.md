@@ -86,6 +86,7 @@ npm run bench:semantic:check
 代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
 语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
 语法索引说明位于 `docs/syntax-index.md`。
+发布清单已覆盖 `query_syntax_index` 与 `semantic -> syntax -> index` 回退验收门禁。
 
 ## 代码索引使用建议
 

@@ -25,7 +25,12 @@
 npm run bench:semantic
 npm run bench:semantic:check
 npm run bench:semantic:baseline
+node --test tests/semantic-graph.test.js
+node --test tests/tools.test.js
 ```
+
+说明：`bench:semantic:*` 评估语义任务质量；`semantic-graph/tools` 测试负责验证
+`semantic -> syntax -> index` 回退链路与结构边接入行为。
 
 ## 质量指标（越高越好）
 
