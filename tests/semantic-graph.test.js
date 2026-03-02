@@ -81,6 +81,227 @@ test("buildSemanticGraph creates seed graph and querySemanticGraph returns node 
   assert.ok(query.seeds.some((seed) => seed.name === "fooToken"));
 });
 
+test("buildSemanticGraph includes python/go seed symbols by default", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/polyglot.py",
+    "def pySeedToken():\n    return True\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/polyglot.go",
+    "package main\n\nfunc goSeedToken() bool { return true }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      max_symbols: 20,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: false,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(built.ok, true);
+  assert.ok(built.seeded_nodes >= 2);
+
+  const pyQuery = await querySemanticGraph(workspaceRoot, {
+    query: "pySeedToken",
+    top_k: 3
+  });
+  assert.equal(pyQuery.ok, true);
+  assert.ok(pyQuery.seeds.some((seed) => seed.name === "pySeedToken" && seed.lang === "python"));
+
+  const goQuery = await querySemanticGraph(workspaceRoot, {
+    query: "goSeedToken",
+    top_k: 3
+  });
+  assert.equal(goQuery.ok, true);
+  assert.ok(goQuery.seeds.some((seed) => seed.name === "goSeedToken" && seed.lang === "go"));
+
+  const broadQuery = await querySemanticGraph(workspaceRoot, {
+    query: "SeedToken",
+    top_k: 5
+  });
+  assert.equal(broadQuery.ok, true);
+  assert.ok(broadQuery.language_distribution);
+  assert.equal(
+    broadQuery.language_distribution.returned_seeds.total,
+    broadQuery.total_seeds
+  );
+  const returnedLangs = broadQuery.language_distribution.returned_seeds.breakdown.map(
+    (item) => item.lang
+  );
+  assert.ok(returnedLangs.includes("python"));
+  assert.ok(returnedLangs.includes("go"));
+});
+
+test("buildSemanticGraph honors semantic_seed_lang_filter and args override env", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const oldEnvValue = process.env.CLAWTY_SEMANTIC_SEED_LANG_FILTER;
+  t.after(async () => {
+    if (oldEnvValue === undefined) {
+      delete process.env.CLAWTY_SEMANTIC_SEED_LANG_FILTER;
+    } else {
+      process.env.CLAWTY_SEMANTIC_SEED_LANG_FILTER = oldEnvValue;
+    }
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/filter.ts",
+    "export function jsSeedToken() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/filter.py",
+    "def pySeedFilterToken():\n    return True\n"
+  );
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  process.env.CLAWTY_SEMANTIC_SEED_LANG_FILTER = "python";
+  const envBuilt = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      max_symbols: 20,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: false,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(envBuilt.ok, true);
+  assert.equal(envBuilt.config.semantic_seed_lang_filter.include_all, false);
+  assert.deepEqual(envBuilt.config.semantic_seed_lang_filter.languages, ["python"]);
+
+  const envPyQuery = await querySemanticGraph(workspaceRoot, {
+    query: "pySeedFilterToken",
+    top_k: 3
+  });
+  assert.equal(envPyQuery.ok, true);
+  assert.ok(envPyQuery.seeds.some((seed) => seed.name === "pySeedFilterToken"));
+
+  const envJsQuery = await querySemanticGraph(workspaceRoot, {
+    query: "jsSeedToken",
+    top_k: 3
+  });
+  assert.equal(envJsQuery.ok, true);
+  assert.equal(envJsQuery.seeds.some((seed) => seed.name === "jsSeedToken"), false);
+
+  const argBuilt = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      semantic_seed_lang_filter: "javascript",
+      max_symbols: 20,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: false,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(argBuilt.ok, true);
+  assert.equal(argBuilt.config.semantic_seed_lang_filter.include_all, false);
+  assert.deepEqual(argBuilt.config.semantic_seed_lang_filter.languages, ["javascript"]);
+
+  const argJsQuery = await querySemanticGraph(workspaceRoot, {
+    query: "jsSeedToken",
+    top_k: 3
+  });
+  assert.equal(argJsQuery.ok, true);
+  assert.ok(argJsQuery.seeds.some((seed) => seed.name === "jsSeedToken"));
+
+  const argPyQuery = await querySemanticGraph(workspaceRoot, {
+    query: "pySeedFilterToken",
+    top_k: 3
+  });
+  assert.equal(argPyQuery.ok, true);
+  assert.equal(argPyQuery.seeds.some((seed) => seed.name === "pySeedFilterToken"), false);
+});
+
+test("refreshSemanticGraph event mode refreshes python changed paths", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-python.py",
+    "def old_py_seed():\n    return True\n"
+  );
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      max_symbols: 20,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: false,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(built.ok, true);
+  assert.ok(built.seeded_nodes >= 1);
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-python.py",
+    "def new_py_seed():\n    return True\n"
+  );
+
+  const refreshedCode = await refreshCodeIndex(workspaceRoot, {
+    changed_paths: ["src/refresh-python.py"]
+  });
+  assert.equal(refreshedCode.ok, true);
+  assert.equal(refreshedCode.mode, "event");
+
+  const refreshedGraph = await refreshSemanticGraph(
+    workspaceRoot,
+    {
+      changed_paths: ["src/refresh-python.py"],
+      include_definitions: false,
+      include_references: false,
+      include_syntax: false,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(refreshedGraph.ok, true);
+  assert.equal(refreshedGraph.mode, "event");
+  assert.ok(refreshedGraph.parsed_files >= 1);
+
+  const queryNew = await querySemanticGraph(workspaceRoot, {
+    query: "new_py_seed",
+    top_k: 5
+  });
+  assert.equal(queryNew.ok, true);
+  assert.ok(queryNew.seeds.some((seed) => seed.name === "new_py_seed"));
+
+  const queryOld = await querySemanticGraph(workspaceRoot, {
+    query: "old_py_seed",
+    top_k: 5
+  });
+  assert.equal(queryOld.ok, true);
+  assert.equal(queryOld.seeds.some((seed) => seed.name === "old_py_seed"), false);
+});
+
 test("buildSemanticGraph ingests syntax import/call edges when syntax index exists", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {

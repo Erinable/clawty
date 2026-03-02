@@ -315,6 +315,11 @@ export const TOOL_DEFINITIONS = [
           minimum: 1,
           maximum: 5000
         },
+        semantic_seed_lang_filter: {
+          type: "string",
+          description:
+            "Optional seed language filter. Use '*' for all (default) or comma-separated values like 'javascript,python,go'."
+        },
         max_references_per_symbol: {
           type: "integer",
           description: "Maximum reference locations collected per seed symbol.",
@@ -420,6 +425,11 @@ export const TOOL_DEFINITIONS = [
           description: "Maximum number of changed-path seed symbols loaded from code index.",
           minimum: 1,
           maximum: 5000
+        },
+        semantic_seed_lang_filter: {
+          type: "string",
+          description:
+            "Optional seed language filter. Use '*' for all (default) or comma-separated values like 'javascript,python,go'."
         },
         max_references_per_symbol: {
           type: "integer",
@@ -1086,6 +1096,32 @@ function mapSyntaxSeedToSemanticSeed(seed, edgeType = null) {
   };
 }
 
+function summarizeFallbackSeedLanguages(seeds) {
+  const rows = Array.isArray(seeds) ? seeds : [];
+  const counts = new Map();
+  for (const seed of rows) {
+    const raw = typeof seed?.lang === "string" ? seed.lang.trim().toLowerCase() : "";
+    const lang = raw && raw !== "*" ? raw : "unknown";
+    counts.set(lang, Number(counts.get(lang) || 0) + 1);
+  }
+  const total = rows.length;
+  return {
+    total,
+    breakdown: Array.from(counts.entries())
+      .map(([lang, count]) => ({
+        lang,
+        count,
+        ratio: total > 0 ? Number((count / total).toFixed(4)) : 0
+      }))
+      .sort((a, b) => {
+        if (b.count !== a.count) {
+          return b.count - a.count;
+        }
+        return a.lang.localeCompare(b.lang);
+      })
+  };
+}
+
 async function querySemanticGraphTool(args, context) {
   const semanticResult = await querySemanticGraph(context.workspaceRoot, args);
   if (semanticResult.ok) {
@@ -1126,6 +1162,11 @@ async function querySemanticGraphTool(args, context) {
       total_seeds: fallbackSeeds.length,
       scanned_candidates: Number(syntaxResult.scanned_candidates || fallbackSeeds.length),
       deduped_candidates: fallbackSeeds.length,
+      language_distribution: {
+        scanned_candidates: null,
+        deduped_candidates: summarizeFallbackSeedLanguages(fallbackSeeds),
+        returned_seeds: summarizeFallbackSeedLanguages(fallbackSeeds)
+      },
       seeds: fallbackSeeds
     };
   }
@@ -1170,6 +1211,11 @@ async function querySemanticGraphTool(args, context) {
     total_seeds: fallbackSeeds.length,
     scanned_candidates: Number(indexResult.total_hits || fallbackSeeds.length),
     deduped_candidates: fallbackSeeds.length,
+    language_distribution: {
+      scanned_candidates: null,
+      deduped_candidates: summarizeFallbackSeedLanguages(fallbackSeeds),
+      returned_seeds: summarizeFallbackSeedLanguages(fallbackSeeds)
+    },
     seeds: fallbackSeeds
   };
 }

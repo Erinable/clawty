@@ -100,6 +100,7 @@ npm run bench:graph:refresh:check
 增量一致性回归位于 `tests/code-index-consistency.test.js`（比较 incremental/event 与 full rebuild 的查询签名）。
 代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
 语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
+主流方案对齐路线图位于 `docs/code-index-mainstream-roadmap.md`。
 语法索引说明位于 `docs/syntax-index.md`。
 发布清单已覆盖 `query_syntax_index` 与 `semantic -> syntax -> index` 回退验收门禁。
 
@@ -130,10 +131,12 @@ npm run bench:graph:refresh:check
 `query_syntax_index` 按 symbol/path 关键词返回结构邻居（outgoing imports/calls、incoming importers/callers）。
 `get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
+`build_semantic_graph` / `refresh_semantic_graph` 支持 `semantic_seed_lang_filter`（例如 `javascript,python,go`），默认 `*`（不过滤）。
 `refresh_semantic_graph` 支持事件模式增量刷新（`changed_paths` / `deleted_paths`）；未提供事件路径时会回退全量构建。
 当 syntax index 可用时，`build_semantic_graph` 会自动摄取 syntax import/call 边（`source=syntax`）作为结构先验。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
+`query_semantic_graph` 返回 `language_distribution`（`scanned_candidates` / `deduped_candidates` / `returned_seeds`），用于观察召回语言偏置。
 `query_semantic_graph` 支持 `max_hops`（默认 `1`）与 `per_hop_limit`，当 `max_hops > 1` 时每个 seed 会返回 `multi_hop` 路径展开结果（含 `path_score` 与质量因子）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
 `query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
@@ -168,6 +171,7 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_LSP_TIMEOUT_MS`：默认 `5000`
 - `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
 - `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
+- `CLAWTY_SEMANTIC_SEED_LANG_FILTER`：语义图 seed 语言过滤，默认 `*`（不过滤）
 - `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）
 
 ## 配置系统

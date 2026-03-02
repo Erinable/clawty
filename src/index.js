@@ -31,6 +31,7 @@ function printHelp() {
       "  CLAWTY_INDEX_MAX_FILE_SIZE_KB Optional (default: 512)",
       "  CLAWTY_LSP_ENABLED     Optional (default: true)",
       "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)",
+      "  CLAWTY_SEMANTIC_SEED_LANG_FILTER Optional (default: *)",
       "",
       "Config files:",
       "  clawty.config.json or .clawty/config.json"

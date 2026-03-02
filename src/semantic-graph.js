@@ -80,6 +80,88 @@ function parseBoolean(value, fallback = false) {
   return fallback;
 }
 
+function normalizeLanguageToken(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (["*", "all", "any"].includes(normalized)) {
+    return "*";
+  }
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseSeedLanguageFilter(value) {
+  const tokens = [];
+  if (Array.isArray(value)) {
+    tokens.push(...value);
+  } else if (typeof value === "string") {
+    tokens.push(...value.split(/[,\s]+/g));
+  }
+
+  const languages = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const normalized = normalizeLanguageToken(token);
+    if (!normalized) {
+      continue;
+    }
+    if (normalized === "*") {
+      return {
+        include_all: true,
+        languages: [],
+        raw: "*"
+      };
+    }
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    languages.push(normalized);
+  }
+
+  if (languages.length === 0) {
+    return {
+      include_all: true,
+      languages: [],
+      raw: "*"
+    };
+  }
+
+  return {
+    include_all: false,
+    languages,
+    raw: languages.join(",")
+  };
+}
+
+function resolveSeedLanguageFilterArg(args = {}) {
+  if (args.semantic_seed_lang_filter !== undefined) {
+    return args.semantic_seed_lang_filter;
+  }
+  if (args.semantic_seed_langs !== undefined) {
+    return args.semantic_seed_langs;
+  }
+  return process.env.CLAWTY_SEMANTIC_SEED_LANG_FILTER;
+}
+
+function isSeedLanguageAllowed(filter, lang) {
+  if (!filter || filter.include_all) {
+    return true;
+  }
+  const normalized = normalizeLanguageToken(lang);
+  if (!normalized || normalized === "*") {
+    return false;
+  }
+  return filter.languages.includes(normalized);
+}
+
 function toPosixPath(inputPath) {
   return inputPath.split(path.sep).join("/");
 }
@@ -148,6 +230,8 @@ function resolveConfig(args = {}) {
     addCandidate(candidate);
   }
 
+  const semanticSeedLangFilter = parseSeedLanguageFilter(resolveSeedLanguageFilterArg(args));
+
   return {
     max_symbols: parsePositiveInt(args.max_symbols, DEFAULT_MAX_SYMBOLS, 1, MAX_MAX_SYMBOLS),
     max_references_per_symbol: parsePositiveInt(
@@ -197,7 +281,8 @@ function resolveConfig(args = {}) {
       1,
       MAX_IMPORT_EDGES
     ),
-    precise_index_paths: precisePathCandidates
+    precise_index_paths: precisePathCandidates,
+    semantic_seed_lang_filter: semanticSeedLangFilter
   };
 }
 
@@ -328,23 +413,40 @@ function clearSemanticGraph(db) {
   `);
 }
 
-function buildStatements(db) {
+function buildStatements(db, config = null) {
+  const seedLangFilter = config?.semantic_seed_lang_filter || parseSeedLanguageFilter("*");
+  const languageClause = seedLangFilter.include_all
+    ? ""
+    : ` AND f.lang IN (${seedLangFilter.languages.map(() => "?").join(", ")})`;
+  const seedLangParams = seedLangFilter.include_all ? [] : seedLangFilter.languages;
+
+  const selectSeedSymbolsStmt = db.prepare(`
+    SELECT s.file_path AS path, s.name, s.kind, s.start_line AS line, f.lang
+    FROM symbols s
+    JOIN files f ON f.path = s.file_path
+    WHERE 1 = 1${languageClause}
+    ORDER BY s.file_path ASC, s.start_line ASC, s.name ASC
+    LIMIT ?
+  `);
+  const selectSeedSymbolsByPathStmt = db.prepare(`
+    SELECT s.file_path AS path, s.name, s.kind, s.start_line AS line, f.lang
+    FROM symbols s
+    JOIN files f ON f.path = s.file_path
+    WHERE s.file_path = ?${languageClause}
+    ORDER BY s.start_line ASC, s.name ASC
+  `);
+
   return {
-    selectSeedSymbols: db.prepare(`
-      SELECT s.file_path AS path, s.name, s.kind, s.start_line AS line, f.lang
-      FROM symbols s
-      JOIN files f ON f.path = s.file_path
-      WHERE f.lang = 'javascript'
-      ORDER BY s.file_path ASC, s.start_line ASC, s.name ASC
-      LIMIT ?
-    `),
-    selectSeedSymbolsByPath: db.prepare(`
-      SELECT s.file_path AS path, s.name, s.kind, s.start_line AS line, f.lang
-      FROM symbols s
-      JOIN files f ON f.path = s.file_path
-      WHERE s.file_path = ? AND f.lang = 'javascript'
-      ORDER BY s.start_line ASC, s.name ASC
-    `),
+    selectSeedSymbols: {
+      all(limit) {
+        return selectSeedSymbolsStmt.all(...seedLangParams, limit);
+      }
+    },
+    selectSeedSymbolsByPath: {
+      all(filePath) {
+        return selectSeedSymbolsByPathStmt.all(filePath, ...seedLangParams);
+      }
+    },
     selectIndexFileByPath: db.prepare(`
       SELECT path, lang
       FROM files
@@ -868,6 +970,42 @@ function sortSeedsByPriority(a, b, queryLower) {
   return String(a.path || "").localeCompare(String(b.path || ""));
 }
 
+function normalizeLanguageForStats(value) {
+  const normalized = normalizeLanguageToken(value);
+  if (!normalized || normalized === "*") {
+    return "unknown";
+  }
+  return normalized;
+}
+
+function summarizeLanguageDistribution(items) {
+  const rows = Array.isArray(items) ? items : [];
+  const counts = new Map();
+  for (const item of rows) {
+    const lang = normalizeLanguageForStats(item?.lang);
+    counts.set(lang, Number(counts.get(lang) || 0) + 1);
+  }
+
+  const total = rows.length;
+  const breakdown = Array.from(counts.entries())
+    .map(([lang, count]) => ({
+      lang,
+      count,
+      ratio: total > 0 ? Number((count / total).toFixed(4)) : 0
+    }))
+    .sort((a, b) => {
+      if (b.count !== a.count) {
+        return b.count - a.count;
+      }
+      return a.lang.localeCompare(b.lang);
+    });
+
+  return {
+    total,
+    breakdown
+  };
+}
+
 function neighborDedupKey(row) {
   return [
     String(row.edge_type || ""),
@@ -1320,7 +1458,7 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
   const startedAt = new Date().toISOString();
   const db = openDb(workspaceRoot);
   ensureSemanticSchema(db);
-  const statements = buildStatements(db);
+  const statements = buildStatements(db, config);
 
   let lspHealthSnapshot = null;
   try {
@@ -1700,7 +1838,7 @@ export async function refreshSemanticGraph(workspaceRoot, args = {}, lspInput = 
   const startedAt = new Date().toISOString();
   const db = openDb(workspaceRoot);
   ensureSemanticSchema(db);
-  const statements = buildStatements(db);
+  const statements = buildStatements(db, config);
 
   let lspHealthSnapshot = null;
   try {
@@ -1764,7 +1902,7 @@ export async function refreshSemanticGraph(workspaceRoot, args = {}, lspInput = 
       const parseCandidates = [];
       for (const filePath of changedPaths) {
         const indexFile = statements.selectIndexFileByPath.get(filePath);
-        if (!indexFile || indexFile.lang !== "javascript") {
+        if (!indexFile || !isSeedLanguageAllowed(config.semantic_seed_lang_filter, indexFile.lang)) {
           continue;
         }
         parseCandidates.push(indexFile.path);
@@ -2517,9 +2655,10 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       dedupedByKey.set(key, pickPreferredSeed(existing, seed, queryLower));
     }
 
-    const seeds = Array.from(dedupedByKey.values())
-      .sort((a, b) => sortSeedsByPriority(a, b, queryLower))
-      .slice(0, topK);
+    const dedupedCandidates = Array.from(dedupedByKey.values()).sort((a, b) =>
+      sortSeedsByPriority(a, b, queryLower)
+    );
+    const seeds = dedupedCandidates.slice(0, topK);
 
     const enrichedSeeds = seeds.map((seed) => ({
       path: seed.path,
@@ -2563,6 +2702,11 @@ export async function querySemanticGraph(workspaceRoot, args = {}) {
       total_seeds: finalizedSeeds.length,
       scanned_candidates: rawSeeds.length,
       deduped_candidates: dedupedByKey.size,
+      language_distribution: {
+        scanned_candidates: summarizeLanguageDistribution(rawSeeds),
+        deduped_candidates: summarizeLanguageDistribution(dedupedCandidates),
+        returned_seeds: summarizeLanguageDistribution(finalizedSeeds)
+      },
       seeds: finalizedSeeds
     };
   } finally {

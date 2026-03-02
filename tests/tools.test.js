@@ -426,6 +426,8 @@ test("query_semantic_graph falls back to syntax index when semantic graph is emp
   assert.ok(Array.isArray(query.seeds));
   assert.ok(query.seeds.length >= 1);
   assert.ok(query.seeds[0].outgoing.some((item) => item.edge_source === "syntax"));
+  assert.ok(query.language_distribution);
+  assert.ok(query.language_distribution.returned_seeds);
 });
 
 test("query_semantic_graph falls back to index when semantic graph is empty", async (t) => {
@@ -458,4 +460,6 @@ test("query_semantic_graph falls back to index when semantic graph is empty", as
   assert.equal(query.provider, "index");
   assert.ok(Array.isArray(query.seeds));
   assert.ok(query.seeds.length >= 1);
+  assert.ok(query.language_distribution);
+  assert.ok(query.language_distribution.returned_seeds);
 });

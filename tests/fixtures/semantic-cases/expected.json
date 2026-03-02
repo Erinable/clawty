@@ -63,6 +63,32 @@
         "src/services/user-profile-service.ts",
         "src/repositories/user-profile-repo.ts"
       ]
+    },
+    {
+      "name": "python_profile_write_path",
+      "args": {
+        "query": "handle_py_profile_update update_py_profile save_py_profile",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/api/py-profile-controller.py",
+      "expected_paths": [
+        "src/api/py-profile-controller.py",
+        "src/services/py_profile_service.py",
+        "src/repositories/py_profile_repo.py"
+      ]
+    },
+    {
+      "name": "go_payment_sync_chain",
+      "args": {
+        "query": "RunGoPaymentSyncJob SyncGoPendingPayments ChargeGoInvoice",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/jobs/go-payment-worker.go",
+      "expected_paths": [
+        "src/jobs/go-payment-worker.go",
+        "src/services/go-payment-sync.go",
+        "packages/payments/go-payment-gateway.go"
+      ]
     }
   ]
 }
