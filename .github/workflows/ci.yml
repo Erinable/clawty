@@ -6,13 +6,16 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Node ${{ matrix.node }}
+  unit-tests:
+    if: github.event_name != 'schedule'
+    name: Unit Tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,14 +44,66 @@ jobs:
       - name: Run tests
         run: npm test
 
+  benchmark-gates:
+    if: github.event_name != 'schedule'
+    name: Benchmark Gates (Node 24)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        env:
+          CXXFLAGS: -std=c++20
+        run: npm ci
+
+      - name: Verify tree-sitter runtime
+        run: npm run verify:tree-sitter
+
       - name: Run code-index benchmark gate
-        if: matrix.node == 24
         run: npm run bench:index:check
 
+      - name: Run semantic quality gate
+        run: npm run bench:semantic:check
+
+      - name: Run semantic graph query gate
+        run: npm run bench:graph:check
+
       - name: Run semantic graph refresh consistency gate
-        if: matrix.node == 24
         run: npm run bench:graph:refresh:check
 
-      - name: Run coverage
-        if: matrix.node == 24
-        run: npm run test:coverage
+  coverage-gate:
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    name: Coverage Gate (Node 24)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        env:
+          CXXFLAGS: -std=c++20
+        run: npm ci
+
+      - name: Verify tree-sitter runtime
+        run: npm run verify:tree-sitter
+
+      - name: Run coverage threshold gate
+        run: npm run coverage:check

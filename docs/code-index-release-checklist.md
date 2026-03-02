@@ -11,7 +11,7 @@
 ## 2. 自动化门禁
 
 - [ ] 运行全量测试：`npm test`
-- [ ] 覆盖率检查：`npm run test:coverage`
+- [ ] 覆盖率门禁：`npm run coverage:check`
 - [ ] 性能门禁：`npm run bench:index:check`
 - [ ] 语义质量门禁：`npm run bench:semantic:check`
 - [ ] 语义图门禁：`npm run bench:graph:check`

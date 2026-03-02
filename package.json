@@ -15,6 +15,7 @@
     "test": "node --test",
     "test:watch": "node --test --watch",
     "test:coverage": "node --test --experimental-test-coverage",
+    "coverage:check": "node scripts/check-coverage-thresholds.mjs",
     "verify:tree-sitter": "node --input-type=module -e \"await import('tree-sitter'); await import('tree-sitter-javascript'); await import('tree-sitter-python'); await import('tree-sitter-go'); console.log('tree-sitter runtime ready')\"",
     "bench:index": "node tests/bench/code-index.bench.js",
     "bench:index:check": "node tests/bench/code-index.bench.js --check-baseline --threshold=20",
