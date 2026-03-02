@@ -6,7 +6,13 @@
 
 - `chat`：多轮对话模式
 - `run "<任务>"`：单次任务执行模式
+- `init`：一键初始化新仓库分析流程（doctor + code/syntax/semantic，可选 vector）
+- `doctor`：本地环境与依赖健康诊断（支持 `--json`）
 - `watch-index`：监听文件变更并自动刷新索引
+- `completion`：生成 shell completion 脚本（bash/zsh/fish）
+- `config path/validate`：查看配置路径与校验配置有效性
+- `memory search/stats/feedback/prune`：长期记忆检索、统计、反馈与清理
+- `upgrade` / `uninstall`：CLI 自升级与卸载命令
 - `chat/run` 自动注入当前工作区 `changed_paths + git diff` 增量上下文（可配置开关）
 - 模型可调用本地工具：
   - `read_file`
@@ -39,6 +45,26 @@
 - 默认工作目录沙箱（禁止访问工作区外路径）
 - 常见危险命令拦截（如 `rm -rf`, `sudo`）
 
+## 已实现核心能力（当前）
+
+- Agent 执行闭环：基于 OpenAI Responses API 的工具调用循环（支持多轮工具调用与状态延续）。
+- 工具安全约束：工作区路径沙箱、`apply_patch` 路径校验、危险命令拦截。
+- 增量上下文注入：每轮自动注入 `changed_paths + git diff`（可配置开关和截断上限）。
+- 代码索引（Code Index）：SQLite FTS5 检索、增量刷新、事件驱动刷新、查询缓存与慢查询指标。
+- 语法索引（Syntax Index）：import/call 结构抽取、结构邻居检索、增量刷新、`auto/tree-sitter/skeleton` 解析策略。
+- 语义图（Semantic Graph）：definition/reference/import/call 关系建图、`max_hops` 多跳扩展、去重与来源优先级。
+- 精确索引导入（Precise Index）：支持导入 SCIP 归一化产物（`merge/replace`）并参与语义检索。
+- 向量索引（Vector Index）：代码 chunk embedding、`base/delta` 双层、增量刷新与 layer 合并。
+- 混合检索（Hybrid）：融合 semantic/syntax/index/vector，支持 embedding 二阶段重排与 freshness 降权。
+- LSP 语义导航：`lsp_definition` / `lsp_references` / `lsp_workspace_symbols` / `lsp_health`，不可用时可回退到索引。
+- 实时索引监听：`watch-index` 支持脏队列、debounce、batch、hash-skip 与 code/syntax/semantic/vector 协同刷新。
+- 长期记忆（Memory）：跨会话存储经验（SQLite），按 `project/global` 作用域检索注入，支持反馈学习与保留期清理。
+- 可观测与门禁：hybrid/watch JSONL 指标落盘、`metrics-report`/`metrics-check`、质量回归基准与覆盖率门禁。
+
+当前边界（未实现）：
+
+- MCP Server 形态（当前为本地 CLI 架构）。
+
 ## 快速开始
 
 1. 配置环境变量
@@ -57,6 +83,7 @@ OPENAI_API_KEY=sk-...
 
 ```bash
 node src/index.js --help
+node src/index.js init
 node src/index.js chat
 node src/index.js run "读取 package.json 并总结这个项目"
 ```
@@ -66,9 +93,25 @@ node src/index.js run "读取 package.json 并总结这个项目"
 ```bash
 node src/index.js chat
 node src/index.js run "your task"
+node src/index.js init
+node src/index.js init --include-vector
 node src/index.js config show
+node src/index.js config path --json
+node src/index.js config validate
+node src/index.js memory search "auth retry" --top-k 5
+node src/index.js memory stats
+node src/index.js memory feedback 12 --vote up --note "worked"
+node src/index.js memory prune --days 90
+node src/index.js completion bash
+node src/index.js doctor
+node src/index.js doctor --json
 node src/index.js watch-index
+node src/index.js upgrade
+node src/index.js uninstall --yes --skip-npm
 node src/index.js --help
+npm run build:bin
+npm run build:bin:clean
+npm run init
 npm run watch:index
 npm test
 npm run test:coverage
@@ -86,6 +129,101 @@ npm run metrics:check
 npm run precise:check
 npm run precise:check:fixture
 ```
+
+一键安装脚本（渠道：npm / binary）：
+
+```bash
+bash scripts/install.sh --help
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+```
+
+## 新仓库初始化（init）
+
+`init` 用于“第一次接手代码库”的一键流程，默认执行：
+
+1. `doctor` 预检
+2. `build_code_index`
+3. `build_syntax_index`
+4. `build_semantic_graph`
+
+可选附加向量索引：
+
+```bash
+node src/index.js init --include-vector
+```
+
+常见参数：
+
+```bash
+node src/index.js init --max-files 5000 --max-file-size-kb 1024
+node src/index.js init --no-doctor --no-semantic
+node src/index.js init --json
+```
+
+## 长期记忆（memory）
+
+`memory` 用于跨会话经验沉淀与检索，默认存储在 `~/.clawty/memory.db`。
+
+常用命令：
+
+```bash
+node src/index.js memory search "auth timeout" --top-k 5
+node src/index.js memory stats
+node src/index.js memory feedback 12 --vote up --note "有效"
+node src/index.js memory prune --days 90
+```
+
+作用域参数：
+
+- `--scope project`：仅当前仓库经验
+- `--scope global`：仅跨仓库经验
+- `--scope project+global`：两者融合（默认）
+
+Agent 在 `chat/run` 中会按配置自动注入 memory context（可关闭）。
+
+## 二进制构建（实验）
+
+项目已提供单文件二进制构建脚本（`esbuild + Node SEA + postject`）。
+
+1. 安装构建依赖（一次即可）：
+
+```bash
+npm i -D esbuild postject
+```
+
+2. 构建：
+
+```bash
+npm run build:bin
+```
+
+3. 清理后重建：
+
+```bash
+npm run build:bin:clean
+```
+
+产物路径：
+
+- `dist/clawty-<platform>-<arch>`（例如 `dist/clawty-darwin-x64`）
+- `dist/clawty`（推荐启动器，默认注入 `NODE_NO_WARNINGS=1`）
+
+运行方式（推荐）：
+
+```bash
+./dist/clawty --help
+./dist/clawty doctor
+```
+
+说明：
+
+- 当前脚本支持 `darwin` / `linux`。
+- macOS 下会自动执行 ad-hoc `codesign`。
+- 该能力为实验特性，建议在发布前做一次真实任务回归（`chat/run/watch-index`）。
+
+## 用法文档
+
+- 快速上手与场景化工作流：`docs/usage.md`
 
 ## 测试
 
@@ -268,6 +406,11 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_METRICS_PERSIST_HYBRID`：是否落盘 hybrid 查询指标事件，默认 `true`
 - `CLAWTY_METRICS_PERSIST_WATCH`：是否落盘 watch flush 指标事件，默认 `true`
 - `CLAWTY_METRICS_QUERY_PREVIEW_CHARS`：指标事件中 `query_preview` 长度上限，默认 `160`
+- `CLAWTY_MEMORY_ENABLED`：是否启用长期记忆检索与注入，默认 `true`
+- `CLAWTY_MEMORY_MAX_INJECTED_ITEMS`：每轮注入的 memory 条目数上限，默认 `5`
+- `CLAWTY_MEMORY_MAX_INJECTED_CHARS`：每轮注入的 memory 文本上限，默认 `2400`
+- `CLAWTY_MEMORY_AUTO_WRITE`：是否自动沉淀回合经验，默认 `true`
+- `CLAWTY_MEMORY_SCOPE`：memory 作用域，默认 `project+global`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`
 - `CLAWTY_WATCH_MAX_BATCH_SIZE`：watch 增量批大小，默认 `300`
@@ -285,22 +428,26 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 
 ## 配置系统
 
-支持两种配置输入：
+支持三层配置输入：
 
-1. 配置文件：`clawty.config.json`（或 `.clawty/config.json`）  
-2. 环境变量：`.env` 和系统环境变量
+1. 全局配置：`~/.clawty/config.json`  
+2. 项目配置：`.clawty/config.json`（兼容旧路径 `clawty.config.json`）  
+3. 环境变量：`.env` 和系统环境变量
 
 优先级（高 -> 低）：
 
 1. 系统环境变量
 2. `.env`
-3. `clawty.config.json` / `.clawty/config.json`
-4. 内置默认值
+3. 项目配置（`.clawty/config.json` / 旧路径 `clawty.config.json`）
+4. 全局配置（`~/.clawty/config.json`）
+5. 内置默认值
 
-你可以通过下面命令查看最终生效配置（API Key 会脱敏）：
+你可以通过下面命令查看最终生效配置与路径（API Key 会脱敏）：
 
 ```bash
 node src/index.js config show
+node src/index.js config path --json
+node src/index.js config validate
 ```
 
 可参考示例文件：`clawty.config.example.json`。
@@ -308,5 +455,5 @@ node src/index.js config show
 ## 说明
 
 - 当前是 MVP，目标是先跑通“模型 + 工具调用 + 基础安全约束”的闭环。
-- 当前已支持代码索引：先构建索引，再按关键词检索相关文件与片段。
-- 后续可继续扩展：增量索引、Git 工作流、测试驱动修复、会话记忆等能力。
+- 当前能力已覆盖：代码/语法/语义/向量索引与 hybrid 融合检索、watch 自动增量刷新、长期记忆沉淀与召回。
+- 后续重点可继续扩展：MCP Server 形态、团队协作与策略编排能力。

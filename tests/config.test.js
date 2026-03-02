@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, resolveConfigSources } from "../src/config.js";
 import {
   createWorkspace,
   removeWorkspace,
@@ -265,4 +265,90 @@ test("loadConfig throws on invalid JSON config", async (t) => {
       }),
     /Invalid JSON/
   );
+});
+
+test("loadConfig applies precedence: env > project > global", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    path.join("fake-home", ".clawty", "config.json"),
+    JSON.stringify(
+      {
+        openai: {
+          apiKey: "sk-global"
+        },
+        model: "global-model",
+        index: {
+          maxFiles: 111
+        }
+      },
+      null,
+      2
+    )
+  );
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    path.join(".clawty", "config.json"),
+    JSON.stringify(
+      {
+        model: "project-model",
+        index: {
+          maxFiles: 222
+        }
+      },
+      null,
+      2
+    )
+  );
+
+  const config = loadConfig({
+    cwd: workspaceRoot,
+    homeDir: fakeHome,
+    env: {
+      CLAWTY_MODEL: "env-model",
+      OPENAI_API_KEY: "sk-env"
+    }
+  });
+
+  assert.equal(config.model, "env-model");
+  assert.equal(config.apiKey, "sk-env");
+  assert.equal(config.index.maxFiles, 222);
+  assert.equal(config.sources.projectConfigFile, path.join(workspaceRoot, ".clawty", "config.json"));
+  assert.equal(config.sources.globalConfigFile, path.join(fakeHome, ".clawty", "config.json"));
+});
+
+test("resolveConfigSources reports legacy project config warning", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "clawty.config.json",
+    JSON.stringify(
+      {
+        model: "legacy-project-model"
+      },
+      null,
+      2
+    )
+  );
+
+  const sources = resolveConfigSources({
+    cwd: workspaceRoot,
+    homeDir: fakeHome,
+    env: {}
+  });
+
+  assert.equal(sources.projectConfig.isLegacyPath, true);
+  assert.ok(Array.isArray(sources.warnings));
+  assert.match(sources.warnings[0]?.message || "", /deprecated/i);
 });

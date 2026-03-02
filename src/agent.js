@@ -1,7 +1,14 @@
 import { createResponse } from "./openai.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import {
+  loadMemoryContext,
+  formatMemoryContextForPrompt,
+  recordEpisode,
+  recordLessonFromTurn
+} from "./memory.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_INCREMENTAL_CONTEXT_MAX_PATHS = 40;
@@ -12,6 +19,7 @@ const SYSTEM_PROMPT = [
   "You are Clawty, a CLI coding assistant.",
   "Focus on software engineering tasks in the workspace.",
   "For repository exploration, build_code_index once, then use refresh_code_index + query_code_index.",
+  "When a turn includes memory_context, treat it as prior experience hints and verify against current code evidence before acting.",
   "Use get_index_stats when you need index health or coverage details.",
   "For structural code context, build_syntax_index then use refresh_syntax_index + query_syntax_index + get_syntax_index_stats.",
   "For multi-hop reasoning, build_semantic_graph, then refresh_semantic_graph after code changes, and use query_semantic_graph/get_semantic_graph_stats.",
@@ -318,6 +326,119 @@ function buildTurnInputWithIncrementalContext(userInput, context) {
   return `${baseInput}\n\n${contextBlock}`;
 }
 
+function appendContextBlock(input, block) {
+  const baseInput = typeof input === "string" ? input : String(input ?? "");
+  const contextBlock = typeof block === "string" ? block.trim() : "";
+  if (!contextBlock) {
+    return baseInput;
+  }
+  if (!baseInput.trim()) {
+    return contextBlock;
+  }
+  return `${baseInput}\n\n${contextBlock}`;
+}
+
+function clampText(input, maxChars) {
+  const text = typeof input === "string" ? input.trim() : "";
+  if (!text) {
+    return "";
+  }
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const keep = Math.max(0, maxChars - 48);
+  return `${text.slice(0, keep)}\n...[truncated ${text.length - keep} chars]`;
+}
+
+function summarizeToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) {
+    return [];
+  }
+  return toolCalls
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      return {
+        name: String(item.name || ""),
+        ok: item.ok !== false,
+        error: item.error ? String(item.error) : null
+      };
+    })
+    .filter((item) => item && item.name)
+    .slice(0, 200);
+}
+
+function buildTurnSummaryText(chunks, fallback = "") {
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    return clampText(chunks.join("\n\n"), 8000);
+  }
+  return clampText(fallback, 8000);
+}
+
+async function persistTurnMemory({
+  config,
+  state,
+  userInput,
+  toolCalls,
+  textChunks,
+  outcome,
+  fallbackSummary = ""
+}) {
+  if (typeof userInput !== "string") {
+    return;
+  }
+  if (!config?.memory?.enabled || !config?.memory?.autoWrite) {
+    return;
+  }
+
+  const summary = buildTurnSummaryText(textChunks, fallbackSummary);
+  const changedPaths = Array.isArray(state?.incremental_context?.changed_paths)
+    ? state.incremental_context.changed_paths
+    : [];
+  const normalizedOutcome = outcome === "success" ? "success" : outcome === "failed" ? "failed" : "partial";
+
+  const recordOptions = {
+    homeDir: config?.sources?.homeDir
+  };
+
+  try {
+    await recordEpisode(
+      config.workspaceRoot,
+      {
+        session_id: String(state.session_id || ""),
+        turn_no: Number(state.turn_no || 0),
+        user_query: userInput,
+        assistant_summary: summary,
+        outcome: normalizedOutcome,
+        tool_calls: summarizeToolCalls(toolCalls)
+      },
+      recordOptions
+    );
+  } catch {
+    // Memory persistence must never break agent execution.
+  }
+
+  if (normalizedOutcome !== "success" || !summary) {
+    return;
+  }
+
+  try {
+    await recordLessonFromTurn(
+      config.workspaceRoot,
+      {
+        user_query: userInput,
+        assistant_summary: summary,
+        outcome: normalizedOutcome,
+        changed_paths: changedPaths
+      },
+      recordOptions
+    );
+  } catch {
+    // Memory lesson extraction is best-effort.
+  }
+}
+
 function extractText(response) {
   if (typeof response.output_text === "string" && response.output_text.trim()) {
     return response.output_text.trim();
@@ -375,6 +496,15 @@ async function callModel(config, state, input) {
 
 export async function runAgentTurn({ config, state, userInput, onText, onTool }) {
   let initialInput = userInput;
+  const toolCalls = [];
+  const textChunks = [];
+
+  const currentTurn = clampInt(state.turn_no, 0, 0, 1_000_000) + 1;
+  state.turn_no = currentTurn;
+  if (!state.session_id) {
+    state.session_id = randomUUID();
+  }
+
   if (typeof userInput === "string") {
     try {
       const incrementalContext = await collectIncrementalContext(config.workspaceRoot, {
@@ -394,54 +524,104 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
       };
       initialInput = userInput;
     }
-  }
 
-  let response = await callModel(config, state, initialInput);
-
-  for (let i = 0; i < config.maxToolIterations; i += 1) {
-    const text = extractText(response);
-    if (text) {
-      onText(text);
-    }
-
-    const calls = extractFunctionCalls(response);
-    if (calls.length === 0) {
-      state.previousResponseId = response.id;
-      return;
-    }
-
-    const outputs = [];
-    for (const call of calls) {
-      let result;
+    if (config?.memory?.enabled) {
       try {
-        const args = parseArguments(call.arguments);
-        result = await runTool(call.name, args, {
-          workspaceRoot: config.workspaceRoot,
-          defaultTimeoutMs: config.toolTimeoutMs,
-          lsp: config.lsp,
-          index: config.index,
-          embedding: config.embedding,
-          metrics: config.metrics
+        const memoryContext = await loadMemoryContext(config.workspaceRoot, userInput, {
+          homeDir: config?.sources?.homeDir,
+          scope: config?.memory?.scope,
+          maxItems: config?.memory?.maxInjectedItems,
+          maxChars: config?.memory?.maxInjectedChars
         });
+        state.memory_context = memoryContext;
+        const memoryPrompt = formatMemoryContextForPrompt(memoryContext, {
+          maxChars: config?.memory?.maxInjectedChars
+        });
+        initialInput = appendContextBlock(initialInput, memoryPrompt);
       } catch (error) {
-        result = {
+        state.memory_context = {
           ok: false,
           error: error.message || String(error)
         };
       }
-      onTool(call.name, result);
-      outputs.push({
-        type: "function_call_output",
-        call_id: call.call_id,
-        output: JSON.stringify(result)
-      });
     }
-
-    state.previousResponseId = response.id;
-    response = await callModel(config, state, outputs);
   }
 
-  throw new Error(
-    `Tool loop exceeded ${config.maxToolIterations} rounds. Increase CLAWTY_MAX_TOOL_ITERATIONS if needed.`
-  );
+  try {
+    let response = await callModel(config, state, initialInput);
+
+    for (let i = 0; i < config.maxToolIterations; i += 1) {
+      const text = extractText(response);
+      if (text) {
+        textChunks.push(text);
+        onText(text);
+      }
+
+      const calls = extractFunctionCalls(response);
+      if (calls.length === 0) {
+        state.previousResponseId = response.id;
+        await persistTurnMemory({
+          config,
+          state,
+          userInput,
+          toolCalls,
+          textChunks,
+          outcome: "success"
+        });
+        return;
+      }
+
+      const outputs = [];
+      for (const call of calls) {
+        let result;
+        try {
+          const args = parseArguments(call.arguments);
+          result = await runTool(call.name, args, {
+            workspaceRoot: config.workspaceRoot,
+            defaultTimeoutMs: config.toolTimeoutMs,
+            lsp: config.lsp,
+            index: config.index,
+            embedding: config.embedding,
+            metrics: config.metrics,
+            memory: config.memory,
+            sources: config.sources
+          });
+        } catch (error) {
+          result = {
+            ok: false,
+            error: error.message || String(error)
+          };
+        }
+        toolCalls.push({
+          name: call.name,
+          ok: result.ok !== false,
+          error: result.ok === false ? result.error : null
+        });
+        onTool(call.name, result);
+        outputs.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(result)
+        });
+      }
+
+      state.previousResponseId = response.id;
+      response = await callModel(config, state, outputs);
+    }
+
+    throw new Error(
+      `Tool loop exceeded ${config.maxToolIterations} rounds. Increase CLAWTY_MAX_TOOL_ITERATIONS if needed.`
+    );
+  } catch (error) {
+    await persistTurnMemory({
+      config,
+      state,
+      userInput,
+      toolCalls,
+      textChunks,
+      outcome: "failed",
+      fallbackSummary: error.message || String(error)
+    });
+    throw error;
+  }
 }

@@ -44,5 +44,12 @@
     "persistHybrid": true,
     "persistWatch": true,
     "queryPreviewChars": 160
+  },
+  "memory": {
+    "enabled": true,
+    "maxInjectedItems": 5,
+    "maxInjectedChars": 2400,
+    "autoWrite": true,
+    "scope": "project+global"
   }
 }

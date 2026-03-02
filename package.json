@@ -11,6 +11,16 @@
     "start": "node src/index.js",
     "chat": "node src/index.js chat",
     "run": "node src/index.js run",
+    "init": "node src/index.js init",
+    "completion:bash": "node src/index.js completion bash",
+    "completion:zsh": "node src/index.js completion zsh",
+    "completion:fish": "node src/index.js completion fish",
+    "upgrade:self": "node src/index.js upgrade",
+    "uninstall:self": "node src/index.js uninstall --yes --skip-npm",
+    "install:script": "bash scripts/install.sh",
+    "uninstall:script": "bash scripts/uninstall.sh --skip-npm",
+    "build:bin": "node scripts/build-binary.mjs",
+    "build:bin:clean": "node scripts/build-binary.mjs --clean",
     "watch:index": "node src/index.js watch-index",
     "help": "node src/index.js --help",
     "test": "node --test",
@@ -43,5 +53,9 @@
     "tree-sitter-go": "0.25.0",
     "tree-sitter-javascript": "0.25.0",
     "tree-sitter-python": "0.25.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3",
+    "postject": "^1.0.0-alpha.6"
   }
 }

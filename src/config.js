@@ -1,7 +1,29 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-const CONFIG_FILE_CANDIDATES = ["clawty.config.json", path.join(".clawty", "config.json")];
+const PROJECT_CONFIG_CANDIDATES = [path.join(".clawty", "config.json"), "clawty.config.json"];
+const GLOBAL_CONFIG_RELATIVE_PATH = path.join(".clawty", "config.json");
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMerge(base, override) {
+  const source = isPlainObject(base) ? base : {};
+  const extra = isPlainObject(override) ? override : {};
+  const result = { ...source };
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = deepMerge(result[key], value);
+      continue;
+    }
+    result[key] = value;
+  }
+
+  return result;
+}
 
 function parseDotEnv(content) {
   const result = {};
@@ -40,32 +62,113 @@ function loadDotEnv(rootDir) {
   };
 }
 
-function findConfigFile(rootDir) {
-  for (const candidate of CONFIG_FILE_CANDIDATES) {
-    const absolutePath = path.join(rootDir, candidate);
-    if (!fs.existsSync(absolutePath)) {
-      continue;
-    }
-    const raw = fs.readFileSync(absolutePath, "utf8");
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(`Invalid JSON in ${candidate}: ${error.message || String(error)}`);
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(`Invalid config in ${candidate}: root must be a JSON object`);
-    }
+function parseJsonObject(raw, label) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${label}: ${error.message || String(error)}`);
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new Error(`Invalid config in ${label}: root must be a JSON object`);
+  }
+
+  return parsed;
+}
+
+function readJsonConfigFileIfExists(fullPath, label) {
+  if (!fs.existsSync(fullPath)) {
     return {
-      path: absolutePath,
-      relativePath: candidate,
-      data: parsed
+      path: null,
+      data: {},
+      label,
+      exists: false
     };
   }
+
+  const raw = fs.readFileSync(fullPath, "utf8");
+  return {
+    path: fullPath,
+    data: parseJsonObject(raw, label),
+    label,
+    exists: true
+  };
+}
+
+function findProjectConfig(rootDir) {
+  for (const candidate of PROJECT_CONFIG_CANDIDATES) {
+    const fullPath = path.join(rootDir, candidate);
+    const loaded = readJsonConfigFileIfExists(fullPath, candidate);
+    if (!loaded.exists) {
+      continue;
+    }
+    return {
+      ...loaded,
+      relativePath: candidate,
+      isLegacyPath: candidate === "clawty.config.json"
+    };
+  }
+
   return {
     path: null,
+    data: {},
+    label: null,
+    exists: false,
     relativePath: null,
-    data: {}
+    isLegacyPath: false
+  };
+}
+
+function resolveHomeDir(runtimeEnv, explicitHomeDir = null) {
+  if (typeof explicitHomeDir === "string" && explicitHomeDir.trim().length > 0) {
+    return path.resolve(explicitHomeDir.trim());
+  }
+
+  const fromEnv =
+    (typeof runtimeEnv?.HOME === "string" && runtimeEnv.HOME.trim()) ||
+    (typeof runtimeEnv?.USERPROFILE === "string" && runtimeEnv.USERPROFILE.trim()) ||
+    null;
+
+  if (fromEnv) {
+    return path.resolve(fromEnv);
+  }
+
+  return path.resolve(os.homedir());
+}
+
+function loadGlobalConfig(homeDir) {
+  const fullPath = path.join(homeDir, GLOBAL_CONFIG_RELATIVE_PATH);
+  const label = path.join("~", GLOBAL_CONFIG_RELATIVE_PATH);
+  return readJsonConfigFileIfExists(fullPath, label);
+}
+
+export function resolveConfigSources(options = {}) {
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const runtimeEnv = options.env && typeof options.env === "object" ? options.env : process.env;
+  const homeDir = resolveHomeDir(runtimeEnv, options.homeDir);
+
+  const dotEnv = loadDotEnv(cwd);
+  const globalConfig = loadGlobalConfig(homeDir);
+  const projectConfig = findProjectConfig(cwd);
+  const mergedFileConfig = deepMerge(globalConfig.data, projectConfig.data);
+
+  const warnings = [];
+  if (projectConfig.isLegacyPath) {
+    warnings.push({
+      code: "legacy_project_config_path",
+      message: "Project config at clawty.config.json is deprecated; move to .clawty/config.json."
+    });
+  }
+
+  return {
+    cwd,
+    homeDir,
+    dotEnv,
+    globalConfig,
+    projectConfig,
+    mergedFileConfig,
+    warnings
   };
 }
 
@@ -150,43 +253,43 @@ function resolveWorkspaceRoot(rootDir, fileConfig, env) {
 }
 
 export function loadConfig(options = {}) {
-  const rootDir = path.resolve(options.cwd || process.cwd());
+  const sources = resolveConfigSources(options);
+  const rootDir = sources.cwd;
   const allowMissingApiKey = Boolean(options.allowMissingApiKey);
   const runtimeEnv = options.env && typeof options.env === "object" ? options.env : process.env;
+  const fileConfig = sources.mergedFileConfig;
 
-  const dotEnv = loadDotEnv(rootDir);
-  const fileConfig = findConfigFile(rootDir);
   const env = {
-    ...dotEnv.values,
+    ...sources.dotEnv.values,
     ...runtimeEnv
   };
 
   const apiKey =
     readString(env.OPENAI_API_KEY, null) ||
-    readString(deepPick(fileConfig.data, ["openai", "apiKey"]), null);
+    readString(deepPick(fileConfig, ["openai", "apiKey"]), null);
   if (!apiKey && !allowMissingApiKey) {
     throw new Error(
-      "Missing OPENAI_API_KEY. Set env var, put it in .env, or set openai.apiKey in clawty.config.json."
+      "Missing OPENAI_API_KEY. Set env var, put it in .env, or set openai.apiKey in .clawty/config.json (~/.clawty/config.json for global default)."
     );
   }
 
   const baseUrl = readHttpUrl(
     env.OPENAI_BASE_URL,
-    readString(deepPick(fileConfig.data, ["openai", "baseUrl"]), "https://api.openai.com/v1"),
+    readString(deepPick(fileConfig, ["openai", "baseUrl"]), "https://api.openai.com/v1"),
     "OPENAI_BASE_URL"
   );
 
-  const model = readString(env.CLAWTY_MODEL, readString(fileConfig.data.model, "gpt-4.1-mini"));
+  const model = readString(env.CLAWTY_MODEL, readString(fileConfig.model, "gpt-4.1-mini"));
 
   const toolTimeoutMs = readInt(
-    env.CLAWTY_TOOL_TIMEOUT_MS ?? deepPick(fileConfig.data, ["tools", "timeoutMs"]),
+    env.CLAWTY_TOOL_TIMEOUT_MS ?? deepPick(fileConfig, ["tools", "timeoutMs"]),
     120_000,
     1000,
     300_000
   );
 
   const maxToolIterations = readInt(
-    env.CLAWTY_MAX_TOOL_ITERATIONS ?? deepPick(fileConfig.data, ["tools", "maxIterations"]),
+    env.CLAWTY_MAX_TOOL_ITERATIONS ?? deepPick(fileConfig, ["tools", "maxIterations"]),
     8,
     1,
     100
@@ -194,66 +297,66 @@ export function loadConfig(options = {}) {
 
   const lsp = {
     enabled: readBoolean(
-      env.CLAWTY_LSP_ENABLED ?? deepPick(fileConfig.data, ["lsp", "enabled"]),
+      env.CLAWTY_LSP_ENABLED ?? deepPick(fileConfig, ["lsp", "enabled"]),
       true
     ),
     timeoutMs: readInt(
-      env.CLAWTY_LSP_TIMEOUT_MS ?? deepPick(fileConfig.data, ["lsp", "timeoutMs"]),
+      env.CLAWTY_LSP_TIMEOUT_MS ?? deepPick(fileConfig, ["lsp", "timeoutMs"]),
       5000,
       1000,
       60_000
     ),
     maxResults: readInt(
-      env.CLAWTY_LSP_MAX_RESULTS ?? deepPick(fileConfig.data, ["lsp", "maxResults"]),
+      env.CLAWTY_LSP_MAX_RESULTS ?? deepPick(fileConfig, ["lsp", "maxResults"]),
       100,
       1,
       1000
     ),
     tsCommand: readString(
       env.CLAWTY_LSP_TS_CMD,
-      readString(deepPick(fileConfig.data, ["lsp", "tsCommand"]), "typescript-language-server --stdio")
+      readString(deepPick(fileConfig, ["lsp", "tsCommand"]), "typescript-language-server --stdio")
     )
   };
 
   const index = {
     maxFiles: readInt(
-      env.CLAWTY_INDEX_MAX_FILES ?? deepPick(fileConfig.data, ["index", "maxFiles"]),
+      env.CLAWTY_INDEX_MAX_FILES ?? deepPick(fileConfig, ["index", "maxFiles"]),
       3000,
       1,
       20_000
     ),
     maxFileSizeKb: readInt(
-      env.CLAWTY_INDEX_MAX_FILE_SIZE_KB ?? deepPick(fileConfig.data, ["index", "maxFileSizeKb"]),
+      env.CLAWTY_INDEX_MAX_FILE_SIZE_KB ?? deepPick(fileConfig, ["index", "maxFileSizeKb"]),
       512,
       1,
       8192
     ),
     freshnessEnabled: readBoolean(
-      env.CLAWTY_INDEX_FRESHNESS_ENABLED ?? deepPick(fileConfig.data, ["index", "freshnessEnabled"]),
+      env.CLAWTY_INDEX_FRESHNESS_ENABLED ?? deepPick(fileConfig, ["index", "freshnessEnabled"]),
       true
     ),
     freshnessStaleAfterMs: readInt(
       env.CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS ??
-        deepPick(fileConfig.data, ["index", "freshnessStaleAfterMs"]),
+        deepPick(fileConfig, ["index", "freshnessStaleAfterMs"]),
       300_000,
       1000,
       86_400_000
     ),
     freshnessWeight: readFloat(
-      env.CLAWTY_INDEX_FRESHNESS_WEIGHT ?? deepPick(fileConfig.data, ["index", "freshnessWeight"]),
+      env.CLAWTY_INDEX_FRESHNESS_WEIGHT ?? deepPick(fileConfig, ["index", "freshnessWeight"]),
       0.12,
       0,
       1
     ),
     freshnessVectorStalePenalty: readFloat(
       env.CLAWTY_INDEX_FRESHNESS_VECTOR_STALE_PENALTY ??
-        deepPick(fileConfig.data, ["index", "freshnessVectorStalePenalty"]),
+        deepPick(fileConfig, ["index", "freshnessVectorStalePenalty"]),
       0.25,
       0,
       1
     ),
     freshnessMaxPaths: readInt(
-      env.CLAWTY_INDEX_FRESHNESS_MAX_PATHS ?? deepPick(fileConfig.data, ["index", "freshnessMaxPaths"]),
+      env.CLAWTY_INDEX_FRESHNESS_MAX_PATHS ?? deepPick(fileConfig, ["index", "freshnessMaxPaths"]),
       200,
       1,
       1000
@@ -263,38 +366,38 @@ export function loadConfig(options = {}) {
   const embeddingApiKey =
     readString(
       env.CLAWTY_EMBEDDING_API_KEY,
-      readString(deepPick(fileConfig.data, ["embedding", "apiKey"]), null)
+      readString(deepPick(fileConfig, ["embedding", "apiKey"]), null)
     ) || apiKey;
 
   const embedding = {
     enabled: readBoolean(
-      env.CLAWTY_EMBEDDING_ENABLED ?? deepPick(fileConfig.data, ["embedding", "enabled"]),
+      env.CLAWTY_EMBEDDING_ENABLED ?? deepPick(fileConfig, ["embedding", "enabled"]),
       false
     ),
     apiKey: embeddingApiKey,
     baseUrl: readHttpUrl(
       env.CLAWTY_EMBEDDING_BASE_URL,
-      readString(deepPick(fileConfig.data, ["embedding", "baseUrl"]), baseUrl),
+      readString(deepPick(fileConfig, ["embedding", "baseUrl"]), baseUrl),
       "CLAWTY_EMBEDDING_BASE_URL"
     ),
     model: readString(
       env.CLAWTY_EMBEDDING_MODEL,
-      readString(deepPick(fileConfig.data, ["embedding", "model"]), "text-embedding-3-small")
+      readString(deepPick(fileConfig, ["embedding", "model"]), "text-embedding-3-small")
     ),
     topK: readInt(
-      env.CLAWTY_EMBEDDING_TOP_K ?? deepPick(fileConfig.data, ["embedding", "topK"]),
+      env.CLAWTY_EMBEDDING_TOP_K ?? deepPick(fileConfig, ["embedding", "topK"]),
       15,
       1,
       200
     ),
     weight: readFloat(
-      env.CLAWTY_EMBEDDING_WEIGHT ?? deepPick(fileConfig.data, ["embedding", "weight"]),
+      env.CLAWTY_EMBEDDING_WEIGHT ?? deepPick(fileConfig, ["embedding", "weight"]),
       0.25,
       0,
       1
     ),
     timeoutMs: readInt(
-      env.CLAWTY_EMBEDDING_TIMEOUT_MS ?? deepPick(fileConfig.data, ["embedding", "timeoutMs"]),
+      env.CLAWTY_EMBEDDING_TIMEOUT_MS ?? deepPick(fileConfig, ["embedding", "timeoutMs"]),
       15_000,
       1000,
       120_000
@@ -304,26 +407,26 @@ export function loadConfig(options = {}) {
   const agentContext = {
     incrementalContextEnabled: readBoolean(
       env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_ENABLED ??
-        deepPick(fileConfig.data, ["agentContext", "incrementalContextEnabled"]),
+        deepPick(fileConfig, ["agentContext", "incrementalContextEnabled"]),
       true
     ),
     incrementalContextMaxPaths: readInt(
       env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_PATHS ??
-        deepPick(fileConfig.data, ["agentContext", "incrementalContextMaxPaths"]),
+        deepPick(fileConfig, ["agentContext", "incrementalContextMaxPaths"]),
       40,
       1,
       500
     ),
     incrementalContextMaxDiffChars: readInt(
       env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS ??
-        deepPick(fileConfig.data, ["agentContext", "incrementalContextMaxDiffChars"]),
+        deepPick(fileConfig, ["agentContext", "incrementalContextMaxDiffChars"]),
       12_000,
       500,
       200_000
     ),
     incrementalContextTimeoutMs: readInt(
       env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_TIMEOUT_MS ??
-        deepPick(fileConfig.data, ["agentContext", "incrementalContextTimeoutMs"]),
+        deepPick(fileConfig, ["agentContext", "incrementalContextTimeoutMs"]),
       3000,
       500,
       20_000
@@ -332,33 +435,65 @@ export function loadConfig(options = {}) {
 
   const metrics = {
     enabled: readBoolean(
-      env.CLAWTY_METRICS_ENABLED ?? deepPick(fileConfig.data, ["metrics", "enabled"]),
+      env.CLAWTY_METRICS_ENABLED ?? deepPick(fileConfig, ["metrics", "enabled"]),
       true
     ),
     persistHybrid: readBoolean(
-      env.CLAWTY_METRICS_PERSIST_HYBRID ??
-        deepPick(fileConfig.data, ["metrics", "persistHybrid"]),
+      env.CLAWTY_METRICS_PERSIST_HYBRID ?? deepPick(fileConfig, ["metrics", "persistHybrid"]),
       true
     ),
     persistWatch: readBoolean(
-      env.CLAWTY_METRICS_PERSIST_WATCH ??
-        deepPick(fileConfig.data, ["metrics", "persistWatch"]),
+      env.CLAWTY_METRICS_PERSIST_WATCH ?? deepPick(fileConfig, ["metrics", "persistWatch"]),
       true
     ),
     queryPreviewChars: readInt(
       env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS ??
-        deepPick(fileConfig.data, ["metrics", "queryPreviewChars"]),
+        deepPick(fileConfig, ["metrics", "queryPreviewChars"]),
       160,
       32,
       1000
     )
   };
 
+  const memoryScopeRaw = readString(
+    env.CLAWTY_MEMORY_SCOPE ?? deepPick(fileConfig, ["memory", "scope"]),
+    "project+global"
+  ).toLowerCase();
+  const memoryScope = ["project", "global", "project+global"].includes(memoryScopeRaw)
+    ? memoryScopeRaw
+    : "project+global";
+
+  const memory = {
+    enabled: readBoolean(
+      env.CLAWTY_MEMORY_ENABLED ?? deepPick(fileConfig, ["memory", "enabled"]),
+      true
+    ),
+    maxInjectedItems: readInt(
+      env.CLAWTY_MEMORY_MAX_INJECTED_ITEMS ??
+        deepPick(fileConfig, ["memory", "maxInjectedItems"]),
+      5,
+      1,
+      20
+    ),
+    maxInjectedChars: readInt(
+      env.CLAWTY_MEMORY_MAX_INJECTED_CHARS ??
+        deepPick(fileConfig, ["memory", "maxInjectedChars"]),
+      2400,
+      200,
+      50_000
+    ),
+    autoWrite: readBoolean(
+      env.CLAWTY_MEMORY_AUTO_WRITE ?? deepPick(fileConfig, ["memory", "autoWrite"]),
+      true
+    ),
+    scope: memoryScope
+  };
+
   return {
     apiKey: apiKey || null,
     baseUrl,
     model,
-    workspaceRoot: resolveWorkspaceRoot(rootDir, fileConfig.data, env),
+    workspaceRoot: resolveWorkspaceRoot(rootDir, fileConfig, env),
     toolTimeoutMs,
     maxToolIterations,
     lsp,
@@ -366,10 +501,16 @@ export function loadConfig(options = {}) {
     embedding,
     agentContext,
     metrics,
+    memory,
     sources: {
       cwd: rootDir,
-      configFile: fileConfig.path,
-      dotEnvFile: dotEnv.path
+      homeDir: sources.homeDir,
+      configFile: sources.projectConfig.path || sources.globalConfig.path || null,
+      projectConfigFile: sources.projectConfig.path,
+      globalConfigFile: sources.globalConfig.path,
+      legacyProjectConfigFile: sources.projectConfig.isLegacyPath ? sources.projectConfig.path : null,
+      dotEnvFile: sources.dotEnv.path,
+      warnings: sources.warnings
     }
   };
 }
