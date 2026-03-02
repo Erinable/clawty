@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-03-02T00:00:00.000Z",
+  "threshold_percent": 20,
+  "dataset": {
+    "js_modules": 24,
+    "js_files_per_module": 6,
+    "ts_modules": 12,
+    "ts_files_per_module": 4,
+    "py_files": 24,
+    "docs_files": 24,
+    "changed_js_files": 20,
+    "deleted_js_files": 8,
+    "added_js_files": 12
+  },
+  "metrics": {
+    "build_ms": 2500,
+    "refresh_ms": 400,
+    "query_p95_ms": 10,
+    "index_bytes": 3500000
+  }
+}

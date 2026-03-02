@@ -53,6 +53,8 @@ node src/index.js config show
 node src/index.js --help
 npm test
 npm run test:coverage
+npm run bench:index
+npm run bench:index:check
 ```
 
 ## 测试
@@ -60,6 +62,9 @@ npm run test:coverage
 - `npm test`：运行全部自动化测试（Node test runner）
 - `npm run test:watch`：监听模式，边改边测
 - `npm run test:coverage`：生成覆盖率报告（实验特性）
+- `npm run bench:index`：运行代码索引基准（build/refresh/query/index size）
+- `npm run bench:index:check`：按 `tests/bench/code-index.baseline.json` 执行 20% 性能退化门禁
+- `npm run bench:index:baseline`：重写代码索引基线（更新基准文件）
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。

@@ -35,6 +35,10 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run code-index benchmark gate
+        if: matrix.node == 24
+        run: npm run bench:index:check
+
       - name: Run coverage
         if: matrix.node == 24
         run: npm run test:coverage

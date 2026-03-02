@@ -14,6 +14,9 @@
     "help": "node src/index.js --help",
     "test": "node --test",
     "test:watch": "node --test --watch",
-    "test:coverage": "node --test --experimental-test-coverage"
+    "test:coverage": "node --test --experimental-test-coverage",
+    "bench:index": "node tests/bench/code-index.bench.js",
+    "bench:index:check": "node tests/bench/code-index.bench.js --check-baseline --threshold=20",
+    "bench:index:baseline": "node tests/bench/code-index.bench.js --write-baseline"
   }
 }
