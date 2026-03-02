@@ -12,6 +12,7 @@ const DEFAULT_MAX_SYNTAX_IMPORT_EDGES = 6000;
 const DEFAULT_MAX_SYNTAX_CALL_EDGES = 8000;
 const DEFAULT_MAX_IMPORT_NODES = 50_000;
 const DEFAULT_MAX_IMPORT_EDGES = 200_000;
+const DEFAULT_PRECISE_STALE_AFTER_MINUTES = 24 * 60;
 const DEFAULT_SEED_SCAN_FACTOR = 8;
 const DEFAULT_QUERY_MAX_HOPS = 1;
 const MAX_QUERY_MAX_HOPS = 4;
@@ -24,6 +25,7 @@ const MAX_MAX_LSP_ERRORS = 200;
 const MAX_MAX_SYNTAX_EDGES = 200_000;
 const MAX_IMPORT_NODES = 500_000;
 const MAX_IMPORT_EDGES = 1_000_000;
+const MAX_PRECISE_STALE_AFTER_MINUTES = 365 * 24 * 60;
 const SOURCE_PRIORITY_ORDER = Object.freeze([
   "scip",
   "lsif",
@@ -55,6 +57,7 @@ const EDGE_TYPE_QUALITY = Object.freeze({
   call: 0.7,
   reference: 0.5
 });
+const PRECISE_SOURCE_SET = new Set(["scip", "lsif"]);
 
 function parsePositiveInt(value, fallback, min, max) {
   const n = Number(value);
@@ -546,6 +549,25 @@ function buildStatements(db, config = null) {
         config_json,
         error
       FROM semantic_runs
+      ORDER BY id DESC
+      LIMIT 1
+    `),
+    latestPreciseRun: db.prepare(`
+      SELECT
+        started_at,
+        completed_at,
+        status,
+        scanned_symbols,
+        seeded_nodes,
+        total_nodes,
+        total_edges,
+        lsp_available,
+        lsp_enriched_symbols,
+        lsp_error_count,
+        config_json,
+        error
+      FROM semantic_runs
+      WHERE status = 'ok_precise_import'
       ORDER BY id DESC
       LIMIT 1
     `),
@@ -1080,6 +1102,142 @@ function roundMetric4(value) {
     return 0;
   }
   return Number(numeric.toFixed(4));
+}
+
+function parseRunConfigJson(rawConfig) {
+  if (typeof rawConfig !== "string" || rawConfig.trim().length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(rawConfig);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function normalizeSourceToken(value) {
+  if (typeof value !== "string") {
+    return "unknown";
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized || "unknown";
+}
+
+function summarizeSourceMix(rows, totalOverride = null) {
+  const entries = Array.isArray(rows) ? rows : [];
+  const total =
+    Number.isFinite(Number(totalOverride)) && Number(totalOverride) >= 0
+      ? Number(totalOverride)
+      : entries.reduce((sum, row) => sum + Number(row?.count || 0), 0);
+
+  let preciseCount = 0;
+  const breakdown = entries
+    .map((row) => {
+      const source = normalizeSourceToken(row?.source);
+      const count = Number(row?.count || 0);
+      if (PRECISE_SOURCE_SET.has(source)) {
+        preciseCount += count;
+      }
+      return {
+        source,
+        count,
+        ratio: total > 0 ? roundMetric4(count / total) : 0
+      };
+    })
+    .sort((a, b) => {
+      if (b.count !== a.count) {
+        return b.count - a.count;
+      }
+      return a.source.localeCompare(b.source);
+    });
+
+  return {
+    total,
+    precise_count: preciseCount,
+    precise_ratio: total > 0 ? roundMetric4(preciseCount / total) : 0,
+    breakdown
+  };
+}
+
+function toEpochMs(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+  return timestamp;
+}
+
+function resolvePreciseFreshnessThresholdMinutes() {
+  return parsePositiveInt(
+    process.env.CLAWTY_PRECISE_STALE_AFTER_MINUTES ?? process.env.CLAWTY_PRECISE_STALE_MINUTES,
+    DEFAULT_PRECISE_STALE_AFTER_MINUTES,
+    1,
+    MAX_PRECISE_STALE_AFTER_MINUTES
+  );
+}
+
+function buildPreciseFreshnessSummary({
+  latestPreciseRunRaw,
+  sourceMixNodes,
+  sourceMixEdges
+}) {
+  const staleAfterMinutes = resolvePreciseFreshnessThresholdMinutes();
+  const preciseSourcesPresent =
+    Number(sourceMixNodes?.precise_count || 0) > 0 || Number(sourceMixEdges?.precise_count || 0) > 0;
+
+  if (!latestPreciseRunRaw) {
+    return {
+      available: false,
+      stale_after_minutes: staleAfterMinutes,
+      precise_sources_present: preciseSourcesPresent,
+      latest_import: null,
+      age_minutes: null,
+      is_stale: true
+    };
+  }
+
+  const config = parseRunConfigJson(latestPreciseRunRaw.config_json);
+  const completedAt = latestPreciseRunRaw.completed_at || null;
+  const completedAtMs = toEpochMs(completedAt);
+  const ageMinutes =
+    completedAtMs === null ? null : roundMetric4(Math.max(0, (Date.now() - completedAtMs) / 60_000));
+  const isStale = ageMinutes === null ? true : ageMinutes > staleAfterMinutes;
+
+  return {
+    available: true,
+    stale_after_minutes: staleAfterMinutes,
+    precise_sources_present: preciseSourcesPresent,
+    latest_import: {
+      started_at: latestPreciseRunRaw.started_at || null,
+      completed_at: completedAt,
+      status: latestPreciseRunRaw.status || null,
+      source:
+        typeof config.source === "string" && config.source.trim().length > 0
+          ? config.source.trim().toLowerCase()
+          : null,
+      import_path:
+        typeof config.import_path === "string" && config.import_path.trim().length > 0
+          ? config.import_path.trim()
+          : null,
+      mode:
+        typeof config.mode === "string" && config.mode.trim().length > 0
+          ? config.mode.trim().toLowerCase()
+          : null,
+      format:
+        typeof config.format === "string" && config.format.trim().length > 0
+          ? config.format.trim()
+          : null
+    },
+    age_minutes: ageMinutes,
+    is_stale: isStale
+  };
 }
 
 function edgeTypeQuality(edgeType) {
@@ -2242,14 +2400,10 @@ export async function getSemanticGraphStats(workspaceRoot) {
     }));
 
     const latestRunRaw = statements.latestRun.get();
+    const latestPreciseRunRaw = statements.latestPreciseRun.get();
     let latestRun = null;
     if (latestRunRaw) {
-      let parsedConfig = {};
-      try {
-        parsedConfig = JSON.parse(latestRunRaw.config_json || "{}");
-      } catch {
-        parsedConfig = {};
-      }
+      const parsedConfig = parseRunConfigJson(latestRunRaw.config_json);
       latestRun = {
         started_at: latestRunRaw.started_at,
         completed_at: latestRunRaw.completed_at,
@@ -2266,6 +2420,16 @@ export async function getSemanticGraphStats(workspaceRoot) {
       };
     }
 
+    const sourceMix = {
+      nodes: summarizeSourceMix(nodeSources, nodeCount),
+      edges: summarizeSourceMix(edgeSources, edgeCount)
+    };
+    const preciseFreshness = buildPreciseFreshnessSummary({
+      latestPreciseRunRaw,
+      sourceMixNodes: sourceMix.nodes,
+      sourceMixEdges: sourceMix.edges
+    });
+
     return {
       ok: true,
       index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
@@ -2276,6 +2440,8 @@ export async function getSemanticGraphStats(workspaceRoot) {
       edge_types: edgeTypes,
       node_sources: nodeSources,
       edge_sources: edgeSources,
+      source_mix: sourceMix,
+      precise_freshness: preciseFreshness,
       latest_run: latestRun
     };
   } finally {

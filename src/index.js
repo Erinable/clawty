@@ -32,6 +32,7 @@ function printHelp() {
       "  CLAWTY_LSP_ENABLED     Optional (default: true)",
       "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)",
       "  CLAWTY_SEMANTIC_SEED_LANG_FILTER Optional (default: *)",
+      "  CLAWTY_PRECISE_STALE_AFTER_MINUTES Optional (default: 1440)",
       "",
       "Config files:",
       "  clawty.config.json or .clawty/config.json"

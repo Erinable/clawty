@@ -67,6 +67,12 @@ jobs:
       - name: Verify tree-sitter runtime
         run: npm run verify:tree-sitter
 
+      - name: Run precise index fixture schema gate
+        run: npm run precise:check:fixture
+
+      - name: Run precise index artifact gate (optional when missing)
+        run: npm run precise:check
+
       - name: Run code-index benchmark gate
         run: npm run bench:index:check
 

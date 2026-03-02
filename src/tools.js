@@ -603,7 +603,8 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     name: "get_semantic_graph_stats",
-    description: "Return semantic graph node/edge stats and latest build metadata.",
+    description:
+      "Return semantic graph stats, including source mix and precise freshness metadata.",
     parameters: {
       type: "object",
       properties: {},

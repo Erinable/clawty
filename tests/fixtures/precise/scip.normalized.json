@@ -1,0 +1,31 @@
+{
+  "format": "scip-normalized/v1",
+  "nodes": [
+    {
+      "symbol": "fixture alpha",
+      "path": "src/alpha.ts",
+      "name": "alphaToken",
+      "kind": "function",
+      "line": 1,
+      "column": 1,
+      "lang": "javascript"
+    },
+    {
+      "symbol": "fixture beta",
+      "path": "src/beta.ts",
+      "name": "betaToken",
+      "kind": "function",
+      "line": 1,
+      "column": 1,
+      "lang": "javascript"
+    }
+  ],
+  "edges": [
+    {
+      "from": "fixture alpha",
+      "to": "fixture beta",
+      "edge_type": "call",
+      "weight": 2
+    }
+  ]
+}

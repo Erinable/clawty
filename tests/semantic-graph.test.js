@@ -70,6 +70,12 @@ test("buildSemanticGraph creates seed graph and querySemanticGraph returns node 
   assert.ok(stats.counts.nodes >= 2);
   assert.ok(stats.latest_run);
   assert.equal(stats.latest_run.lsp_available, false);
+  assert.ok(stats.source_mix);
+  assert.ok(stats.source_mix.nodes);
+  assert.equal(stats.source_mix.nodes.precise_ratio, 0);
+  assert.ok(stats.precise_freshness);
+  assert.equal(stats.precise_freshness.available, false);
+  assert.equal(stats.precise_freshness.precise_sources_present, false);
 
   const query = await querySemanticGraph(workspaceRoot, {
     query: "fooToken",
@@ -657,6 +663,14 @@ test("importPreciseIndex imports SCIP-normalized nodes and edges", async (t) => 
   const stats = await getSemanticGraphStats(workspaceRoot);
   assert.equal(stats.ok, true);
   assert.ok(stats.edge_sources.some((item) => item.source === "scip"));
+  assert.ok(stats.source_mix.nodes.precise_count >= 1);
+  assert.ok(stats.source_mix.nodes.precise_ratio > 0);
+  assert.equal(stats.precise_freshness.available, true);
+  assert.equal(stats.precise_freshness.precise_sources_present, true);
+  assert.equal(stats.precise_freshness.latest_import.source, "scip");
+  assert.equal(stats.precise_freshness.latest_import.import_path, "artifacts/scip.normalized.json");
+  assert.equal(typeof stats.precise_freshness.age_minutes, "number");
+  assert.equal(stats.precise_freshness.is_stale, false);
 });
 
 test("querySemanticGraph supports multi-hop expansion when max_hops > 1", async (t) => {

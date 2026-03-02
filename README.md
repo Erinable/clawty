@@ -71,6 +71,8 @@ npm run bench:graph
 npm run bench:graph:check
 npm run bench:graph:refresh
 npm run bench:graph:refresh:check
+npm run precise:check
+npm run precise:check:fixture
 ```
 
 ## 测试
@@ -93,6 +95,9 @@ npm run bench:graph:refresh:check
 - `npm run bench:graph:refresh`：运行语义图增量刷新一致性基准（event vs full）
 - `npm run bench:graph:refresh:check`：按 `tests/bench/semantic-graph-refresh.baseline.json` 执行 2% 增量一致性退化门禁
 - `npm run bench:graph:refresh:baseline`：重写语义图增量刷新基线
+- `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）
+- `npm run precise:check:fixture`：校验内置精确索引夹具格式（CI 强制执行）
+- `npm run precise:import`：一键执行 `build_code_index + import_precise_index`（replace 模式）
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。
@@ -140,6 +145,7 @@ npm run bench:graph:refresh:check
 `query_semantic_graph` 支持 `max_hops`（默认 `1`）与 `per_hop_limit`，当 `max_hops > 1` 时每个 seed 会返回 `multi_hop` 路径展开结果（含 `path_score` 与质量因子）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
 `query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
+`get_semantic_graph_stats` 返回 `source_mix` 与 `precise_freshness`，可观测精确来源占比与产物时效。
 精确索引导入格式见 `docs/precise-index-import.md`。
 
 ## LSP 语义检索（TS/JS）
@@ -172,6 +178,7 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
 - `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
 - `CLAWTY_SEMANTIC_SEED_LANG_FILTER`：语义图 seed 语言过滤，默认 `*`（不过滤）
+- `CLAWTY_PRECISE_STALE_AFTER_MINUTES`：精确索引新鲜度阈值（分钟），默认 `1440`
 - `CLAWTY_INDEX_PREPARE_CONCURRENCY`：代码索引预处理并发度（默认按 CPU 推断，最大 `16`）
 
 ## 配置系统

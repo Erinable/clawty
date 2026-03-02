@@ -14,6 +14,12 @@
 1. 先构建代码索引：`build_code_index`
 2. 再导入精确事实：`import_precise_index`
 
+CLI 脚本等价流程：
+
+- `npm run precise:check`：校验 `artifacts/scip.normalized.json`（缺失时跳过）
+- `npm run precise:check:fixture`：校验内置精确索引夹具（CI 门禁）
+- `npm run precise:import`：执行 `build_code_index + import_precise_index`
+
 ## 入参
 
 - `path`：工作区内 JSON 文件路径（必填）
@@ -53,3 +59,12 @@
 - `edges` 也可用 `relationships` 字段名。
 - `edge_type` 建议使用：`definition` / `reference` / `call` / `import`。
 - 查询阶段会对同实体做去重，优先返回精确来源（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
+
+## 可观测性
+
+`get_semantic_graph_stats` 新增：
+
+- `source_mix`：节点/边来源占比（含 `precise_count`、`precise_ratio`）。
+- `precise_freshness`：最近一次精确导入信息（`latest_import`、`age_minutes`、`is_stale`）。
+
+可通过 `CLAWTY_PRECISE_STALE_AFTER_MINUTES`（默认 `1440`）调整新鲜度阈值。

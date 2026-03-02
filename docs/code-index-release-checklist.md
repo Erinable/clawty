@@ -16,6 +16,8 @@
 - [ ] 语义质量门禁：`npm run bench:semantic:check`
 - [ ] 语义图门禁：`npm run bench:graph:check`
 - [ ] 语义图增量门禁：`npm run bench:graph:refresh:check`
+- [ ] 精确索引格式门禁：`npm run precise:check:fixture`
+- [ ] 精确索引产物门禁（可选缺失）：`npm run precise:check`
 - [ ] 结构查询门禁：`node --test tests/syntax-index.test.js`
 - [ ] 回退链路门禁：`node --test tests/tools.test.js`
 - [ ] CI 绿灯（`Node 22/24`）后再合并。
@@ -40,6 +42,7 @@
 - [ ] 刷新流程（incremental/event/full fallback）
 - [ ] 语法查询能力（`query_syntax_index`）
 - [ ] 回退策略（`semantic -> syntax -> index`）
+- [ ] 精确索引导入策略/新鲜度字段（`source_mix` / `precise_freshness`）
 
 ## 4. 结果验收基线
 
