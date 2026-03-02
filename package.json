@@ -32,6 +32,8 @@
     "bench:graph:refresh:baseline": "node tests/bench/semantic-graph-refresh.bench.js --write-baseline",
     "metrics:report": "node scripts/metrics-report.mjs",
     "metrics:report:json": "node scripts/metrics-report.mjs --json",
+    "metrics:check": "node scripts/metrics-check.mjs",
+    "metrics:check:json": "node scripts/metrics-check.mjs --json",
     "precise:check": "node scripts/check-precise-index.mjs --path artifacts/scip.normalized.json --allow-missing",
     "precise:check:fixture": "node scripts/check-precise-index.mjs --path tests/fixtures/precise/scip.normalized.json",
     "precise:import": "node scripts/import-precise-index.mjs --path artifacts/scip.normalized.json --mode replace --source scip"

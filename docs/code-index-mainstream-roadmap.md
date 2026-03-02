@@ -108,10 +108,10 @@
 
 - M1：hybrid 查询 KPI 与降级事件落盘（支撑 `query_hybrid_p95_ms` / `stale_hit_rate_avg` / `degrade_rate`）。
 - M2：watch flush 指标落盘 + 统一报表（支撑 `code_index_lag_p95_ms`）。
+- M3：`metrics-check` 阈值门禁脚本（SLO 失败非零退出）。
 
 后续核心任务：
 
-- M3：增加 `metrics-check` 阈值门禁（SLO 失败即非零退出）。
 - M4：补充 hybrid+embedding 评测集（Recall@K/MRR/nDCG）。
 - M5：建立降级 runbook（timeout/network/api/error_code 分流）。
 

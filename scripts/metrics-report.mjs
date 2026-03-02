@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_WINDOW_HOURS = 24;
 const METRICS_DIR_RELATIVE = path.join(".clawty", "metrics");
@@ -248,6 +249,8 @@ async function buildReport(options) {
   };
 }
 
+export { buildReport };
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const report = await buildReport(options);
@@ -258,7 +261,13 @@ async function main() {
   printTextReport(report);
 }
 
-main().catch((error) => {
-  console.error(`metrics-report failed: ${error.message || String(error)}`);
-  process.exitCode = 1;
-});
+const isMainModule =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  main().catch((error) => {
+    console.error(`metrics-report failed: ${error.message || String(error)}`);
+    process.exitCode = 1;
+  });
+}
