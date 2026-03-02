@@ -166,7 +166,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     name: "build_code_index",
     description:
-      "Scan workspace code files and build a searchable index at .clawty/code-index.json.",
+      "Scan workspace code files and build a searchable SQLite index at .clawty/index.db.",
     parameters: {
       type: "object",
       properties: {
@@ -212,7 +212,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     name: "refresh_code_index",
     description:
-      "Incrementally refresh existing code index; only re-index changed/new files and remove deleted files.",
+      "Incrementally refresh SQLite code index; only re-index changed/new files and remove deleted files.",
     parameters: {
       type: "object",
       properties: {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { buildCodeIndex, queryCodeIndex, refreshCodeIndex } from "../src/code-index.js";
 import {
   createWorkspace,
@@ -36,12 +37,14 @@ test("buildCodeIndex builds index and queryCodeIndex returns ranked matches", as
   assert.equal(build.indexed_files, 2);
   assert.equal(build.skipped_large_files, 1);
   assert.equal(build.skipped_binary_files, 1);
-  assert.match(build.index_path, /^\.clawty\/code-index\.json$/);
+  assert.match(build.index_path, /^\.clawty\/index\.db$/);
 
   const indexPath = path.join(workspaceRoot, build.index_path);
-  const indexContent = JSON.parse(await fs.readFile(indexPath, "utf8"));
-  assert.equal(indexContent.version, 2);
-  assert.ok(indexContent.file_tokens["src/main.js"]);
+  await fs.access(indexPath);
+  const db = new DatabaseSync(indexPath);
+  const countRow = db.prepare("SELECT COUNT(*) AS count FROM files").get();
+  assert.equal(Number(countRow.count), 2);
+  db.close();
 
   const query = await queryCodeIndex(workspaceRoot, {
     query: "applyPatch refreshIndex",

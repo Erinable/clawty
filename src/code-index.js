@@ -1,11 +1,18 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
-const INDEX_VERSION = 2;
+const execFileAsync = promisify(execFile);
+
 const INDEX_DIR = ".clawty";
-const INDEX_FILENAME = "code-index.json";
+const INDEX_DB_FILENAME = "index.db";
 const DEFAULT_MAX_FILES = 3000;
 const DEFAULT_MAX_FILE_SIZE_KB = 512;
+const DEFAULT_CHUNK_LINES = 80;
+const DEFAULT_CHUNK_OVERLAP = 16;
 const MTIME_EPSILON_MS = 1;
 
 const IGNORED_DIRS = new Set([
@@ -50,6 +57,8 @@ const CODE_EXTENSIONS = new Set([
   ".toml",
   ".ini"
 ]);
+
+let ctagsAvailablePromise;
 
 function toPosixPath(inputPath) {
   return inputPath.split(path.sep).join("/");
@@ -101,8 +110,235 @@ function resolveSafePath(workspaceRoot, inputPath) {
   return fullPath;
 }
 
-function indexFilePath(workspaceRoot) {
-  return path.join(workspaceRoot, INDEX_DIR, INDEX_FILENAME);
+function indexDbPath(workspaceRoot) {
+  return path.join(workspaceRoot, INDEX_DIR, INDEX_DB_FILENAME);
+}
+
+function detectLanguage(relativePath) {
+  const ext = path.extname(relativePath).toLowerCase();
+  if ([".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"].includes(ext)) {
+    return "javascript";
+  }
+  if (ext === ".py") {
+    return "python";
+  }
+  if (ext === ".go") {
+    return "go";
+  }
+  if ([".java", ".kt", ".kts", ".scala"].includes(ext)) {
+    return "jvm";
+  }
+  if ([".c", ".cc", ".cpp", ".h", ".hpp", ".rs", ".cs", ".swift"].includes(ext)) {
+    return "systems";
+  }
+  return "text";
+}
+
+function hashContent(content) {
+  return crypto.createHash("sha1").update(content).digest("hex");
+}
+
+function splitLines(content) {
+  return content.split(/\r?\n/);
+}
+
+function chunkContent(content, chunkLines = DEFAULT_CHUNK_LINES, overlap = DEFAULT_CHUNK_OVERLAP) {
+  const lines = splitLines(content);
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const chunks = [];
+  const safeChunkLines = Math.max(1, chunkLines);
+  const step = Math.max(1, safeChunkLines - Math.max(0, overlap));
+
+  for (let start = 0; start < lines.length; start += step) {
+    const end = Math.min(lines.length, start + safeChunkLines);
+    const text = lines.slice(start, end).join("\n").trimEnd();
+    if (text.trim().length > 0) {
+      chunks.push({
+        start_line: start + 1,
+        end_line: end,
+        text
+      });
+    }
+    if (end >= lines.length) {
+      break;
+    }
+  }
+
+  return chunks;
+}
+
+function extractSymbolsByRegex(content, language) {
+  const lines = splitLines(content);
+  const symbols = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (language === "javascript") {
+      const functionMatch = line.match(/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+      if (functionMatch) {
+        symbols.push({
+          name: functionMatch[1],
+          kind: "function",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+
+      const classMatch = line.match(/^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+      if (classMatch) {
+        symbols.push({
+          name: classMatch[1],
+          kind: "class",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+
+      const variableMatch = line.match(/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/);
+      if (variableMatch) {
+        symbols.push({
+          name: variableMatch[1],
+          kind: "variable",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+    }
+
+    if (language === "python") {
+      const defMatch = line.match(/^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+      if (defMatch) {
+        symbols.push({
+          name: defMatch[1],
+          kind: "function",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+
+      const classMatch = line.match(/^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:(]/);
+      if (classMatch) {
+        symbols.push({
+          name: classMatch[1],
+          kind: "class",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+    }
+
+    if (language === "go") {
+      const funcMatch = line.match(/^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+      if (funcMatch) {
+        symbols.push({
+          name: funcMatch[1],
+          kind: "function",
+          start_line: index + 1,
+          end_line: index + 1,
+          signature: line.trim()
+        });
+      }
+    }
+  }
+
+  return symbols.slice(0, 500);
+}
+
+async function hasCtags() {
+  if (!ctagsAvailablePromise) {
+    ctagsAvailablePromise = execFileAsync("ctags", ["--version"], {
+      timeout: 2000,
+      maxBuffer: 1024 * 1024
+    })
+      .then(() => true)
+      .catch(() => false);
+  }
+  return ctagsAvailablePromise;
+}
+
+async function extractSymbolsByCtags(workspaceRoot, relativePath) {
+  if (!(await hasCtags())) {
+    return [];
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "ctags",
+      [
+        "--output-format=json",
+        "--fields=+nK",
+        "--extras=-F",
+        "--sort=no",
+        "-o",
+        "-",
+        "--",
+        relativePath
+      ],
+      {
+        cwd: workspaceRoot,
+        timeout: 5000,
+        maxBuffer: 4 * 1024 * 1024
+      }
+    );
+
+    const symbols = [];
+    const seen = new Set();
+    for (const line of stdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      let record;
+      try {
+        record = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+
+      if (record._type !== "tag" || typeof record.name !== "string" || record.name.length === 0) {
+        continue;
+      }
+
+      const lineNo = Number(record.line);
+      const startLine = Number.isFinite(lineNo) && lineNo > 0 ? lineNo : 1;
+      const kind = String(record.kind || record.kindName || "symbol").toLowerCase();
+      const key = `${record.name}::${kind}::${startLine}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+
+      symbols.push({
+        name: record.name,
+        kind,
+        start_line: startLine,
+        end_line: startLine,
+        signature: typeof record.pattern === "string" ? record.pattern : null
+      });
+    }
+
+    return symbols.slice(0, 1000);
+  } catch {
+    return [];
+  }
+}
+
+async function extractSymbols(workspaceRoot, relativePath, content, language) {
+  const ctagsSymbols = await extractSymbolsByCtags(workspaceRoot, relativePath);
+  if (ctagsSymbols.length > 0) {
+    return ctagsSymbols;
+  }
+  return extractSymbolsByRegex(content, language);
 }
 
 function resolveIndexConfig(args = {}, fallback = {}) {
@@ -166,37 +402,172 @@ async function listCandidateFiles(workspaceRoot, maxFiles) {
   return state.collected;
 }
 
-function countTokens(content) {
-  const tokenList = tokenize(content);
-  const tokenCounts = {};
-  for (const token of tokenList) {
-    tokenCounts[token] = (tokenCounts[token] || 0) + 1;
-  }
-  return { tokenCounts, tokenTotal: tokenList.length };
+async function ensureIndexDir(workspaceRoot) {
+  await fs.mkdir(path.join(workspaceRoot, INDEX_DIR), { recursive: true });
 }
 
-function buildIndexedEntry(relativePath, stat, content) {
-  if (!isProbablyText(content)) {
-    return { status: "skip_binary" };
-  }
+function openIndexDb(workspaceRoot) {
+  const dbPath = indexDbPath(workspaceRoot);
+  const db = new DatabaseSync(dbPath);
 
-  const lines = content.split(/\r?\n/).length;
-  const { tokenCounts, tokenTotal } = countTokens(content);
+  db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA synchronous = NORMAL;");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS files (
+      path TEXT PRIMARY KEY,
+      hash TEXT NOT NULL,
+      mtime_ms REAL NOT NULL,
+      size INTEGER NOT NULL,
+      lang TEXT NOT NULL,
+      line_count INTEGER NOT NULL,
+      token_count INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_path TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+      text,
+      file_path UNINDEXED,
+      start_line UNINDEXED,
+      end_line UNINDEXED,
+      tokenize = 'unicode61'
+    );
+
+    CREATE TABLE IF NOT EXISTS symbols (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      signature TEXT,
+      FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
+    CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+  `);
+
+  return db;
+}
+
+function clearAllIndexData(db) {
+  db.exec(`
+    DELETE FROM chunks_fts;
+    DELETE FROM symbols;
+    DELETE FROM chunks;
+    DELETE FROM files;
+  `);
+}
+
+function deleteFileIndex(statements, filePath) {
+  statements.deleteChunksFtsByFilePath.run(filePath);
+  statements.deleteSymbolsByFilePath.run(filePath);
+  statements.deleteChunksByFilePath.run(filePath);
+  statements.deleteFileByPath.run(filePath);
+}
+
+function buildSqlStatements(db) {
   return {
-    status: "indexed",
-    file: {
-      path: relativePath,
-      size: stat.size,
-      mtime_ms: stat.mtimeMs,
-      line_count: lines,
-      token_count: tokenTotal
-    },
-    token_counts: tokenCounts
+    selectAllFiles: db.prepare(`
+      SELECT path, hash, mtime_ms, size
+      FROM files
+    `),
+    countIndexedFiles: db.prepare(`
+      SELECT COUNT(*) AS count FROM files
+    `),
+    upsertFile: db.prepare(`
+      INSERT INTO files(path, hash, mtime_ms, size, lang, line_count, token_count, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET
+        hash = excluded.hash,
+        mtime_ms = excluded.mtime_ms,
+        size = excluded.size,
+        lang = excluded.lang,
+        line_count = excluded.line_count,
+        token_count = excluded.token_count,
+        updated_at = excluded.updated_at
+    `),
+    insertChunk: db.prepare(`
+      INSERT INTO chunks(file_path, start_line, end_line, text)
+      VALUES(?, ?, ?, ?)
+    `),
+    insertChunkFts: db.prepare(`
+      INSERT INTO chunks_fts(text, file_path, start_line, end_line)
+      VALUES(?, ?, ?, ?)
+    `),
+    insertSymbol: db.prepare(`
+      INSERT INTO symbols(file_path, name, kind, start_line, end_line, signature)
+      VALUES(?, ?, ?, ?, ?, ?)
+    `),
+    deleteFileByPath: db.prepare(`
+      DELETE FROM files WHERE path = ?
+    `),
+    deleteChunksByFilePath: db.prepare(`
+      DELETE FROM chunks WHERE file_path = ?
+    `),
+    deleteChunksFtsByFilePath: db.prepare(`
+      DELETE FROM chunks_fts WHERE file_path = ?
+    `),
+    deleteSymbolsByFilePath: db.prepare(`
+      DELETE FROM symbols WHERE file_path = ?
+    `),
+    setMeta: db.prepare(`
+      INSERT INTO meta(key, value)
+      VALUES(?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `)
   };
 }
 
-async function indexFileFresh(workspaceRoot, relativePath, maxFileBytes) {
+function countUniqueTokens(db) {
+  try {
+    db.exec("DROP TABLE IF EXISTS temp.__chunks_vocab;");
+    db.exec("CREATE VIRTUAL TABLE temp.__chunks_vocab USING fts5vocab(chunks_fts, row);");
+    const row = db.prepare("SELECT COUNT(*) AS count FROM temp.__chunks_vocab").get();
+    db.exec("DROP TABLE IF EXISTS temp.__chunks_vocab;");
+    return Number(row?.count || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function formatSnippet(chunkText, startLine, maxLines = 3) {
+  const lines = splitLines(chunkText).slice(0, maxLines);
+  return lines.map((line, index) => `${startLine + index}: ${line}`).join("\n");
+}
+
+function scoreFromBm25(rawScore) {
+  const score = Number(rawScore);
+  if (!Number.isFinite(score)) {
+    return 0;
+  }
+  if (score <= 0) {
+    return 1 + Math.abs(score);
+  }
+  return 1 / (1 + score);
+}
+
+async function readFileForIndex(workspaceRoot, relativePath, maxFileBytes) {
   const fullPath = resolveSafePath(workspaceRoot, relativePath);
+
   let stat;
   try {
     stat = await fs.stat(fullPath);
@@ -205,339 +576,438 @@ async function indexFileFresh(workspaceRoot, relativePath, maxFileBytes) {
   }
 
   if (stat.size > maxFileBytes) {
-    return { status: "skip_large" };
+    return { status: "skip_large", stat };
   }
 
   let content;
   try {
     content = await fs.readFile(fullPath, "utf8");
   } catch {
-    return { status: "missing" };
+    return { status: "missing", stat };
   }
 
-  return buildIndexedEntry(relativePath, stat, content);
-}
-
-function isReusableFile(oldFileMeta, oldTokenCounts, stat) {
-  if (!oldFileMeta || !oldTokenCounts) {
-    return false;
-  }
-  if (oldFileMeta.size !== stat.size) {
-    return false;
-  }
-  return Math.abs(oldFileMeta.mtime_ms - stat.mtimeMs) < MTIME_EPSILON_MS;
-}
-
-async function indexFileIncremental(workspaceRoot, relativePath, maxFileBytes, oldFileMeta, oldTokenCounts) {
-  const fullPath = resolveSafePath(workspaceRoot, relativePath);
-  let stat;
-  try {
-    stat = await fs.stat(fullPath);
-  } catch {
-    return { status: "missing" };
+  if (!isProbablyText(content)) {
+    return { status: "skip_binary", stat };
   }
 
-  if (stat.size > maxFileBytes) {
-    return { status: "skip_large" };
-  }
-
-  if (isReusableFile(oldFileMeta, oldTokenCounts, stat)) {
-    return {
-      status: "reused",
-      file: oldFileMeta,
-      token_counts: oldTokenCounts
-    };
-  }
-
-  let content;
-  try {
-    content = await fs.readFile(fullPath, "utf8");
-  } catch {
-    return { status: "missing" };
-  }
-
-  return buildIndexedEntry(relativePath, stat, content);
-}
-
-function buildInverted(fileTokensByPath) {
-  const tokenMap = new Map();
-
-  for (const [filePath, tokenCounts] of Object.entries(fileTokensByPath)) {
-    for (const [token, count] of Object.entries(tokenCounts)) {
-      if (!tokenMap.has(token)) {
-        tokenMap.set(token, []);
-      }
-      tokenMap.get(token).push([filePath, count]);
-    }
-  }
-
-  const inverted = {};
-  for (const [token, postings] of tokenMap.entries()) {
-    postings.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    inverted[token] = postings;
-  }
-  return inverted;
-}
-
-function buildStats({
-  discoveredFiles,
-  indexedFiles,
-  skippedLargeFiles,
-  skippedBinaryFiles,
-  inverted,
-  reusedFiles = 0,
-  reindexedFiles = 0,
-  removedFiles = 0,
-  incremental = false
-}) {
   return {
-    discovered_files: discoveredFiles,
+    status: "ok",
+    stat,
+    content,
+    hash: hashContent(content),
+    line_count: splitLines(content).length,
+    token_count: tokenize(content).length,
+    chunks: chunkContent(content),
+    language: detectLanguage(relativePath)
+  };
+}
+
+async function indexFileContent(workspaceRoot, relativePath, readResult, statements) {
+  const updatedAt = new Date().toISOString();
+  const symbols = await extractSymbols(
+    workspaceRoot,
+    relativePath,
+    readResult.content,
+    readResult.language
+  );
+
+  deleteFileIndex(statements, relativePath);
+
+  statements.upsertFile.run(
+    relativePath,
+    readResult.hash,
+    readResult.stat.mtimeMs,
+    readResult.stat.size,
+    readResult.language,
+    readResult.line_count,
+    readResult.token_count,
+    updatedAt
+  );
+
+  for (const chunk of readResult.chunks) {
+    statements.insertChunk.run(relativePath, chunk.start_line, chunk.end_line, chunk.text);
+    statements.insertChunkFts.run(chunk.text, relativePath, chunk.start_line, chunk.end_line);
+  }
+
+  for (const symbol of symbols) {
+    statements.insertSymbol.run(
+      relativePath,
+      symbol.name,
+      symbol.kind,
+      symbol.start_line,
+      symbol.end_line,
+      symbol.signature
+    );
+  }
+}
+
+function writeIndexMeta(statements, config) {
+  statements.setMeta.run("schema_version", "1");
+  statements.setMeta.run("engine", "sqlite_fts5");
+  statements.setMeta.run("config", JSON.stringify(config));
+  statements.setMeta.run("updated_at", new Date().toISOString());
+}
+
+function readStoredConfig(db) {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'config'").get();
+  if (!row || typeof row.value !== "string") {
+    return {};
+  }
+
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return {};
+  }
+}
+
+async function runFullBuild(workspaceRoot, db, config) {
+  const statements = buildSqlStatements(db);
+  const maxFileBytes = config.max_file_size_kb * 1024;
+  const discoveredPaths = await listCandidateFiles(workspaceRoot, config.max_files);
+
+  let skippedLargeFiles = 0;
+  let skippedBinaryFiles = 0;
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    clearAllIndexData(db);
+
+    for (const relativePath of discoveredPaths) {
+      const readResult = await readFileForIndex(workspaceRoot, relativePath, maxFileBytes);
+      if (readResult.status === "skip_large") {
+        skippedLargeFiles += 1;
+        continue;
+      }
+      if (readResult.status === "skip_binary") {
+        skippedBinaryFiles += 1;
+        continue;
+      }
+      if (readResult.status !== "ok") {
+        continue;
+      }
+
+      await indexFileContent(workspaceRoot, relativePath, readResult, statements);
+    }
+
+    writeIndexMeta(statements, config);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
+  const uniqueTokens = countUniqueTokens(db);
+
+  return {
+    mode: "full",
+    discovered_files: discoveredPaths.length,
     indexed_files: indexedFiles,
     skipped_large_files: skippedLargeFiles,
     skipped_binary_files: skippedBinaryFiles,
-    unique_tokens: Object.keys(inverted).length,
-    incremental,
+    unique_tokens: uniqueTokens,
+    incremental: false,
+    reused_files: 0,
+    reindexed_files: indexedFiles,
+    removed_files: 0
+  };
+}
+
+async function runIncrementalRefresh(workspaceRoot, db, config) {
+  const statements = buildSqlStatements(db);
+  const maxFileBytes = config.max_file_size_kb * 1024;
+  const discoveredPaths = await listCandidateFiles(workspaceRoot, config.max_files);
+  const discoveredSet = new Set(discoveredPaths);
+
+  const existingRows = statements.selectAllFiles.all();
+  const existingByPath = new Map(existingRows.map((row) => [row.path, row]));
+
+  let skippedLargeFiles = 0;
+  let skippedBinaryFiles = 0;
+  let reusedFiles = 0;
+  let reindexedFiles = 0;
+  let removedFiles = 0;
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    for (const row of existingRows) {
+      if (!discoveredSet.has(row.path)) {
+        deleteFileIndex(statements, row.path);
+        removedFiles += 1;
+      }
+    }
+
+    for (const relativePath of discoveredPaths) {
+      const existing = existingByPath.get(relativePath);
+      const fullPath = resolveSafePath(workspaceRoot, relativePath);
+
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {
+        if (existing) {
+          deleteFileIndex(statements, relativePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+
+      if (stat.size > maxFileBytes) {
+        skippedLargeFiles += 1;
+        if (existing) {
+          deleteFileIndex(statements, relativePath);
+        }
+        continue;
+      }
+
+      const mtimeUnchanged =
+        existing &&
+        existing.size === stat.size &&
+        Math.abs(existing.mtime_ms - stat.mtimeMs) < MTIME_EPSILON_MS;
+      if (mtimeUnchanged) {
+        reusedFiles += 1;
+        continue;
+      }
+
+      const readResult = await readFileForIndex(workspaceRoot, relativePath, maxFileBytes);
+      if (readResult.status === "skip_large") {
+        skippedLargeFiles += 1;
+        if (existing) {
+          deleteFileIndex(statements, relativePath);
+        }
+        continue;
+      }
+      if (readResult.status === "skip_binary") {
+        skippedBinaryFiles += 1;
+        if (existing) {
+          deleteFileIndex(statements, relativePath);
+        }
+        continue;
+      }
+      if (readResult.status !== "ok") {
+        if (existing) {
+          deleteFileIndex(statements, relativePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+
+      if (existing && existing.hash === readResult.hash) {
+        statements.upsertFile.run(
+          relativePath,
+          existing.hash,
+          readResult.stat.mtimeMs,
+          readResult.stat.size,
+          detectLanguage(relativePath),
+          readResult.line_count,
+          readResult.token_count,
+          new Date().toISOString()
+        );
+        reusedFiles += 1;
+        continue;
+      }
+
+      await indexFileContent(workspaceRoot, relativePath, readResult, statements);
+      reindexedFiles += 1;
+    }
+
+    writeIndexMeta(statements, config);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
+  const uniqueTokens = countUniqueTokens(db);
+
+  return {
+    mode: "incremental",
+    discovered_files: discoveredPaths.length,
+    indexed_files: indexedFiles,
+    skipped_large_files: skippedLargeFiles,
+    skipped_binary_files: skippedBinaryFiles,
+    unique_tokens: uniqueTokens,
+    incremental: true,
     reused_files: reusedFiles,
     reindexed_files: reindexedFiles,
     removed_files: removedFiles
   };
 }
 
-function buildPayload(workspaceRoot, config, stats, files, fileTokens, inverted) {
-  return {
-    version: INDEX_VERSION,
-    created_at: new Date().toISOString(),
-    workspace_root: workspaceRoot,
-    config,
-    stats,
-    files,
-    file_tokens: fileTokens,
-    inverted
-  };
-}
-
-async function writeCodeIndex(workspaceRoot, payload) {
-  const outputDir = path.join(workspaceRoot, INDEX_DIR);
-  await fs.mkdir(outputDir, { recursive: true });
-  const outputPath = indexFilePath(workspaceRoot);
-  await fs.writeFile(outputPath, JSON.stringify(payload), "utf8");
-  return outputPath;
-}
-
-function buildResult(workspaceRoot, payload, extra = {}) {
-  const outputPath = indexFilePath(workspaceRoot);
+function buildResult(workspaceRoot, stats, extra = {}) {
   return {
     ok: true,
-    index_path: toPosixPath(path.relative(workspaceRoot, outputPath)),
-    ...payload.stats,
+    index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
+    ...stats,
     ...extra
   };
 }
 
-async function readCodeIndexIfExists(workspaceRoot) {
-  try {
-    const fullPath = indexFilePath(workspaceRoot);
-    const raw = await fs.readFile(fullPath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 export async function buildCodeIndex(workspaceRoot, args = {}) {
   const config = resolveIndexConfig(args);
-  const maxFileBytes = config.max_file_size_kb * 1024;
-  const discoveredPaths = await listCandidateFiles(workspaceRoot, config.max_files);
+  await ensureIndexDir(workspaceRoot);
+  const db = openIndexDb(workspaceRoot);
 
-  const files = [];
-  const fileTokens = {};
-  let skippedLargeFiles = 0;
-  let skippedBinaryFiles = 0;
-  let indexedFiles = 0;
-
-  for (const relativePath of discoveredPaths) {
-    const result = await indexFileFresh(workspaceRoot, relativePath, maxFileBytes);
-    if (result.status === "skip_large") {
-      skippedLargeFiles += 1;
-      continue;
-    }
-    if (result.status === "skip_binary") {
-      skippedBinaryFiles += 1;
-      continue;
-    }
-    if (result.status !== "indexed") {
-      continue;
-    }
-
-    files.push(result.file);
-    fileTokens[relativePath] = result.token_counts;
-    indexedFiles += 1;
+  try {
+    const stats = await runFullBuild(workspaceRoot, db, config);
+    return buildResult(workspaceRoot, stats);
+  } finally {
+    db.close();
   }
-
-  const inverted = buildInverted(fileTokens);
-  const stats = buildStats({
-    discoveredFiles: discoveredPaths.length,
-    indexedFiles,
-    skippedLargeFiles,
-    skippedBinaryFiles,
-    inverted,
-    incremental: false,
-    reusedFiles: 0,
-    reindexedFiles: indexedFiles,
-    removedFiles: 0
-  });
-
-  const payload = buildPayload(workspaceRoot, config, stats, files, fileTokens, inverted);
-  await writeCodeIndex(workspaceRoot, payload);
-  return buildResult(workspaceRoot, payload, { mode: "full" });
 }
 
 export async function refreshCodeIndex(workspaceRoot, args = {}) {
-  const existing = await readCodeIndexIfExists(workspaceRoot);
   const forceRebuild = parseBoolean(args.force_rebuild, false);
+  await ensureIndexDir(workspaceRoot);
 
-  if (!existing || forceRebuild || existing.version !== INDEX_VERSION || !existing.file_tokens) {
-    const rebuilt = await buildCodeIndex(workspaceRoot, args);
-    return {
-      ...rebuilt,
-      mode: "full",
-      fallback_full_rebuild: !existing || existing.version !== INDEX_VERSION || !existing.file_tokens
+  const dbFile = indexDbPath(workspaceRoot);
+  const dbExists = await fs
+    .access(dbFile)
+    .then(() => true)
+    .catch(() => false);
+
+  const db = openIndexDb(workspaceRoot);
+
+  try {
+    const fallbackConfig = readStoredConfig(db);
+    const config = resolveIndexConfig(args, fallbackConfig);
+
+    if (!dbExists || forceRebuild) {
+      const stats = await runFullBuild(workspaceRoot, db, config);
+      return buildResult(workspaceRoot, stats, {
+        mode: "full",
+        fallback_full_rebuild: !dbExists
+      });
+    }
+
+    const stats = await runIncrementalRefresh(workspaceRoot, db, config);
+    return buildResult(workspaceRoot, stats);
+  } finally {
+    db.close();
+  }
+}
+
+function buildFtsQuery(tokens) {
+  if (tokens.length === 0) {
+    return "";
+  }
+  return tokens.map((token) => `${token}*`).join(" OR ");
+}
+
+function querySymbols(db, tokens) {
+  if (tokens.length === 0) {
+    return [];
+  }
+
+  const clauses = [];
+  const params = [];
+  for (const token of tokens) {
+    clauses.push("lower(name) = ?");
+    params.push(token);
+    clauses.push("lower(name) LIKE ?");
+    params.push(`${token}%`);
+  }
+
+  const sql = `
+    SELECT file_path, name, kind, start_line, end_line
+    FROM symbols
+    WHERE ${clauses.join(" OR ")}
+    LIMIT 2000
+  `;
+
+  return db.prepare(sql).all(...params);
+}
+
+function buildFileRanking({ chunkRows, symbolRows, tokens }) {
+  const files = new Map();
+
+  for (const row of chunkRows) {
+    const current = files.get(row.file_path) || {
+      path: row.file_path,
+      score: 0,
+      matched_tokens: new Set(),
+      symbol_hits: [],
+      snippet: "",
+      hit_line: Number(row.start_line) || 1
     };
-  }
 
-  const config = resolveIndexConfig(args, existing.config || {});
-  const maxFileBytes = config.max_file_size_kb * 1024;
-  const discoveredPaths = await listCandidateFiles(workspaceRoot, config.max_files);
+    current.score += scoreFromBm25(row.rank);
 
-  const oldFileMetaByPath = new Map((existing.files || []).map((item) => [item.path, item]));
-  const oldFileTokens = existing.file_tokens || {};
-
-  const files = [];
-  const fileTokens = {};
-  let skippedLargeFiles = 0;
-  let skippedBinaryFiles = 0;
-  let indexedFiles = 0;
-  let reusedFiles = 0;
-  let reindexedFiles = 0;
-
-  for (const relativePath of discoveredPaths) {
-    const oldMeta = oldFileMetaByPath.get(relativePath);
-    const oldTokens = oldFileTokens[relativePath];
-
-    const result = await indexFileIncremental(
-      workspaceRoot,
-      relativePath,
-      maxFileBytes,
-      oldMeta,
-      oldTokens
-    );
-
-    if (result.status === "skip_large") {
-      skippedLargeFiles += 1;
-      continue;
-    }
-    if (result.status === "skip_binary") {
-      skippedBinaryFiles += 1;
-      continue;
-    }
-    if (result.status === "reused") {
-      files.push(result.file);
-      fileTokens[relativePath] = result.token_counts;
-      indexedFiles += 1;
-      reusedFiles += 1;
-      continue;
-    }
-    if (result.status !== "indexed") {
-      continue;
+    const snippet = formatSnippet(String(row.text || ""), Number(row.start_line) || 1);
+    if (!current.snippet) {
+      current.snippet = snippet;
+      current.hit_line = Number(row.start_line) || 1;
     }
 
-    files.push(result.file);
-    fileTokens[relativePath] = result.token_counts;
-    indexedFiles += 1;
-    reindexedFiles += 1;
-  }
-
-  const oldIndexedPaths = Object.keys(oldFileTokens);
-  const removedFiles = oldIndexedPaths.reduce(
-    (acc, filePath) => (fileTokens[filePath] ? acc : acc + 1),
-    0
-  );
-
-  const inverted = buildInverted(fileTokens);
-  const stats = buildStats({
-    discoveredFiles: discoveredPaths.length,
-    indexedFiles,
-    skippedLargeFiles,
-    skippedBinaryFiles,
-    inverted,
-    incremental: true,
-    reusedFiles,
-    reindexedFiles,
-    removedFiles
-  });
-
-  const payload = buildPayload(workspaceRoot, config, stats, files, fileTokens, inverted);
-  await writeCodeIndex(workspaceRoot, payload);
-
-  return buildResult(workspaceRoot, payload, { mode: "incremental" });
-}
-
-async function loadCodeIndex(workspaceRoot) {
-  const fullPath = indexFilePath(workspaceRoot);
-  const raw = await fs.readFile(fullPath, "utf8");
-  return JSON.parse(raw);
-}
-
-function rankMatches(index, queryTokens) {
-  const scores = new Map();
-  for (const token of queryTokens) {
-    const postings = index.inverted[token] || [];
-    for (const [filePath, count] of postings) {
-      if (!scores.has(filePath)) {
-        scores.set(filePath, { score: 0, tokens: new Set() });
+    const lowerText = String(row.text || "").toLowerCase();
+    for (const token of tokens) {
+      if (lowerText.includes(token)) {
+        current.matched_tokens.add(token);
       }
-      const entry = scores.get(filePath);
-      entry.score += Math.log2(count + 1);
-      entry.tokens.add(token);
+    }
+
+    files.set(row.file_path, current);
+  }
+
+  for (const symbol of symbolRows) {
+    const current = files.get(symbol.file_path) || {
+      path: symbol.file_path,
+      score: 0,
+      matched_tokens: new Set(),
+      symbol_hits: [],
+      snippet: "",
+      hit_line: Number(symbol.start_line) || 1
+    };
+
+    const nameLower = String(symbol.name || "").toLowerCase();
+    for (const token of tokens) {
+      if (nameLower === token) {
+        current.score += 4;
+        current.matched_tokens.add(token);
+      } else if (nameLower.startsWith(token)) {
+        current.score += 2;
+        current.matched_tokens.add(token);
+      }
+    }
+
+    if (current.symbol_hits.length < 8) {
+      current.symbol_hits.push({
+        name: symbol.name,
+        kind: symbol.kind,
+        line: symbol.start_line
+      });
+    }
+
+    if (!current.snippet) {
+      current.snippet = `${symbol.start_line}: ${symbol.kind} ${symbol.name}`;
+      current.hit_line = Number(symbol.start_line) || 1;
+    }
+
+    files.set(symbol.file_path, current);
+  }
+
+  for (const current of files.values()) {
+    const basename = path.basename(current.path).toLowerCase();
+    for (const token of tokens) {
+      if (basename.includes(token)) {
+        current.score += 0.5;
+        current.matched_tokens.add(token);
+      }
     }
   }
 
-  return Array.from(scores.entries())
-    .map(([filePath, entry]) => ({
-      path: filePath,
-      score: Number(entry.score.toFixed(3)),
-      matched_tokens: Array.from(entry.tokens)
-    }))
-    .sort((a, b) => b.score - a.score);
-}
-
-async function buildSnippet(workspaceRoot, relativePath, tokens) {
-  const fullPath = resolveSafePath(workspaceRoot, relativePath);
-  const content = await fs.readFile(fullPath, "utf8");
-  const lines = content.split(/\r?\n/);
-  let hitLine = 0;
-  const tokenRegexes = tokens.map(
-    (token) => new RegExp(`(^|[^A-Za-z0-9_])${token}([^A-Za-z0-9_]|$)`, "i")
-  );
-
-  for (let i = 0; i < lines.length; i += 1) {
-    if (tokenRegexes.some((re) => re.test(lines[i]))) {
-      hitLine = i;
-      break;
-    }
-  }
-
-  const start = Math.max(0, hitLine - 1);
-  const end = Math.min(lines.length, hitLine + 2);
-  const snippet = lines
-    .slice(start, end)
-    .map((line, idx) => `${start + idx + 1}: ${line}`)
-    .join("\n");
-
-  return {
-    hit_line: hitLine + 1,
-    snippet
-  };
+  return Array.from(files.values())
+    .sort((a, b) => b.score - a.score)
+    .map((item) => ({
+      path: item.path,
+      score: Number(item.score.toFixed(3)),
+      matched_tokens: Array.from(item.matched_tokens),
+      hit_line: item.hit_line,
+      snippet: item.snippet,
+      symbol_hits: item.symbol_hits
+    }));
 }
 
 export async function queryCodeIndex(workspaceRoot, args = {}) {
@@ -546,10 +1016,13 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
     return { ok: false, error: "query must be a non-empty string" };
   }
 
-  let index;
-  try {
-    index = await loadCodeIndex(workspaceRoot);
-  } catch {
+  const dbFile = indexDbPath(workspaceRoot);
+  const exists = await fs
+    .access(dbFile)
+    .then(() => true)
+    .catch(() => false);
+
+  if (!exists) {
     return {
       ok: false,
       error: "code index not found; run build_code_index first"
@@ -568,32 +1041,43 @@ export async function queryCodeIndex(workspaceRoot, args = {}) {
     Number.isFinite(args.top_k) && args.top_k > 0
       ? Math.min(50, Math.floor(args.top_k))
       : 8;
-  const rankedAll = rankMatches(index, tokens);
-  const ranked = rankedAll.slice(0, topK);
 
-  const results = [];
-  for (const item of ranked) {
-    let snippetInfo = { hit_line: 1, snippet: "" };
-    try {
-      snippetInfo = await buildSnippet(workspaceRoot, item.path, item.matched_tokens);
-    } catch {
-      // Ignore unreadable files in result rendering.
+  const db = openIndexDb(workspaceRoot);
+  try {
+    const rowCount = db.prepare("SELECT COUNT(*) AS count FROM chunks").get();
+    if (!rowCount || Number(rowCount.count || 0) === 0) {
+      return {
+        ok: false,
+        error: "code index is empty; run build_code_index first"
+      };
     }
 
-    results.push({
-      path: item.path,
-      score: item.score,
-      matched_tokens: item.matched_tokens,
-      hit_line: snippetInfo.hit_line,
-      snippet: snippetInfo.snippet
-    });
-  }
+    const ftsQuery = buildFtsQuery(tokens);
+    const chunkRows = db
+      .prepare(
+        `
+        SELECT file_path, start_line, end_line, text, bm25(chunks_fts) AS rank
+        FROM chunks_fts
+        WHERE chunks_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `
+      )
+      .all(ftsQuery, Math.max(50, topK * 25));
 
-  return {
-    ok: true,
-    query,
-    query_tokens: tokens,
-    total_hits: rankedAll.length,
-    results
-  };
+    const symbolRows = querySymbols(db, tokens);
+    const ranked = buildFileRanking({ chunkRows, symbolRows, tokens });
+    const results = ranked.slice(0, topK);
+
+    return {
+      ok: true,
+      query,
+      query_tokens: tokens,
+      total_hits: ranked.length,
+      results,
+      index_path: toPosixPath(path.relative(workspaceRoot, dbFile))
+    };
+  } finally {
+    db.close();
+  }
 }

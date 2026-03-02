@@ -67,6 +67,7 @@ npm run test:coverage
 - “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` 完成索引检索。
+索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
 
 ## 可配置项
 
