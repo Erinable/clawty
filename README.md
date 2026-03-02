@@ -12,6 +12,7 @@
   - `run_shell`
   - `apply_patch`
   - `build_code_index`
+  - `refresh_code_index`
   - `query_code_index`
 - 默认工作目录沙箱（禁止访问工作区外路径）
 - 常见危险命令拦截（如 `rm -rf`, `sudo`）
@@ -51,9 +52,10 @@ node src/index.js --help
 在 `chat` 模式中可直接下达：
 
 - “先构建代码索引，再查找和 apply patch 相关的实现”
+- “代码改完后刷新索引，再查找和增量索引相关的实现”
 - “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
 
-模型会自动调用 `build_code_index` 和 `query_code_index` 完成索引检索。
+模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` 完成索引检索。
 
 ## 可配置项
 

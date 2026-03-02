@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildCodeIndex, queryCodeIndex } from "./code-index.js";
+import { buildCodeIndex, queryCodeIndex, refreshCodeIndex } from "./code-index.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -207,6 +207,34 @@ export const TOOL_DEFINITIONS = [
       required: ["query"],
       additionalProperties: false
     }
+  },
+  {
+    type: "function",
+    name: "refresh_code_index",
+    description:
+      "Incrementally refresh existing code index; only re-index changed/new files and remove deleted files.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_files: {
+          type: "integer",
+          description: "Optional scan limit to cap indexed file count.",
+          minimum: 1,
+          maximum: 20000
+        },
+        max_file_size_kb: {
+          type: "integer",
+          description: "Optional max file size (KB) included in index.",
+          minimum: 1,
+          maximum: 8192
+        },
+        force_rebuild: {
+          type: "boolean",
+          description: "If true, bypass incremental mode and do a full rebuild."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -316,6 +344,10 @@ async function queryCodeIndexTool(args, context) {
   return queryCodeIndex(context.workspaceRoot, args);
 }
 
+async function refreshCodeIndexTool(args, context) {
+  return refreshCodeIndex(context.workspaceRoot, args);
+}
+
 export async function runTool(name, args, context) {
   if (name === "read_file") {
     return readFileTool(args, context);
@@ -334,6 +366,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "query_code_index") {
     return queryCodeIndexTool(args, context);
+  }
+  if (name === "refresh_code_index") {
+    return refreshCodeIndexTool(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

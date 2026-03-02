@@ -5,7 +5,7 @@ This repository is a Node.js ESM CLI project.
 
 - `src/index.js`: CLI entrypoint (`chat`, `run`, `--help`)
 - `src/agent.js`: agent loop and tool-calling orchestration
-- `src/tools.js`: local tool implementations (`read_file`, `write_file`, `run_shell`, `apply_patch`, code-index tools)
+- `src/tools.js`: local tool implementations (`read_file`, `write_file`, `run_shell`, `apply_patch`, `build_code_index`, `refresh_code_index`, `query_code_index`)
 - `src/code-index.js`: code index build/query engine
 - `src/openai.js`: OpenAI Responses API client
 - `src/config.js`: `.env` loading and runtime config
