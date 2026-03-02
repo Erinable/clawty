@@ -14,6 +14,7 @@
 - [ ] 覆盖率检查：`npm run test:coverage`
 - [ ] 性能门禁：`npm run bench:index:check`
 - [ ] 语义质量门禁：`npm run bench:semantic:check`
+- [ ] 语义图门禁：`npm run bench:graph:check`
 - [ ] 结构查询门禁：`node --test tests/syntax-index.test.js`
 - [ ] 回退链路门禁：`node --test tests/tools.test.js`
 - [ ] CI 绿灯（`Node 22/24`）后再合并。
@@ -27,6 +28,7 @@
 - [ ] 语义图融合回归：`tests/semantic-graph.test.js`
 - [ ] 工具回退回归：`tests/tools.test.js`
 - [ ] 语义任务回归：`npm run bench:semantic:check`
+- [ ] 语义图检索回归：`npm run bench:graph:check`
 
 如改动触发以下场景，必须补对应用例：
 
@@ -42,6 +44,7 @@
 - [ ] `code-index.js` 分支覆盖率保持 `>= 80%`。
 - [ ] `bench:index:check` 无回归（阈值 `20%`）。
 - [ ] `bench:semantic:check` 无回归（阈值 `5%`）。
+- [ ] `bench:graph:check` 无回归（阈值 `5%`）。
 - [ ] `query_semantic_graph` 回退顺序稳定：`semantic > syntax > index`。
 - [ ] 不允许引入明显不稳定排序（同数据多次查询 top 结果抖动）。
 

@@ -65,6 +65,8 @@ npm run bench:index
 npm run bench:index:check
 npm run bench:semantic
 npm run bench:semantic:check
+npm run bench:graph
+npm run bench:graph:check
 ```
 
 ## 测试
@@ -78,6 +80,9 @@ npm run bench:semantic:check
 - `npm run bench:semantic`：运行语义任务基准（多跳链路命中）
 - `npm run bench:semantic:check`：按 `tests/bench/code-index-semantic.baseline.json` 执行 5% 语义质量退化门禁
 - `npm run bench:semantic:baseline`：重写语义质量基线
+- `npm run bench:graph`：运行语义图基准（`query_semantic_graph` 检索质量）
+- `npm run bench:graph:check`：按 `tests/bench/semantic-graph.baseline.json` 执行 5% 语义图质量退化门禁
+- `npm run bench:graph:baseline`：重写语义图质量基线
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。
