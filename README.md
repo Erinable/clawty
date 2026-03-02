@@ -15,6 +15,10 @@
   - `refresh_code_index`
   - `query_code_index`
   - `get_index_stats`
+  - `lsp_definition`
+  - `lsp_references`
+  - `lsp_workspace_symbols`
+  - `lsp_health`
 - 默认工作目录沙箱（禁止访问工作区外路径）
 - 常见危险命令拦截（如 `rm -rf`, `sudo`）
 
@@ -71,6 +75,23 @@ npm run test:coverage
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
 索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
 
+## LSP 语义检索（TS/JS）
+
+先安装 TypeScript LSP（可选但推荐）：
+
+```bash
+npm i -g typescript typescript-language-server
+```
+
+在 `chat` 模式中可直接下达：
+
+- “对 `src/tools.js` 第 20 行做 definition 跳转”
+- “查这个符号的 references（不含声明）”
+- “搜索 workspace symbols: runTool”
+- “检查 lsp health（startup_check=true）”
+
+LSP 不可用时，工具会自动回退到代码索引检索结果。
+
 ## 可配置项
 
 - `OPENAI_API_KEY`：必填
@@ -79,6 +100,10 @@ npm run test:coverage
 - `CLAWTY_WORKSPACE_ROOT`：默认当前目录
 - `CLAWTY_TOOL_TIMEOUT_MS`：工具超时，默认 `120000`
 - `CLAWTY_MAX_TOOL_ITERATIONS`：工具调用最大轮次，默认 `8`
+- `CLAWTY_LSP_ENABLED`：默认 `true`
+- `CLAWTY_LSP_TIMEOUT_MS`：默认 `5000`
+- `CLAWTY_LSP_MAX_RESULTS`：默认 `100`
+- `CLAWTY_LSP_TS_CMD`：默认 `typescript-language-server --stdio`
 
 ## 说明
 

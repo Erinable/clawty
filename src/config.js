@@ -52,6 +52,21 @@ function readInt(name, fallback) {
   return Math.floor(n);
 }
 
+function readBoolean(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
 export function loadConfig() {
   const cwd = process.cwd();
   loadDotEnvIfExists(cwd);
@@ -75,6 +90,12 @@ export function loadConfig() {
     model: process.env.CLAWTY_MODEL || "gpt-4.1-mini",
     workspaceRoot,
     toolTimeoutMs: readInt("CLAWTY_TOOL_TIMEOUT_MS", 120_000),
-    maxToolIterations: readInt("CLAWTY_MAX_TOOL_ITERATIONS", 8)
+    maxToolIterations: readInt("CLAWTY_MAX_TOOL_ITERATIONS", 8),
+    lsp: {
+      enabled: readBoolean("CLAWTY_LSP_ENABLED", true),
+      timeoutMs: readInt("CLAWTY_LSP_TIMEOUT_MS", 5000),
+      maxResults: readInt("CLAWTY_LSP_MAX_RESULTS", 100),
+      tsCommand: process.env.CLAWTY_LSP_TS_CMD || "typescript-language-server --stdio"
+    }
   };
 }

@@ -9,6 +9,12 @@ import {
   queryCodeIndex,
   refreshCodeIndex
 } from "./code-index.js";
+import {
+  lspDefinition,
+  lspHealth,
+  lspReferences,
+  lspWorkspaceSymbols
+} from "./lsp-manager.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -269,6 +275,114 @@ export const TOOL_DEFINITIONS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    type: "function",
+    name: "lsp_definition",
+    description:
+      "Find symbol definition using LSP (TypeScript/JavaScript). Falls back to index search when LSP is unavailable.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to workspace root."
+        },
+        line: {
+          type: "integer",
+          description: "1-based line number.",
+          minimum: 1
+        },
+        column: {
+          type: "integer",
+          description: "1-based column number.",
+          minimum: 1
+        },
+        max_results: {
+          type: "integer",
+          description: "Optional maximum number of returned locations.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      required: ["path", "line", "column"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "lsp_references",
+    description:
+      "Find symbol references using LSP (TypeScript/JavaScript). Falls back to index search when LSP is unavailable.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to workspace root."
+        },
+        line: {
+          type: "integer",
+          description: "1-based line number.",
+          minimum: 1
+        },
+        column: {
+          type: "integer",
+          description: "1-based column number.",
+          minimum: 1
+        },
+        include_declaration: {
+          type: "boolean",
+          description: "Include declaration sites in references."
+        },
+        max_results: {
+          type: "integer",
+          description: "Optional maximum number of returned locations.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      required: ["path", "line", "column"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "lsp_workspace_symbols",
+    description:
+      "Search workspace symbols via LSP (TypeScript/JavaScript). Falls back to index search when LSP is unavailable.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Symbol query text."
+        },
+        max_results: {
+          type: "integer",
+          description: "Optional maximum number of returned symbols.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "lsp_health",
+    description: "Return LSP service health, lifecycle status, and recent errors.",
+    parameters: {
+      type: "object",
+      properties: {
+        startup_check: {
+          type: "boolean",
+          description: "When true, try to start LSP server before reporting health."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -386,6 +500,22 @@ async function getIndexStatsTool(args, context) {
   return getIndexStats(context.workspaceRoot, args);
 }
 
+async function lspDefinitionTool(args, context) {
+  return lspDefinition(context.workspaceRoot, args, context.lsp || {});
+}
+
+async function lspReferencesTool(args, context) {
+  return lspReferences(context.workspaceRoot, args, context.lsp || {});
+}
+
+async function lspWorkspaceSymbolsTool(args, context) {
+  return lspWorkspaceSymbols(context.workspaceRoot, args, context.lsp || {});
+}
+
+async function lspHealthTool(args, context) {
+  return lspHealth(context.workspaceRoot, args, context.lsp || {});
+}
+
 export async function runTool(name, args, context) {
   if (name === "read_file") {
     return readFileTool(args, context);
@@ -410,6 +540,18 @@ export async function runTool(name, args, context) {
   }
   if (name === "get_index_stats") {
     return getIndexStatsTool(args, context);
+  }
+  if (name === "lsp_definition") {
+    return lspDefinitionTool(args, context);
+  }
+  if (name === "lsp_references") {
+    return lspReferencesTool(args, context);
+  }
+  if (name === "lsp_workspace_symbols") {
+    return lspWorkspaceSymbolsTool(args, context);
+  }
+  if (name === "lsp_health") {
+    return lspHealthTool(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

@@ -4,6 +4,7 @@ import readline from "node:readline/promises";
 import process from "node:process";
 import { loadConfig } from "./config.js";
 import { runAgentTurn } from "./agent.js";
+import { shutdownAllLspClients } from "./lsp-manager.js";
 
 function printHelp() {
   console.log(
@@ -23,7 +24,9 @@ function printHelp() {
       "  OPENAI_API_KEY         Required",
       "  CLAWTY_MODEL           Optional (default: gpt-4.1-mini)",
       "  OPENAI_BASE_URL        Optional (default: https://api.openai.com/v1)",
-      "  CLAWTY_WORKSPACE_ROOT  Optional (default: current directory)"
+      "  CLAWTY_WORKSPACE_ROOT  Optional (default: current directory)",
+      "  CLAWTY_LSP_ENABLED     Optional (default: true)",
+      "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)"
     ].join("\n")
   );
 }
@@ -95,7 +98,22 @@ async function main() {
   await runTask(config, {}, args.join(" "));
 }
 
-main().catch((error) => {
-  console.error(error.message || String(error));
-  process.exit(1);
-});
+async function bootstrap() {
+  let exitCode = 0;
+  try {
+    await main();
+  } catch (error) {
+    console.error(error.message || String(error));
+    exitCode = 1;
+  } finally {
+    await shutdownAllLspClients().catch(() => {
+      // Ignore cleanup failures on process shutdown.
+    });
+  }
+
+  if (exitCode !== 0) {
+    process.exit(exitCode);
+  }
+}
+
+bootstrap();

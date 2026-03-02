@@ -6,6 +6,8 @@ const SYSTEM_PROMPT = [
   "Focus on software engineering tasks in the workspace.",
   "For repository exploration, build_code_index once, then use refresh_code_index + query_code_index.",
   "Use get_index_stats when you need index health or coverage details.",
+  "For semantic code navigation in TS/JS, use lsp_definition, lsp_references, and lsp_workspace_symbols.",
+  "Use lsp_health to diagnose language server problems.",
   "Before editing, inspect relevant files first.",
   "Prefer minimal, correct changes.",
   "For focused edits, prefer apply_patch over full-file overwrite.",
@@ -91,7 +93,8 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
         const args = parseArguments(call.arguments);
         result = await runTool(call.name, args, {
           workspaceRoot: config.workspaceRoot,
-          defaultTimeoutMs: config.toolTimeoutMs
+          defaultTimeoutMs: config.toolTimeoutMs,
+          lsp: config.lsp
         });
       } catch (error) {
         result = {
