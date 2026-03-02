@@ -7,6 +7,7 @@
 - `chat`：多轮对话模式
 - `run "<任务>"`：单次任务执行模式
 - `watch-index`：监听文件变更并自动刷新索引
+- `chat/run` 自动注入当前工作区 `changed_paths + git diff` 增量上下文（可配置开关）
 - 模型可调用本地工具：
   - `read_file`
   - `write_file`
@@ -254,6 +255,10 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_INDEX_FRESHNESS_WEIGHT`：freshness 融合权重（0-1），默认 `0.12`
 - `CLAWTY_INDEX_FRESHNESS_VECTOR_STALE_PENALTY`：stale vector 候选额外降权（0-1），默认 `0.25`
 - `CLAWTY_INDEX_FRESHNESS_MAX_PATHS`：每次 hybrid 查询采样文件路径上限，默认 `200`
+- `CLAWTY_AGENT_INCREMENTAL_CONTEXT_ENABLED`：是否自动注入 `changed_paths + git diff` 上下文，默认 `true`
+- `CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_PATHS`：每轮注入的变更路径上限，默认 `40`
+- `CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS`：每轮注入的 diff 文本上限，默认 `12000`
+- `CLAWTY_AGENT_INCREMENTAL_CONTEXT_TIMEOUT_MS`：采集 git 增量上下文的命令超时，默认 `3000`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`
 - `CLAWTY_WATCH_MAX_BATCH_SIZE`：watch 增量批大小，默认 `300`

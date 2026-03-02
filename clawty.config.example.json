@@ -32,5 +32,11 @@
     "topK": 15,
     "weight": 0.25,
     "timeoutMs": 15000
+  },
+  "agentContext": {
+    "incrementalContextEnabled": true,
+    "incrementalContextMaxPaths": 40,
+    "incrementalContextMaxDiffChars": 12000,
+    "incrementalContextTimeoutMs": 3000
   }
 }

@@ -44,6 +44,12 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           timeoutMs: 8000,
           maxResults: 33,
           tsCommand: "my-ts-lsp --stdio"
+        },
+        agentContext: {
+          incrementalContextEnabled: false,
+          incrementalContextMaxPaths: 12,
+          incrementalContextMaxDiffChars: 3200,
+          incrementalContextTimeoutMs: 2500
         }
       },
       null,
@@ -69,6 +75,10 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.lsp.timeoutMs, 8000);
   assert.equal(config.lsp.maxResults, 33);
   assert.equal(config.lsp.tsCommand, "my-ts-lsp --stdio");
+  assert.equal(config.agentContext.incrementalContextEnabled, false);
+  assert.equal(config.agentContext.incrementalContextMaxPaths, 12);
+  assert.equal(config.agentContext.incrementalContextMaxDiffChars, 3200);
+  assert.equal(config.agentContext.incrementalContextTimeoutMs, 2500);
   assert.ok(config.sources.configFile?.endsWith("clawty.config.json"));
 });
 
@@ -115,7 +125,8 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       OPENAI_API_KEY: "sk-from-env",
       CLAWTY_MODEL: "model-from-env",
       CLAWTY_TOOL_TIMEOUT_MS: "3333",
-      CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000"
+      CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000",
+      CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS: "9000"
     }
   });
 
@@ -123,6 +134,7 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.model, "model-from-env");
   assert.equal(config.toolTimeoutMs, 3333);
   assert.equal(config.index.freshnessStaleAfterMs, 123000);
+  assert.equal(config.agentContext.incrementalContextMaxDiffChars, 9000);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
 

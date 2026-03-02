@@ -301,6 +301,35 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const agentContext = {
+    incrementalContextEnabled: readBoolean(
+      env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_ENABLED ??
+        deepPick(fileConfig.data, ["agentContext", "incrementalContextEnabled"]),
+      true
+    ),
+    incrementalContextMaxPaths: readInt(
+      env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_PATHS ??
+        deepPick(fileConfig.data, ["agentContext", "incrementalContextMaxPaths"]),
+      40,
+      1,
+      500
+    ),
+    incrementalContextMaxDiffChars: readInt(
+      env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS ??
+        deepPick(fileConfig.data, ["agentContext", "incrementalContextMaxDiffChars"]),
+      12_000,
+      500,
+      200_000
+    ),
+    incrementalContextTimeoutMs: readInt(
+      env.CLAWTY_AGENT_INCREMENTAL_CONTEXT_TIMEOUT_MS ??
+        deepPick(fileConfig.data, ["agentContext", "incrementalContextTimeoutMs"]),
+      3000,
+      500,
+      20_000
+    )
+  };
+
   return {
     apiKey: apiKey || null,
     baseUrl,
@@ -311,6 +340,7 @@ export function loadConfig(options = {}) {
     lsp,
     index,
     embedding,
+    agentContext,
     sources: {
       cwd: rootDir,
       configFile: fileConfig.path,

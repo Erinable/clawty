@@ -14,10 +14,10 @@
 - P5-B 事件调度工程化（dirty queue + debounce + hash skip）：`fea9600`
 - P6 离线向量索引（base+delta + watch 可选增量 + 混合检索接入）：已完成
 - P7-A 查询新鲜度融合（`freshness_score` + stale vector 降权 + 观测指标）：已完成
+- P7-B Agent 增量上下文注入（`changed_paths + git diff`）：已完成
 
 当前主要缺口：
 
-- Agent 侧“增量上下文优先”（`changed_paths + git diff`）尚未系统化接入。
 - 大仓库扩展能力（分片 + 快照原子切换）仍未落地。
 
 ## 核心原则
@@ -81,7 +81,7 @@
 
 - 在 `query_hybrid_index` 引入 `freshness_score` 与 stale 降权。（已完成）
 - stale embedding/vector 候选自动降权；缺失时回退 lexical/graph。（已完成查询层）
-- Agent 每轮优先注入 `changed_paths + git diff`，索引补充证据。
+- Agent 每轮优先注入 `changed_paths + git diff`，索引补充证据。（已完成）
 
 验收标准：
 
