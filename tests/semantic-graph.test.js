@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSemanticGraph,
+  refreshSemanticGraph,
   importPreciseIndex,
   getSemanticGraphStats,
   querySemanticGraph
 } from "../src/semantic-graph.js";
-import { buildCodeIndex } from "../src/code-index.js";
-import { buildSyntaxIndex } from "../src/syntax-index.js";
+import { buildCodeIndex, refreshCodeIndex } from "../src/code-index.js";
+import { buildSyntaxIndex, refreshSyntaxIndex } from "../src/syntax-index.js";
 import {
   createWorkspace,
   removeWorkspace,
@@ -23,6 +24,12 @@ test("buildSemanticGraph reports clear error when code index is missing", async 
   const result = await buildSemanticGraph(workspaceRoot, {}, { enabled: false });
   assert.equal(result.ok, false);
   assert.match(String(result.error), /build_code_index/i);
+
+  const refreshed = await refreshSemanticGraph(workspaceRoot, {
+    changed_paths: ["src/missing.ts"]
+  });
+  assert.equal(refreshed.ok, false);
+  assert.match(String(refreshed.error), /build_code_index/i);
 });
 
 test("buildSemanticGraph creates seed graph and querySemanticGraph returns node matches", async (t) => {
@@ -139,6 +146,98 @@ test("buildSemanticGraph ingests syntax import/call edges when syntax index exis
       (item) => item.edge_type === "call" && item.node.name === "syntaxBar"
     )
   );
+});
+
+test("refreshSemanticGraph updates changed/deleted paths in event mode", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-main.ts",
+    "import { refreshDep } from './refresh-dep';\nexport function refreshOldToken() { return refreshDep(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-dep.ts",
+    "export function refreshDep() { return true; }\n"
+  );
+
+  const indexed = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(indexed.ok, true);
+  const syntaxBuilt = await buildSyntaxIndex(workspaceRoot, {});
+  assert.equal(syntaxBuilt.ok, true);
+
+  const built = await buildSemanticGraph(
+    workspaceRoot,
+    {
+      max_symbols: 80,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true,
+      precise_preferred: false
+    },
+    { enabled: false }
+  );
+  assert.equal(built.ok, true);
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-main.ts",
+    "import { refreshDepV2 } from './refresh-dep-v2';\nexport function refreshNewToken() { return refreshDepV2(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/refresh-dep-v2.ts",
+    "export function refreshDepV2() { return true; }\n"
+  );
+
+  const refreshedCode = await refreshCodeIndex(workspaceRoot, {
+    changed_paths: ["src/refresh-main.ts", "src/refresh-dep-v2.ts"],
+    deleted_paths: ["src/refresh-dep.ts"]
+  });
+  assert.equal(refreshedCode.ok, true);
+  assert.equal(refreshedCode.mode, "event");
+
+  const refreshedSyntax = await refreshSyntaxIndex(workspaceRoot, {
+    changed_paths: ["src/refresh-main.ts", "src/refresh-dep-v2.ts"],
+    deleted_paths: ["src/refresh-dep.ts"]
+  });
+  assert.equal(refreshedSyntax.ok, true);
+  assert.equal(refreshedSyntax.mode, "event");
+
+  const refreshedGraph = await refreshSemanticGraph(
+    workspaceRoot,
+    {
+      changed_paths: ["src/refresh-main.ts", "src/refresh-dep-v2.ts"],
+      deleted_paths: ["src/refresh-dep.ts"],
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true
+    },
+    { enabled: false }
+  );
+  assert.equal(refreshedGraph.ok, true);
+  assert.equal(refreshedGraph.mode, "event");
+  assert.ok(refreshedGraph.parsed_files >= 1);
+  assert.ok(Array.isArray(refreshedGraph.changed_paths));
+  assert.ok(refreshedGraph.changed_paths.includes("src/refresh-main.ts"));
+
+  const queryNew = await querySemanticGraph(workspaceRoot, {
+    query: "refreshNewToken",
+    top_k: 5
+  });
+  assert.equal(queryNew.ok, true);
+  assert.ok(queryNew.seeds.some((seed) => seed.name === "refreshNewToken"));
+
+  const queryOld = await querySemanticGraph(workspaceRoot, {
+    query: "refreshOldToken",
+    top_k: 5
+  });
+  assert.equal(queryOld.ok, true);
+  assert.equal(queryOld.seeds.some((seed) => seed.name === "refreshOldToken"), false);
 });
 
 test("buildSemanticGraph ingests LSP facts when provider is available", async (t) => {

@@ -104,6 +104,24 @@ function resolveSafePath(workspaceRoot, inputPath) {
   return fullPath;
 }
 
+function normalizeRelativePath(workspaceRoot, inputPath) {
+  return toPosixPath(path.relative(workspaceRoot, resolveSafePath(workspaceRoot, inputPath)));
+}
+
+function parsePathList(workspaceRoot, value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const deduped = new Set();
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      continue;
+    }
+    deduped.add(normalizeRelativePath(workspaceRoot, item.trim()));
+  }
+  return Array.from(deduped);
+}
+
 function indexDbPath(workspaceRoot) {
   return path.join(workspaceRoot, INDEX_DIR, INDEX_DB_FILENAME);
 }
@@ -320,12 +338,35 @@ function buildStatements(db) {
       ORDER BY s.file_path ASC, s.start_line ASC, s.name ASC
       LIMIT ?
     `),
+    selectSeedSymbolsByPath: db.prepare(`
+      SELECT s.file_path AS path, s.name, s.kind, s.start_line AS line, f.lang
+      FROM symbols s
+      JOIN files f ON f.path = s.file_path
+      WHERE s.file_path = ? AND f.lang = 'javascript'
+      ORDER BY s.start_line ASC, s.name ASC
+    `),
+    selectIndexFileByPath: db.prepare(`
+      SELECT path, lang
+      FROM files
+      WHERE path = ?
+      LIMIT 1
+    `),
     insertNode: db.prepare(`
       INSERT OR IGNORE INTO semantic_nodes(path, name, name_lc, kind, line, column, lang, source, stable_key)
       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
+    deleteSeedAndAnchorNodesByPath: db.prepare(`
+      DELETE FROM semantic_nodes
+      WHERE path = ? AND source IN ('index_seed', 'lsp_anchor')
+    `),
     selectNodeIdByStableKey: db.prepare(`
       SELECT id FROM semantic_nodes WHERE stable_key = ?
+    `),
+    selectSeedNodes: db.prepare(`
+      SELECT id, path, name, kind, line, column, lang, source, stable_key
+      FROM semantic_nodes
+      WHERE source = 'index_seed'
+      ORDER BY path ASC, line ASC, id ASC
     `),
     selectNearestNodeByPathLine: db.prepare(`
       SELECT id, line
@@ -341,8 +382,17 @@ function buildStatements(db) {
     countNodes: db.prepare(`
       SELECT COUNT(*) AS count FROM semantic_nodes
     `),
+    countSeedNodes: db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM semantic_nodes
+      WHERE source = 'index_seed'
+    `),
     countEdges: db.prepare(`
       SELECT COUNT(*) AS count FROM semantic_edges
+    `),
+    deleteEdgesBySource: db.prepare(`
+      DELETE FROM semantic_edges
+      WHERE source = ?
     `),
     edgeTypeCounts: db.prepare(`
       SELECT edge_type, COUNT(*) AS count
@@ -458,6 +508,43 @@ function buildStatements(db) {
       ORDER BY e.edge_type ASC, n.path ASC, n.line ASC
       LIMIT ?
     `)
+  };
+}
+
+function insertIndexSeedNode(statements, row) {
+  const baseNode = {
+    path: row.path,
+    name: row.name,
+    kind: row.kind || "symbol",
+    line: Number(row.line || 1),
+    column: 1,
+    lang: row.lang || inferLangFromPath(row.path),
+    source: "index_seed"
+  };
+  const stableKey = makeSymbolStableKey(baseNode);
+  const insertResult = statements.insertNode.run(
+    baseNode.path,
+    baseNode.name,
+    String(baseNode.name || "").toLowerCase(),
+    baseNode.kind,
+    baseNode.line,
+    baseNode.column,
+    baseNode.lang,
+    baseNode.source,
+    stableKey
+  );
+  let nodeId = Number(insertResult.lastInsertRowid || 0);
+  if (nodeId <= 0) {
+    const existing = statements.selectNodeIdByStableKey.get(stableKey);
+    nodeId = Number(existing?.id || 0);
+  }
+  if (nodeId <= 0) {
+    return null;
+  }
+  return {
+    id: nodeId,
+    ...baseNode,
+    stable_key: stableKey
   };
 }
 
@@ -1295,41 +1382,10 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
       clearSemanticGraph(db);
 
       for (const row of seedRows) {
-        const baseNode = {
-          path: row.path,
-          name: row.name,
-          kind: row.kind || "symbol",
-          line: Number(row.line || 1),
-          column: 1,
-          lang: row.lang || inferLangFromPath(row.path),
-          source: "index_seed"
-        };
-        const stableKey = makeSymbolStableKey(baseNode);
-        const insertResult = statements.insertNode.run(
-          baseNode.path,
-          baseNode.name,
-          String(baseNode.name || "").toLowerCase(),
-          baseNode.kind,
-          baseNode.line,
-          baseNode.column,
-          baseNode.lang,
-          baseNode.source,
-          stableKey
-        );
-        let nodeId = Number(insertResult.lastInsertRowid || 0);
-        if (nodeId <= 0) {
-          const existing = statements.selectNodeIdByStableKey.get(stableKey);
-          nodeId = Number(existing?.id || 0);
-        }
-        if (nodeId <= 0) {
+        const node = insertIndexSeedNode(statements, row);
+        if (!node) {
           continue;
         }
-
-        const node = {
-          id: nodeId,
-          ...baseNode,
-          stable_key: stableKey
-        };
         seededNodes.push(node);
         pushNodeToPathMap(pathMap, node);
       }
@@ -1584,6 +1640,434 @@ export async function buildSemanticGraph(workspaceRoot, args = {}, lspInput = {}
         fallback_used: true,
         precise: preciseAttempt
       }
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export async function refreshSemanticGraph(workspaceRoot, args = {}, lspInput = {}, internal = {}) {
+  const indexExists = await checkIndexExists(workspaceRoot);
+  if (!indexExists) {
+    return {
+      ok: false,
+      error: "code index not found; run build_code_index first"
+    };
+  }
+
+  const changedPaths = parsePathList(workspaceRoot, args.changed_paths);
+  const deletedPaths = parsePathList(workspaceRoot, args.deleted_paths);
+  const eventMode = changedPaths.length > 0 || deletedPaths.length > 0;
+
+  const refreshArgs = { ...args };
+  if (typeof refreshArgs.precise_preferred === "undefined") {
+    refreshArgs.precise_preferred = false;
+  }
+
+  if (!eventMode) {
+    const fallback = await buildSemanticGraph(workspaceRoot, refreshArgs, lspInput, internal);
+    if (!fallback.ok) {
+      return fallback;
+    }
+    return {
+      ...fallback,
+      mode: "full_fallback",
+      changed_paths: [],
+      deleted_paths: []
+    };
+  }
+
+  const config = resolveConfig(refreshArgs);
+  if (config.precise_preferred || config.precise_required) {
+    const fallback = await buildSemanticGraph(workspaceRoot, refreshArgs, lspInput, internal);
+    if (!fallback.ok) {
+      return fallback;
+    }
+    return {
+      ...fallback,
+      mode: "full_precise_fallback",
+      changed_paths: changedPaths,
+      deleted_paths: deletedPaths
+    };
+  }
+
+  const lspApi = {
+    lspHealth: internal?.lspApi?.lspHealth || lspHealth,
+    lspDefinition: internal?.lspApi?.lspDefinition || lspDefinition,
+    lspReferences: internal?.lspApi?.lspReferences || lspReferences
+  };
+
+  const startedAt = new Date().toISOString();
+  const db = openDb(workspaceRoot);
+  ensureSemanticSchema(db);
+  const statements = buildStatements(db);
+
+  let lspHealthSnapshot = null;
+  try {
+    lspHealthSnapshot = await lspApi.lspHealth(workspaceRoot, { startup_check: true }, lspInput);
+  } catch (error) {
+    lspHealthSnapshot = {
+      ok: false,
+      enabled: false,
+      error: error.message || String(error)
+    };
+  }
+  const lspAvailable = resolveLspAvailability(lspHealthSnapshot);
+  if (config.lsp_required && !lspAvailable) {
+    db.close();
+    return {
+      ok: false,
+      error: "LSP is required but unavailable",
+      mode: "event",
+      changed_paths: changedPaths,
+      deleted_paths: deletedPaths,
+      lsp: {
+        available: false,
+        health: lspHealthSnapshot
+      }
+    };
+  }
+
+  let scannedSymbols = 0;
+  let parsedFiles = 0;
+  let removedFiles = 0;
+  let skippedFiles = 0;
+  let lspEnrichedSymbols = 0;
+  let lspErrorCount = 0;
+  let definitionEdgeCount = 0;
+  let referenceEdgeCount = 0;
+  let syntaxImportEdgeCount = 0;
+  let syntaxCallEdgeCount = 0;
+  let anchorNodeCount = 0;
+  let syntaxSummary = {
+    enabled: Boolean(config.include_syntax),
+    available: false,
+    import_edges: 0,
+    call_edges: 0,
+    reused_edges: 0,
+    skipped_edges: 0,
+    reason: config.include_syntax ? "syntax index tables not found" : "disabled",
+    error: null
+  };
+
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      const affectedPaths = new Set([...changedPaths, ...deletedPaths]);
+      for (const filePath of affectedPaths) {
+        const deleteResult = statements.deleteSeedAndAnchorNodesByPath.run(filePath);
+        if (Number(deleteResult.changes || 0) > 0) {
+          removedFiles += 1;
+        }
+      }
+
+      const parseCandidates = [];
+      for (const filePath of changedPaths) {
+        const indexFile = statements.selectIndexFileByPath.get(filePath);
+        if (!indexFile || indexFile.lang !== "javascript") {
+          continue;
+        }
+        parseCandidates.push(indexFile.path);
+      }
+
+      const changedSeedNodes = [];
+      for (let idx = 0; idx < parseCandidates.length; idx += 1) {
+        if (scannedSymbols >= config.max_symbols) {
+          skippedFiles += parseCandidates.length - idx;
+          break;
+        }
+        const filePath = parseCandidates[idx];
+        parsedFiles += 1;
+        const symbolRows = statements.selectSeedSymbolsByPath.all(filePath);
+        for (const row of symbolRows) {
+          if (scannedSymbols >= config.max_symbols) {
+            break;
+          }
+          scannedSymbols += 1;
+          const node = insertIndexSeedNode(statements, row);
+          if (node) {
+            changedSeedNodes.push(node);
+          }
+        }
+      }
+
+      const seededNodes = statements.selectSeedNodes.all().map((row) => ({
+        id: Number(row.id || 0),
+        path: row.path,
+        name: row.name,
+        kind: row.kind || "symbol",
+        line: Number(row.line || 1),
+        column: Number(row.column || 1),
+        lang: row.lang || inferLangFromPath(row.path),
+        source: row.source || "index_seed",
+        stable_key: row.stable_key
+      }));
+      const pathMap = new Map();
+      for (const node of seededNodes) {
+        pushNodeToPathMap(pathMap, node);
+      }
+      const anchorMap = new Map();
+
+      const createAnchorNode = (pathValue, line, column) => {
+        const stableKey = makeAnchorStableKey(pathValue, line, column);
+        if (anchorMap.has(stableKey)) {
+          return anchorMap.get(stableKey);
+        }
+
+        const insertResult = statements.insertNode.run(
+          pathValue,
+          `@${path.basename(pathValue)}:${line}`,
+          `@${path.basename(pathValue).toLowerCase()}:${line}`,
+          "location",
+          line,
+          column,
+          inferLangFromPath(pathValue),
+          "lsp_anchor",
+          stableKey
+        );
+        let nodeId = Number(insertResult.lastInsertRowid || 0);
+        if (nodeId <= 0) {
+          const existing = statements.selectNodeIdByStableKey.get(stableKey);
+          nodeId = Number(existing?.id || 0);
+        }
+        if (nodeId <= 0) {
+          return null;
+        }
+        if (Number(insertResult.changes || 0) > 0) {
+          anchorNodeCount += 1;
+        }
+        anchorMap.set(stableKey, nodeId);
+        pushNodeToPathMap(pathMap, {
+          id: nodeId,
+          path: pathValue,
+          name: `@${path.basename(pathValue)}:${line}`,
+          kind: "location",
+          line,
+          column,
+          lang: inferLangFromPath(pathValue),
+          source: "lsp_anchor",
+          stable_key: stableKey
+        });
+        return nodeId;
+      };
+
+      const resolveLocationNodeId = (location) => {
+        const targetPath = normalizeGraphPath(workspaceRoot, location?.path);
+        if (!targetPath) {
+          return null;
+        }
+        const line = Math.max(1, Number(location?.line || 1));
+        const column = Math.max(1, Number(location?.column || 1));
+        const closestId = findClosestNodeId(pathMap, targetPath, line);
+        if (closestId) {
+          return closestId;
+        }
+        return createAnchorNode(targetPath, line, column);
+      };
+
+      if (config.include_syntax) {
+        try {
+          statements.deleteEdgesBySource.run("syntax");
+          syntaxSummary = ingestSyntaxEdges({
+            db,
+            statements,
+            pathMap,
+            seededNodes,
+            config
+          });
+          syntaxImportEdgeCount = Number(syntaxSummary.import_edges || 0);
+          syntaxCallEdgeCount = Number(syntaxSummary.call_edges || 0);
+        } catch (error) {
+          syntaxSummary = {
+            ...syntaxSummary,
+            available: false,
+            reason: "syntax edge ingest failed",
+            error: error.message || String(error)
+          };
+        }
+      }
+
+      if (lspAvailable) {
+        for (const node of changedSeedNodes) {
+          if (lspErrorCount >= config.max_lsp_errors) {
+            break;
+          }
+
+          let enriched = false;
+          const queryArgs = {
+            path: node.path,
+            line: node.line,
+            column: node.column,
+            max_results: config.max_references_per_symbol
+          };
+
+          if (config.include_definitions) {
+            try {
+              const definitionResult = await lspApi.lspDefinition(
+                workspaceRoot,
+                { ...queryArgs, max_results: 1 },
+                lspInput
+              );
+              if (
+                definitionResult?.ok &&
+                definitionResult.provider === "lsp" &&
+                Array.isArray(definitionResult.locations)
+              ) {
+                for (const location of definitionResult.locations.slice(0, 1)) {
+                  const targetNodeId = resolveLocationNodeId(location);
+                  if (!targetNodeId) {
+                    continue;
+                  }
+                  const edgeInsert = statements.insertEdge.run(
+                    node.id,
+                    targetNodeId,
+                    "definition",
+                    "lsp",
+                    4
+                  );
+                  if (Number(edgeInsert.changes || 0) > 0) {
+                    definitionEdgeCount += 1;
+                    enriched = true;
+                  }
+                }
+              }
+            } catch {
+              lspErrorCount += 1;
+            }
+          }
+
+          if (config.include_references && lspErrorCount < config.max_lsp_errors) {
+            try {
+              const referencesResult = await lspApi.lspReferences(
+                workspaceRoot,
+                {
+                  ...queryArgs,
+                  include_declaration: false,
+                  max_results: config.max_references_per_symbol
+                },
+                lspInput
+              );
+              if (
+                referencesResult?.ok &&
+                referencesResult.provider === "lsp" &&
+                Array.isArray(referencesResult.locations)
+              ) {
+                for (const location of referencesResult.locations) {
+                  const targetNodeId = resolveLocationNodeId(location);
+                  if (!targetNodeId) {
+                    continue;
+                  }
+                  const edgeInsert = statements.insertEdge.run(
+                    node.id,
+                    targetNodeId,
+                    "reference",
+                    "lsp",
+                    1
+                  );
+                  if (Number(edgeInsert.changes || 0) > 0) {
+                    referenceEdgeCount += 1;
+                    enriched = true;
+                  }
+                }
+              }
+            } catch {
+              lspErrorCount += 1;
+            }
+          }
+
+          if (enriched) {
+            lspEnrichedSymbols += 1;
+          }
+        }
+      }
+
+      const seededNodeTotal = Number(statements.countSeedNodes.get().count || 0);
+      const nodeCount = Number(statements.countNodes.get().count || 0);
+      const edgeCount = Number(statements.countEdges.get().count || 0);
+      const completedAt = new Date().toISOString();
+      statements.insertRun.run(
+        startedAt,
+        completedAt,
+        "event",
+        scannedSymbols,
+        seededNodeTotal,
+        nodeCount,
+        edgeCount,
+        lspAvailable ? 1 : 0,
+        lspEnrichedSymbols,
+        lspErrorCount,
+        JSON.stringify({
+          ...config,
+          changed_paths: changedPaths,
+          deleted_paths: deletedPaths
+        }),
+        null
+      );
+
+      db.exec("COMMIT;");
+      return {
+        ok: true,
+        mode: "event",
+        index_path: toPosixPath(path.relative(workspaceRoot, indexDbPath(workspaceRoot))),
+        changed_paths: changedPaths,
+        deleted_paths: deletedPaths,
+        parsed_files: parsedFiles,
+        removed_files: removedFiles,
+        skipped_files: skippedFiles,
+        scanned_symbols: scannedSymbols,
+        seeded_nodes: seededNodeTotal,
+        anchor_nodes: anchorNodeCount,
+        total_nodes: nodeCount,
+        total_edges: edgeCount,
+        edge_counts: {
+          import: syntaxImportEdgeCount,
+          call: syntaxCallEdgeCount,
+          definition: definitionEdgeCount,
+          reference: referenceEdgeCount
+        },
+        syntax: syntaxSummary,
+        lsp: {
+          available: lspAvailable,
+          enriched_symbols: lspEnrichedSymbols,
+          error_count: lspErrorCount,
+          health: lspHealthSnapshot
+        },
+        config
+      };
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      throw error;
+    }
+  } catch (error) {
+    const completedAt = new Date().toISOString();
+    const seededNodeTotal = Number(statements.countSeedNodes.get().count || 0);
+    const nodeCount = Number(statements.countNodes.get().count || 0);
+    const edgeCount = Number(statements.countEdges.get().count || 0);
+    statements.insertRun.run(
+      startedAt,
+      completedAt,
+      "error_event",
+      scannedSymbols,
+      seededNodeTotal,
+      nodeCount,
+      edgeCount,
+      lspAvailable ? 1 : 0,
+      lspEnrichedSymbols,
+      lspErrorCount,
+      JSON.stringify({
+        ...config,
+        changed_paths: changedPaths,
+        deleted_paths: deletedPaths
+      }),
+      error.message || String(error)
+    );
+    return {
+      ok: false,
+      error: error.message || String(error),
+      mode: "event",
+      changed_paths: changedPaths,
+      deleted_paths: deletedPaths,
+      syntax: syntaxSummary
     };
   } finally {
     db.close();

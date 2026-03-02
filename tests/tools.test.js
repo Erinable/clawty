@@ -291,6 +291,45 @@ test("semantic graph tools are callable through runTool", async (t) => {
 
   await writeWorkspaceFile(
     workspaceRoot,
+    "src/semantic-a.ts",
+    "import { semanticB2 } from './semantic-b2';\nexport function semanticA2() { return semanticB2(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/semantic-b2.ts",
+    "export function semanticB2() { return true; }\n"
+  );
+  const refreshedCode = await runTool(
+    "refresh_code_index",
+    { changed_paths: ["src/semantic-a.ts", "src/semantic-b2.ts"], deleted_paths: ["src/semantic-b.ts"] },
+    context
+  );
+  assert.equal(refreshedCode.ok, true);
+  assert.equal(refreshedCode.mode, "event");
+
+  const refreshedSyntax = await runTool(
+    "refresh_syntax_index",
+    { changed_paths: ["src/semantic-a.ts", "src/semantic-b2.ts"], deleted_paths: ["src/semantic-b.ts"] },
+    context
+  );
+  assert.equal(refreshedSyntax.ok, true);
+
+  const refreshedGraph = await runTool(
+    "refresh_semantic_graph",
+    {
+      changed_paths: ["src/semantic-a.ts", "src/semantic-b2.ts"],
+      deleted_paths: ["src/semantic-b.ts"],
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true
+    },
+    context
+  );
+  assert.equal(refreshedGraph.ok, true);
+  assert.equal(refreshedGraph.mode, "event");
+
+  await writeWorkspaceFile(
+    workspaceRoot,
     "artifacts/scip.normalized.json",
     JSON.stringify(
       {

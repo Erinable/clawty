@@ -20,6 +20,7 @@
   - `query_syntax_index`
   - `get_syntax_index_stats`
   - `build_semantic_graph`
+  - `refresh_semantic_graph`
   - `import_precise_index`
   - `query_semantic_graph`
   - `get_semantic_graph_stats`
@@ -106,6 +107,7 @@ npm run bench:graph:check
 - “代码改完后刷新 syntax index（changed_paths: [src/a.js]）并返回最新 stats”
 - “查询 syntax index（query: syntaxMain）并返回结构邻居”
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
+- “代码改完后刷新 semantic graph（changed_paths/deleted_paths）再查多跳邻居”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
@@ -119,6 +121,7 @@ npm run bench:graph:check
 `query_syntax_index` 按 symbol/path 关键词返回结构邻居（outgoing imports/calls、incoming importers/callers）。
 `get_syntax_index_stats` 返回语法索引规模、Top callers、Top imported targets 及最近一次构建信息。
 `build_semantic_graph` 会基于索引符号构建语义节点，并在 LSP 可用时补充 definition/reference 边；`query_semantic_graph` 可查看图邻居用于多跳推理。
+`refresh_semantic_graph` 支持事件模式增量刷新（`changed_paths` / `deleted_paths`）；未提供事件路径时会回退全量构建。
 当 syntax index 可用时，`build_semantic_graph` 会自动摄取 syntax import/call 边（`source=syntax`）作为结构先验。
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。

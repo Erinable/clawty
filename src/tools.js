@@ -11,6 +11,7 @@ import {
 } from "./code-index.js";
 import {
   buildSemanticGraph,
+  refreshSemanticGraph,
   importPreciseIndex,
   getSemanticGraphStats,
   querySemanticGraph
@@ -383,6 +384,112 @@ export const TOOL_DEFINITIONS = [
         precise_max_edges: {
           type: "integer",
           description: "Maximum precise edges imported in preferred mode.",
+          minimum: 1,
+          maximum: 1000000
+        },
+        max_lsp_errors: {
+          type: "integer",
+          description: "Abort LSP enrichment after this many request errors.",
+          minimum: 1,
+          maximum: 200
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "refresh_semantic_graph",
+    description:
+      "Refresh semantic graph incrementally using changed_paths/deleted_paths. Falls back to full build when event paths are not provided.",
+    parameters: {
+      type: "object",
+      properties: {
+        changed_paths: {
+          type: "array",
+          description: "Optional changed file paths relative to workspace root.",
+          items: { type: "string" }
+        },
+        deleted_paths: {
+          type: "array",
+          description: "Optional deleted file paths relative to workspace root.",
+          items: { type: "string" }
+        },
+        max_symbols: {
+          type: "integer",
+          description: "Maximum number of changed-path seed symbols loaded from code index.",
+          minimum: 1,
+          maximum: 5000
+        },
+        max_references_per_symbol: {
+          type: "integer",
+          description: "Maximum reference locations collected per changed seed symbol.",
+          minimum: 1,
+          maximum: 200
+        },
+        include_definitions: {
+          type: "boolean",
+          description: "Collect definition edges from LSP."
+        },
+        include_references: {
+          type: "boolean",
+          description: "Collect reference edges from LSP."
+        },
+        include_syntax: {
+          type: "boolean",
+          description: "Rebuild syntax-derived semantic edges."
+        },
+        lsp_required: {
+          type: "boolean",
+          description: "Fail refresh if LSP is unavailable."
+        },
+        max_syntax_import_edges: {
+          type: "integer",
+          description: "Maximum syntax import edges ingested per refresh.",
+          minimum: 1,
+          maximum: 200000
+        },
+        max_syntax_call_edges: {
+          type: "integer",
+          description: "Maximum syntax call edges ingested per refresh.",
+          minimum: 1,
+          maximum: 200000
+        },
+        precise_preferred: {
+          type: "boolean",
+          description: "When true, refresh may fallback to full precise build."
+        },
+        precise_required: {
+          type: "boolean",
+          description: "Require precise import; refresh falls back to full precise mode."
+        },
+        precise_index_path: {
+          type: "string",
+          description: "Optional primary precise index path."
+        },
+        precise_index_paths: {
+          type: "array",
+          description: "Optional precise index candidate paths, checked in order.",
+          items: { type: "string" }
+        },
+        precise_mode: {
+          type: "string",
+          description: "Precise import mode when precise index is found.",
+          enum: ["merge", "replace"]
+        },
+        precise_source: {
+          type: "string",
+          description: "Precise source label, default scip."
+        },
+        precise_max_nodes: {
+          type: "integer",
+          description: "Maximum precise nodes imported in fallback precise mode.",
+          minimum: 1,
+          maximum: 500000
+        },
+        precise_max_edges: {
+          type: "integer",
+          description: "Maximum precise edges imported in fallback precise mode.",
           minimum: 1,
           maximum: 1000000
         },
@@ -881,6 +988,10 @@ async function buildSemanticGraphTool(args, context) {
   return buildSemanticGraph(context.workspaceRoot, args, context.lsp || {});
 }
 
+async function refreshSemanticGraphTool(args, context) {
+  return refreshSemanticGraph(context.workspaceRoot, args, context.lsp || {});
+}
+
 async function importPreciseIndexTool(args, context) {
   return importPreciseIndex(context.workspaceRoot, args);
 }
@@ -1126,6 +1237,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "build_semantic_graph") {
     return buildSemanticGraphTool(args, context);
+  }
+  if (name === "refresh_semantic_graph") {
+    return refreshSemanticGraphTool(args, context);
   }
   if (name === "import_precise_index") {
     return importPreciseIndexTool(args, context);
