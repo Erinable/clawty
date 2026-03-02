@@ -15,6 +15,8 @@
 - P6 离线向量索引（base+delta + watch 可选增量 + 混合检索接入）：已完成
 - P7-A 查询新鲜度融合（`freshness_score` + stale vector 降权 + 观测指标）：已完成
 - P7-B Agent 增量上下文注入（`changed_paths + git diff`）：已完成
+- P9-M1 Hybrid 查询 KPI 落盘（`hybrid-query.jsonl` + 降级事件）：已完成
+- P9-M2 Watch Flush KPI 落盘 + 报表脚本（`watch-flush.jsonl` + `metrics-report`）：已完成
 
 当前主要缺口：
 
@@ -102,11 +104,16 @@
 
 目标：把“效果、性能、成本”固化为可持续门禁。
 
-核心任务：
+已完成：
 
-- 增加 hybrid+embedding 评测集（Recall@K/MRR/nDCG）。
-- CI 加入新鲜度与延迟回归门禁。
-- 建立降级 runbook（timeout/network/api/error_code 分流）。
+- M1：hybrid 查询 KPI 与降级事件落盘（支撑 `query_hybrid_p95_ms` / `stale_hit_rate_avg` / `degrade_rate`）。
+- M2：watch flush 指标落盘 + 统一报表（支撑 `code_index_lag_p95_ms`）。
+
+后续核心任务：
+
+- M3：增加 `metrics-check` 阈值门禁（SLO 失败即非零退出）。
+- M4：补充 hybrid+embedding 评测集（Recall@K/MRR/nDCG）。
+- M5：建立降级 runbook（timeout/network/api/error_code 分流）。
 
 ## 执行节奏（建议）
 

@@ -15,6 +15,11 @@ const MAX_WATCH_MAX_FILES = 50_000;
 const MAX_WATCH_MAX_BATCH_SIZE = 5000;
 const MAX_WATCH_HASH_INIT_MAX_FILES = 100_000;
 const MTIME_EPSILON_MS = 1;
+const METRICS_SUBDIR = path.join(".clawty", "metrics");
+const WATCH_FLUSH_METRICS_FILE = "watch-flush.jsonl";
+const WATCH_RUN_METRICS_FILE = "watch-run.jsonl";
+const DEFAULT_METRICS_ENABLED = true;
+const DEFAULT_METRICS_PERSIST_WATCH = true;
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -121,6 +126,7 @@ export function shouldTrackPath(relativePath) {
 }
 
 export function resolveWatchConfig(args = {}) {
+  const metricsInput = args.metrics && typeof args.metrics === "object" ? args.metrics : {};
   return {
     interval_ms: parsePositiveInt(
       args.interval_ms ?? process.env.CLAWTY_WATCH_INTERVAL_MS,
@@ -182,7 +188,17 @@ export function resolveWatchConfig(args = {}) {
       false
     ),
     quiet: parseBoolean(args.quiet ?? process.env.CLAWTY_WATCH_QUIET, false),
-    embedding: args.embedding && typeof args.embedding === "object" ? args.embedding : {}
+    embedding: args.embedding && typeof args.embedding === "object" ? args.embedding : {},
+    metrics: {
+      enabled: parseBoolean(
+        metricsInput.enabled ?? process.env.CLAWTY_METRICS_ENABLED,
+        DEFAULT_METRICS_ENABLED
+      ),
+      persist_watch: parseBoolean(
+        metricsInput.persistWatch ?? process.env.CLAWTY_METRICS_PERSIST_WATCH,
+        DEFAULT_METRICS_PERSIST_WATCH
+      )
+    }
   };
 }
 
@@ -787,6 +803,33 @@ function formatLoopMessage(message, config) {
   console.log(`[watch-index][${stamp}] ${message}`);
 }
 
+function roundWatchMetric(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Number(numeric.toFixed(3));
+}
+
+async function appendWatchMetricEvent(workspaceRoot, config, fileName, event) {
+  const metrics = config?.metrics || {};
+  if (!metrics.enabled || !metrics.persist_watch) {
+    return;
+  }
+
+  try {
+    const metricsDir = path.join(workspaceRoot, METRICS_SUBDIR);
+    await fs.mkdir(metricsDir, { recursive: true });
+    await fs.appendFile(
+      path.join(metricsDir, fileName),
+      `${JSON.stringify(event)}\n`,
+      "utf8"
+    );
+  } catch {
+    // Metrics persistence is best-effort and must not block indexing.
+  }
+}
+
 async function sleep(ms) {
   await new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -841,6 +884,20 @@ async function flushDirtyQueue(workspaceRoot, config, queueState, metrics, optio
         ].join(" "),
         config
       );
+      await appendWatchMetricEvent(workspaceRoot, config, WATCH_FLUSH_METRICS_FILE, {
+        timestamp: new Date().toISOString(),
+        event_type: "watch_flush",
+        ok: false,
+        stage: refreshed.stage || null,
+        error: refreshed.error || "refresh failed",
+        batch_size: Number(batch.batch_size || 0),
+        changed_count: Number(batch.changed_paths.length || 0),
+        deleted_count: Number(batch.deleted_paths.length || 0),
+        queue_depth_before: Number(batch.queue_depth_before || 0),
+        queue_depth_after: Number(metrics.queue_depth || 0),
+        index_lag_ms: Number(batch.index_lag_ms || 0),
+        refresh_ms: roundWatchMetric(refreshMs)
+      });
       break;
     }
 
@@ -861,6 +918,20 @@ async function flushDirtyQueue(workspaceRoot, config, queueState, metrics, optio
       ].join(" "),
       config
     );
+    await appendWatchMetricEvent(workspaceRoot, config, WATCH_FLUSH_METRICS_FILE, {
+      timestamp: new Date().toISOString(),
+      event_type: "watch_flush",
+      ok: true,
+      stage: "refresh_indexes",
+      error: null,
+      batch_size: Number(batch.batch_size || 0),
+      changed_count: Number(batch.changed_paths.length || 0),
+      deleted_count: Number(batch.deleted_paths.length || 0),
+      queue_depth_before: Number(batch.queue_depth_before || 0),
+      queue_depth_after: Number(batch.queue_depth_after || 0),
+      index_lag_ms: Number(batch.index_lag_ms || 0),
+      refresh_ms: roundWatchMetric(refreshMs)
+    });
 
     if (
       !force &&
@@ -987,6 +1058,28 @@ export async function runIndexWatchLoop(workspaceRoot, args = {}) {
     }
 
     formatLoopMessage("watch stopped", config);
+    await appendWatchMetricEvent(root, config, WATCH_RUN_METRICS_FILE, {
+      timestamp: new Date().toISOString(),
+      event_type: "watch_run",
+      stopped_by_signal: Boolean(stopState.signal),
+      signal: stopState.signal || null,
+      watch_metrics: {
+        poll_count: Number(metrics.poll_count || 0),
+        enqueue_count: Number(metrics.enqueue_count || 0),
+        flush_count: Number(metrics.flush_count || 0),
+        failed_flush_count: Number(metrics.failed_flush_count || 0),
+        queue_depth: Number(metrics.queue_depth || 0),
+        max_queue_depth: Number(metrics.max_queue_depth || 0),
+        last_batch_size: Number(metrics.last_batch_size || 0),
+        last_index_lag_ms: Number(metrics.last_index_lag_ms || 0),
+        last_flush_duration_ms: Number(metrics.last_flush_duration_ms || 0),
+        dropped_by_hash: Number(metrics.dropped_by_hash || 0),
+        hashed_paths: Number(metrics.hashed_paths || 0),
+        hash_seeded_files: Number(metrics.hash_seeded_files || 0),
+        refreshed_changed: Number(metrics.refreshed_changed || 0),
+        refreshed_deleted: Number(metrics.refreshed_deleted || 0)
+      }
+    });
     return {
       ok: true,
       stopped_by_signal: Boolean(stopState.signal),

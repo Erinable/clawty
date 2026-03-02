@@ -42,6 +42,7 @@
   "metrics": {
     "enabled": true,
     "persistHybrid": true,
+    "persistWatch": true,
     "queryPreviewChars": 160
   }
 }

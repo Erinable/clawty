@@ -340,6 +340,11 @@ export function loadConfig(options = {}) {
         deepPick(fileConfig.data, ["metrics", "persistHybrid"]),
       true
     ),
+    persistWatch: readBoolean(
+      env.CLAWTY_METRICS_PERSIST_WATCH ??
+        deepPick(fileConfig.data, ["metrics", "persistWatch"]),
+      true
+    ),
     queryPreviewChars: readInt(
       env.CLAWTY_METRICS_QUERY_PREVIEW_CHARS ??
         deepPick(fileConfig.data, ["metrics", "queryPreviewChars"]),

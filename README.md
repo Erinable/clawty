@@ -81,6 +81,7 @@ npm run bench:graph
 npm run bench:graph:check
 npm run bench:graph:refresh
 npm run bench:graph:refresh:check
+npm run metrics:report
 npm run precise:check
 npm run precise:check:fixture
 ```
@@ -105,6 +106,7 @@ npm run precise:check:fixture
 - `npm run bench:graph:refresh`：运行语义图增量刷新一致性基准（event vs full）
 - `npm run bench:graph:refresh:check`：按 `tests/bench/semantic-graph-refresh.baseline.json` 执行 2% 增量一致性退化门禁
 - `npm run bench:graph:refresh:baseline`：重写语义图增量刷新基线
+- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate`）
 - `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）
 - `npm run precise:check:fixture`：校验内置精确索引夹具格式（CI 强制执行）
 - `npm run precise:import`：一键执行 `build_code_index + import_precise_index`（replace 模式）
@@ -262,6 +264,7 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_AGENT_INCREMENTAL_CONTEXT_TIMEOUT_MS`：采集 git 增量上下文的命令超时，默认 `3000`
 - `CLAWTY_METRICS_ENABLED`：是否启用指标事件记录，默认 `true`
 - `CLAWTY_METRICS_PERSIST_HYBRID`：是否落盘 hybrid 查询指标事件，默认 `true`
+- `CLAWTY_METRICS_PERSIST_WATCH`：是否落盘 watch flush 指标事件，默认 `true`
 - `CLAWTY_METRICS_QUERY_PREVIEW_CHARS`：指标事件中 `query_preview` 长度上限，默认 `160`
 - `CLAWTY_WATCH_INTERVAL_MS`：watch 轮询间隔（毫秒），默认 `2000`
 - `CLAWTY_WATCH_MAX_FILES`：watch 最大跟踪文件数，默认 `20000`

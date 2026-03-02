@@ -43,6 +43,7 @@ function printHelp() {
       "  CLAWTY_AGENT_INCREMENTAL_CONTEXT_TIMEOUT_MS Optional (default: 3000)",
       "  CLAWTY_METRICS_ENABLED Optional (default: true)",
       "  CLAWTY_METRICS_PERSIST_HYBRID Optional (default: true)",
+      "  CLAWTY_METRICS_PERSIST_WATCH Optional (default: true)",
       "  CLAWTY_METRICS_QUERY_PREVIEW_CHARS Optional (default: 160)",
       "  CLAWTY_LSP_ENABLED     Optional (default: true)",
       "  CLAWTY_LSP_TS_CMD      Optional (default: typescript-language-server --stdio)",
@@ -206,7 +207,8 @@ async function main() {
     const config = loadConfig({ allowMissingApiKey: true });
     const result = await runIndexWatchLoop(config.workspaceRoot, {
       ...watchArgs,
-      embedding: config.embedding
+      embedding: config.embedding,
+      metrics: config.metrics
     });
     if (!result?.ok) {
       throw new Error(result?.error || "watch-index failed");

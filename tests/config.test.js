@@ -54,6 +54,7 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
         metrics: {
           enabled: false,
           persistHybrid: false,
+          persistWatch: false,
           queryPreviewChars: 120
         }
       },
@@ -86,6 +87,7 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.agentContext.incrementalContextTimeoutMs, 2500);
   assert.equal(config.metrics.enabled, false);
   assert.equal(config.metrics.persistHybrid, false);
+  assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.queryPreviewChars, 120);
   assert.ok(config.sources.configFile?.endsWith("clawty.config.json"));
 });
@@ -135,6 +137,7 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_TOOL_TIMEOUT_MS: "3333",
       CLAWTY_INDEX_FRESHNESS_STALE_AFTER_MS: "123000",
       CLAWTY_AGENT_INCREMENTAL_CONTEXT_MAX_DIFF_CHARS: "9000",
+      CLAWTY_METRICS_PERSIST_WATCH: "false",
       CLAWTY_METRICS_QUERY_PREVIEW_CHARS: "220"
     }
   });
@@ -144,6 +147,7 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.toolTimeoutMs, 3333);
   assert.equal(config.index.freshnessStaleAfterMs, 123000);
   assert.equal(config.agentContext.incrementalContextMaxDiffChars, 9000);
+  assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.queryPreviewChars, 220);
   assert.ok(config.sources.dotEnvFile?.endsWith(".env"));
 });
