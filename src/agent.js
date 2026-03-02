@@ -6,6 +6,7 @@ const SYSTEM_PROMPT = [
   "Focus on software engineering tasks in the workspace.",
   "Before editing, inspect relevant files first.",
   "Prefer minimal, correct changes.",
+  "For focused edits, prefer apply_patch over full-file overwrite.",
   "Use run_shell for checks when useful.",
   "Avoid destructive operations and do not access paths outside workspace root.",
   "When finished, provide a concise summary and any follow-up steps."

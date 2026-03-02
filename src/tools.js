@@ -1,9 +1,11 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { exec } from "node:child_process";
+import os from "node:os";
+import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const MAX_TOOL_TEXT = 100_000;
 
 const BLOCKED_COMMAND_PATTERNS = [
@@ -37,6 +39,50 @@ function resolveSafePath(workspaceRoot, inputPath) {
 
 function isBlockedCommand(command) {
   return BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+function normalizePatchPath(rawPath) {
+  if (!rawPath || rawPath === "/dev/null") {
+    return null;
+  }
+  let clean = rawPath.trim().split(/\s+/)[0];
+  if (clean.startsWith("a/") || clean.startsWith("b/")) {
+    clean = clean.slice(2);
+  }
+  return clean;
+}
+
+function assertSafePatchPath(filePath) {
+  if (!filePath) {
+    return;
+  }
+  if (filePath.includes("\0")) {
+    throw new Error(`Invalid patch path: ${filePath}`);
+  }
+  if (path.isAbsolute(filePath) || filePath.startsWith("~")) {
+    throw new Error(`Patch path must be workspace-relative: ${filePath}`);
+  }
+  const normalized = path.normalize(filePath);
+  if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+    throw new Error(`Patch path escapes workspace root: ${filePath}`);
+  }
+}
+
+function extractPatchedFiles(patch) {
+  const files = new Set();
+  const lines = patch.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+      continue;
+    }
+    const filePath = normalizePatchPath(line.slice(4));
+    if (!filePath) {
+      continue;
+    }
+    assertSafePatchPath(filePath);
+    files.add(filePath);
+  }
+  return Array.from(files);
 }
 
 export const TOOL_DEFINITIONS = [
@@ -89,6 +135,29 @@ export const TOOL_DEFINITIONS = [
         }
       },
       required: ["command"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "apply_patch",
+    description: "Apply a unified diff patch to workspace files.",
+    parameters: {
+      type: "object",
+      properties: {
+        patch: { type: "string", description: "Unified diff content." },
+        check: {
+          type: "boolean",
+          description: "Only validate patch without applying changes."
+        },
+        timeout_ms: {
+          type: "integer",
+          description: "Optional timeout in milliseconds.",
+          minimum: 1000,
+          maximum: 300000
+        }
+      },
+      required: ["patch"],
       additionalProperties: false
     }
   }
@@ -148,6 +217,50 @@ async function runShellTool(args, context) {
   }
 }
 
+async function applyPatchTool(args, context) {
+  if (typeof args.patch !== "string" || args.patch.trim().length === 0) {
+    return { ok: false, error: "patch must be a non-empty string" };
+  }
+
+  const patchedFiles = extractPatchedFiles(args.patch);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawty-patch-"));
+  const patchPath = path.join(tempDir, "change.patch");
+  await fs.writeFile(patchPath, args.patch, "utf8");
+
+  const gitArgs = ["apply", "--whitespace=nowarn"];
+  if (args.check) {
+    gitArgs.push("--check");
+  }
+  gitArgs.push(patchPath);
+
+  try {
+    const { stdout, stderr } = await execFileAsync("git", gitArgs, {
+      cwd: context.workspaceRoot,
+      timeout: args.timeout_ms || context.defaultTimeoutMs,
+      maxBuffer: 4 * 1024 * 1024
+    });
+
+    return {
+      ok: true,
+      checked: Boolean(args.check),
+      files: patchedFiles,
+      stdout: truncate(stdout),
+      stderr: truncate(stderr)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      checked: Boolean(args.check),
+      files: patchedFiles,
+      exit_code: Number.isInteger(error.code) ? error.code : 1,
+      stdout: truncate(error.stdout || ""),
+      stderr: truncate(error.stderr || error.message || "")
+    };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 export async function runTool(name, args, context) {
   if (name === "read_file") {
     return readFileTool(args, context);
@@ -157,6 +270,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "run_shell") {
     return runShellTool(args, context);
+  }
+  if (name === "apply_patch") {
+    return applyPatchTool(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }
