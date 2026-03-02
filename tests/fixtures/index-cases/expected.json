@@ -1,0 +1,96 @@
+{
+  "queries": [
+    {
+      "name": "js_service_symbol",
+      "args": {
+        "query": "createUserProfile",
+        "top_k": 3
+      },
+      "expect": {
+        "top_path": "src/services/user-service.js",
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "ts_controller_symbol",
+      "args": {
+        "query": "handleCreateUser",
+        "language": "javascript",
+        "top_k": 3
+      },
+      "expect": {
+        "top_path": "src/controllers/user-controller.ts",
+        "filter_language": "javascript",
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "python_symbol",
+      "args": {
+        "query": "sync_user_profile",
+        "language": "python",
+        "top_k": 3
+      },
+      "expect": {
+        "top_path": "scripts/user_worker.py",
+        "filter_language": "python",
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "go_symbol",
+      "args": {
+        "query": "ChargeInvoice",
+        "language": "go",
+        "top_k": 3
+      },
+      "expect": {
+        "top_path": "packages/payments/payment_service.go",
+        "filter_language": "go",
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "docs_path_filter",
+      "args": {
+        "query": "create user workflow",
+        "path_prefix": "docs",
+        "top_k": 5
+      },
+      "expect": {
+        "top_path": "docs/user-guide.md",
+        "all_path_prefix": "docs/",
+        "filter_path_prefix": "docs/",
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "src_utils_filter_with_explain",
+      "args": {
+        "query": "ROUTE_USER_PROFILE",
+        "path_prefix": "src/utils",
+        "language": "javascript",
+        "explain": true,
+        "top_k": 2
+      },
+      "expect": {
+        "top_path": "src/utils/path_filter_helper.js",
+        "all_path_prefix": "src/utils/",
+        "filter_path_prefix": "src/utils/",
+        "filter_language": "javascript",
+        "require_explain": true,
+        "min_total_hits": 1
+      }
+    },
+    {
+      "name": "no_hits_query",
+      "args": {
+        "query": "TotallyUniqueTokenThatDoesNotExist",
+        "top_k": 5
+      },
+      "expect": {
+        "total_hits": 0
+      }
+    }
+  ]
+}

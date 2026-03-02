@@ -68,6 +68,7 @@ npm run bench:index:check
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。
+代码索引检索质量回归集位于 `tests/fixtures/index-cases/`。
 
 ## 代码索引使用建议
 
