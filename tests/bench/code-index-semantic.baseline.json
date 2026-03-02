@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-03-02T06:46:33.434Z",
+  "threshold_percent": 5,
+  "metrics": {
+    "task_success_rate": 1,
+    "primary_top1_rate": 0.6,
+    "primary_top3_rate": 1,
+    "mean_reciprocal_rank": 0.8,
+    "evidence_recall_at_k": 1
+  }
+}

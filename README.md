@@ -55,6 +55,8 @@ npm test
 npm run test:coverage
 npm run bench:index
 npm run bench:index:check
+npm run bench:semantic
+npm run bench:semantic:check
 ```
 
 ## 测试
@@ -65,12 +67,16 @@ npm run bench:index:check
 - `npm run bench:index`：运行代码索引基准（build/refresh/query/index size）
 - `npm run bench:index:check`：按 `tests/bench/code-index.baseline.json` 执行 20% 性能退化门禁
 - `npm run bench:index:baseline`：重写代码索引基线（更新基准文件）
+- `npm run bench:semantic`：运行语义任务基准（多跳链路命中）
+- `npm run bench:semantic:check`：按 `tests/bench/code-index-semantic.baseline.json` 执行 5% 语义质量退化门禁
+- `npm run bench:semantic:baseline`：重写语义质量基线
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。
 代码索引检索质量回归集位于 `tests/fixtures/index-cases/`。
 增量一致性回归位于 `tests/code-index-consistency.test.js`（比较 incremental/event 与 full rebuild 的查询签名）。
 代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
+语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
 
 ## 代码索引使用建议
 

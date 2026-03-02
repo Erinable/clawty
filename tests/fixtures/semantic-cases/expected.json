@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "name": "invoice_checkout_flow",
+      "args": {
+        "query": "handleCheckout processInvoiceCheckout chargeInvoice",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/api/invoice-controller.ts",
+      "expected_paths": [
+        "src/api/invoice-controller.ts",
+        "src/services/billing-service.js",
+        "packages/payments/payment-gateway.js"
+      ]
+    },
+    {
+      "name": "payment_timeout_config_chain",
+      "args": {
+        "query": "STRIPE_TIMEOUT_MS chargeInvoice timeout",
+        "top_k": 5
+      },
+      "expected_primary_path": "config/payments.js",
+      "expected_paths": [
+        "config/payments.js",
+        "packages/payments/payment-gateway.js"
+      ]
+    },
+    {
+      "name": "payment_retry_worker_path",
+      "args": {
+        "query": "runPaymentSyncJob withRetry PAYMENT_RETRY_LIMIT syncPendingPayments",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/jobs/payment-sync-worker.js",
+      "expected_paths": [
+        "src/jobs/payment-sync-worker.js",
+        "src/utils/retry.js",
+        "config/payments.js"
+      ]
+    },
+    {
+      "name": "auth_validation_chain",
+      "args": {
+        "query": "ensureAuth verifyAccessToken loadSession",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/middleware/auth.js",
+      "expected_paths": [
+        "src/middleware/auth.js",
+        "src/lib/jwt.js",
+        "src/services/session-store.js"
+      ]
+    },
+    {
+      "name": "profile_write_path",
+      "args": {
+        "query": "handleUpdateProfile updateUserProfile saveUserProfile",
+        "top_k": 5
+      },
+      "expected_primary_path": "src/api/user-profile-controller.ts",
+      "expected_paths": [
+        "src/api/user-profile-controller.ts",
+        "src/services/user-profile-service.ts",
+        "src/repositories/user-profile-repo.ts"
+      ]
+    }
+  ]
+}

@@ -17,6 +17,9 @@
     "test:coverage": "node --test --experimental-test-coverage",
     "bench:index": "node tests/bench/code-index.bench.js",
     "bench:index:check": "node tests/bench/code-index.bench.js --check-baseline --threshold=20",
-    "bench:index:baseline": "node tests/bench/code-index.bench.js --write-baseline"
+    "bench:index:baseline": "node tests/bench/code-index.bench.js --write-baseline",
+    "bench:semantic": "node tests/bench/code-index-semantic.bench.js",
+    "bench:semantic:check": "node tests/bench/code-index-semantic.bench.js --check-baseline --threshold=5",
+    "bench:semantic:baseline": "node tests/bench/code-index-semantic.bench.js --write-baseline"
   }
 }
