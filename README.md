@@ -79,6 +79,8 @@ npm run bench:graph:refresh:check
 - `npm run test:watch`：监听模式，边改边测
 - `npm run test:coverage`：生成覆盖率报告（实验特性）
 - `npm run coverage:check`：执行覆盖率硬门禁（全局阈值 + 核心文件阈值）
+  - 可选环境变量：`COVERAGE_MIN_LINE` / `COVERAGE_MIN_BRANCH` / `COVERAGE_MIN_FUNCS`
+  - 可选核心文件覆盖率覆盖：`COVERAGE_CORE_LINE_THRESHOLDS=\"code-index.js=90,semantic-graph.js=75\"`
 - `npm run bench:index`：运行代码索引基准（build/refresh/query/index size）
 - `npm run bench:index:check`：按 `tests/bench/code-index.baseline.json` 执行 20% 性能退化门禁
 - `npm run bench:index:baseline`：重写代码索引基线（更新基准文件）
