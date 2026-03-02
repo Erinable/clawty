@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { buildCodeIndex, queryCodeIndex, refreshCodeIndex } from "../src/code-index.js";
+import {
+  buildCodeIndex,
+  getIndexStats,
+  queryCodeIndex,
+  refreshCodeIndex
+} from "../src/code-index.js";
 import {
   createWorkspace,
   removeWorkspace,
@@ -112,4 +117,53 @@ test("queryCodeIndex returns clear error when index is missing", async (t) => {
   const query = await queryCodeIndex(workspaceRoot, { query: "anything" });
   assert.equal(query.ok, false);
   assert.match(query.error, /build_code_index/);
+});
+
+test("refreshCodeIndex supports event-driven changed_paths and deleted_paths", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/a.js", "const alpha = 1;\n");
+  await writeWorkspaceFile(workspaceRoot, "src/b.js", "const beta = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  await writeWorkspaceFile(workspaceRoot, "src/a.js", "const alpha = 2;\nconst changed = true;\n");
+  await writeWorkspaceFile(workspaceRoot, "src/c.js", "const gamma = 3;\n");
+  await fs.rm(path.join(workspaceRoot, "src/b.js"), { force: true });
+
+  const refreshed = await refreshCodeIndex(workspaceRoot, {
+    changed_paths: ["src/a.js", "src/c.js"],
+    deleted_paths: ["src/b.js"]
+  });
+
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.mode, "event");
+  assert.equal(refreshed.incremental, true);
+  assert.equal(refreshed.reindexed_files, 2);
+  assert.equal(refreshed.removed_files, 1);
+  assert.equal(refreshed.discovered_files, 3);
+});
+
+test("getIndexStats returns index aggregates and language distribution", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/main.js", "function hello() { return true; }\n");
+  await writeWorkspaceFile(workspaceRoot, "scripts/helper.py", "def helper():\n    return 1\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const stats = await getIndexStats(workspaceRoot, { top_files: 5 });
+  assert.equal(stats.ok, true);
+  assert.match(stats.index_path, /^\.clawty\/index\.db$/);
+  assert.equal(stats.engine, "sqlite_fts5");
+  assert.ok(stats.counts.files >= 2);
+  assert.ok(stats.counts.chunks >= 2);
+  assert.ok(stats.counts.unique_tokens > 0);
+  assert.ok(Array.isArray(stats.languages));
+  assert.ok(stats.languages.some((item) => item.language === "javascript"));
+  assert.ok(Array.isArray(stats.top_files));
 });

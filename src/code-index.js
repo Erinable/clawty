@@ -114,6 +114,36 @@ function indexDbPath(workspaceRoot) {
   return path.join(workspaceRoot, INDEX_DIR, INDEX_DB_FILENAME);
 }
 
+function normalizeRelativePath(workspaceRoot, inputPath) {
+  const fullPath = resolveSafePath(workspaceRoot, inputPath);
+  return toPosixPath(path.relative(workspaceRoot, fullPath));
+}
+
+function shouldIndexPath(relativePath) {
+  const normalized = toPosixPath(relativePath);
+  const parts = normalized.split("/");
+  if (parts.some((part) => IGNORED_DIRS.has(part))) {
+    return false;
+  }
+  const ext = path.extname(normalized).toLowerCase();
+  return CODE_EXTENSIONS.has(ext);
+}
+
+function parsePathList(workspaceRoot, value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const set = new Set();
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      continue;
+    }
+    const normalized = normalizeRelativePath(workspaceRoot, item.trim());
+    set.add(normalized);
+  }
+  return Array.from(set);
+}
+
 function detectLanguage(relativePath) {
   const ext = path.extname(relativePath).toLowerCase();
   if ([".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"].includes(ext)) {
@@ -490,8 +520,29 @@ function buildSqlStatements(db) {
       SELECT path, hash, mtime_ms, size
       FROM files
     `),
+    selectMetaByKey: db.prepare(`
+      SELECT value FROM meta WHERE key = ?
+    `),
     countIndexedFiles: db.prepare(`
       SELECT COUNT(*) AS count FROM files
+    `),
+    countChunks: db.prepare(`
+      SELECT COUNT(*) AS count FROM chunks
+    `),
+    countSymbols: db.prepare(`
+      SELECT COUNT(*) AS count FROM symbols
+    `),
+    selectLanguageCounts: db.prepare(`
+      SELECT lang, COUNT(*) AS count
+      FROM files
+      GROUP BY lang
+      ORDER BY count DESC, lang ASC
+    `),
+    selectLargestFiles: db.prepare(`
+      SELECT path, size, line_count
+      FROM files
+      ORDER BY size DESC, path ASC
+      LIMIT ?
     `),
     upsertFile: db.prepare(`
       INSERT INTO files(path, hash, mtime_ms, size, lang, line_count, token_count, updated_at)
@@ -538,13 +589,19 @@ function buildSqlStatements(db) {
 }
 
 function countUniqueTokens(db) {
+  const vocabTable = "__chunks_vocab_tmp";
   try {
-    db.exec("DROP TABLE IF EXISTS temp.__chunks_vocab;");
-    db.exec("CREATE VIRTUAL TABLE temp.__chunks_vocab USING fts5vocab(chunks_fts, row);");
-    const row = db.prepare("SELECT COUNT(*) AS count FROM temp.__chunks_vocab").get();
-    db.exec("DROP TABLE IF EXISTS temp.__chunks_vocab;");
+    db.exec(`DROP TABLE IF EXISTS ${vocabTable};`);
+    db.exec(`CREATE VIRTUAL TABLE ${vocabTable} USING fts5vocab(chunks_fts, row);`);
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${vocabTable}`).get();
+    db.exec(`DROP TABLE IF EXISTS ${vocabTable};`);
     return Number(row?.count || 0);
   } catch {
+    try {
+      db.exec(`DROP TABLE IF EXISTS ${vocabTable};`);
+    } catch {
+      // Ignore cleanup errors.
+    }
     return 0;
   }
 }
@@ -661,6 +718,28 @@ function readStoredConfig(db) {
   }
 }
 
+function readMetaValue(statements, key, fallback = null) {
+  const row = statements.selectMetaByKey.get(key);
+  if (!row || typeof row.value !== "string") {
+    return fallback;
+  }
+  return row.value;
+}
+
+function collectDbStats(db, statements) {
+  const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
+  const chunkCount = Number(statements.countChunks.get().count || 0);
+  const symbolCount = Number(statements.countSymbols.get().count || 0);
+  const uniqueTokens = countUniqueTokens(db);
+
+  return {
+    indexed_files: indexedFiles,
+    chunk_count: chunkCount,
+    symbol_count: symbolCount,
+    unique_tokens: uniqueTokens
+  };
+}
+
 async function runFullBuild(workspaceRoot, db, config) {
   const statements = buildSqlStatements(db);
   const maxFileBytes = config.max_file_size_kb * 1024;
@@ -697,19 +776,20 @@ async function runFullBuild(workspaceRoot, db, config) {
     throw error;
   }
 
-  const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
-  const uniqueTokens = countUniqueTokens(db);
+  const aggregates = collectDbStats(db, statements);
 
   return {
     mode: "full",
     discovered_files: discoveredPaths.length,
-    indexed_files: indexedFiles,
+    indexed_files: aggregates.indexed_files,
+    chunk_count: aggregates.chunk_count,
+    symbol_count: aggregates.symbol_count,
     skipped_large_files: skippedLargeFiles,
     skipped_binary_files: skippedBinaryFiles,
-    unique_tokens: uniqueTokens,
+    unique_tokens: aggregates.unique_tokens,
     incremental: false,
     reused_files: 0,
-    reindexed_files: indexedFiles,
+    reindexed_files: aggregates.indexed_files,
     removed_files: 0
   };
 }
@@ -819,20 +899,135 @@ async function runIncrementalRefresh(workspaceRoot, db, config) {
     throw error;
   }
 
-  const indexedFiles = Number(statements.countIndexedFiles.get().count || 0);
-  const uniqueTokens = countUniqueTokens(db);
+  const aggregates = collectDbStats(db, statements);
 
   return {
     mode: "incremental",
     discovered_files: discoveredPaths.length,
-    indexed_files: indexedFiles,
+    indexed_files: aggregates.indexed_files,
+    chunk_count: aggregates.chunk_count,
+    symbol_count: aggregates.symbol_count,
     skipped_large_files: skippedLargeFiles,
     skipped_binary_files: skippedBinaryFiles,
-    unique_tokens: uniqueTokens,
+    unique_tokens: aggregates.unique_tokens,
     incremental: true,
     reused_files: reusedFiles,
     reindexed_files: reindexedFiles,
     removed_files: removedFiles
+  };
+}
+
+async function runEventRefresh(workspaceRoot, db, config, eventPaths) {
+  const statements = buildSqlStatements(db);
+  const maxFileBytes = config.max_file_size_kb * 1024;
+
+  const changedPaths = parsePathList(workspaceRoot, eventPaths.changed_paths);
+  const deletedPaths = parsePathList(workspaceRoot, eventPaths.deleted_paths);
+  const changedSet = new Set(changedPaths);
+  const deletedSet = new Set(deletedPaths);
+
+  const existingRows = statements.selectAllFiles.all();
+  const existingByPath = new Map(existingRows.map((row) => [row.path, row]));
+
+  let skippedLargeFiles = 0;
+  let skippedBinaryFiles = 0;
+  let reusedFiles = 0;
+  let reindexedFiles = 0;
+  let removedFiles = 0;
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    for (const filePath of deletedSet) {
+      if (!existingByPath.has(filePath)) {
+        continue;
+      }
+      deleteFileIndex(statements, filePath);
+      existingByPath.delete(filePath);
+      removedFiles += 1;
+    }
+
+    for (const filePath of changedSet) {
+      const existing = existingByPath.get(filePath);
+      if (!shouldIndexPath(filePath)) {
+        if (existing) {
+          deleteFileIndex(statements, filePath);
+          existingByPath.delete(filePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+
+      const readResult = await readFileForIndex(workspaceRoot, filePath, maxFileBytes);
+      if (readResult.status === "skip_large") {
+        skippedLargeFiles += 1;
+        if (existing) {
+          deleteFileIndex(statements, filePath);
+          existingByPath.delete(filePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+      if (readResult.status === "skip_binary") {
+        skippedBinaryFiles += 1;
+        if (existing) {
+          deleteFileIndex(statements, filePath);
+          existingByPath.delete(filePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+      if (readResult.status !== "ok") {
+        if (existing) {
+          deleteFileIndex(statements, filePath);
+          existingByPath.delete(filePath);
+          removedFiles += 1;
+        }
+        continue;
+      }
+
+      if (existing && existing.hash === readResult.hash) {
+        statements.upsertFile.run(
+          filePath,
+          existing.hash,
+          readResult.stat.mtimeMs,
+          readResult.stat.size,
+          detectLanguage(filePath),
+          readResult.line_count,
+          readResult.token_count,
+          new Date().toISOString()
+        );
+        reusedFiles += 1;
+        continue;
+      }
+
+      await indexFileContent(workspaceRoot, filePath, readResult, statements);
+      reindexedFiles += 1;
+    }
+
+    writeIndexMeta(statements, config);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  const aggregates = collectDbStats(db, statements);
+
+  return {
+    mode: "event",
+    discovered_files: changedSet.size + deletedSet.size,
+    indexed_files: aggregates.indexed_files,
+    chunk_count: aggregates.chunk_count,
+    symbol_count: aggregates.symbol_count,
+    skipped_large_files: skippedLargeFiles,
+    skipped_binary_files: skippedBinaryFiles,
+    unique_tokens: aggregates.unique_tokens,
+    incremental: true,
+    reused_files: reusedFiles,
+    reindexed_files: reindexedFiles,
+    removed_files: removedFiles,
+    changed_paths: Array.from(changedSet),
+    deleted_paths: Array.from(deletedSet)
   };
 }
 
@@ -860,6 +1055,9 @@ export async function buildCodeIndex(workspaceRoot, args = {}) {
 
 export async function refreshCodeIndex(workspaceRoot, args = {}) {
   const forceRebuild = parseBoolean(args.force_rebuild, false);
+  const hasEventInput =
+    Array.isArray(args.changed_paths) ||
+    Array.isArray(args.deleted_paths);
   await ensureIndexDir(workspaceRoot);
 
   const dbFile = indexDbPath(workspaceRoot);
@@ -880,6 +1078,14 @@ export async function refreshCodeIndex(workspaceRoot, args = {}) {
         mode: "full",
         fallback_full_rebuild: !dbExists
       });
+    }
+
+    if (hasEventInput) {
+      const stats = await runEventRefresh(workspaceRoot, db, config, {
+        changed_paths: args.changed_paths,
+        deleted_paths: args.deleted_paths
+      });
+      return buildResult(workspaceRoot, stats);
     }
 
     const stats = await runIncrementalRefresh(workspaceRoot, db, config);
@@ -1008,6 +1214,66 @@ function buildFileRanking({ chunkRows, symbolRows, tokens }) {
       snippet: item.snippet,
       symbol_hits: item.symbol_hits
     }));
+}
+
+export async function getIndexStats(workspaceRoot, args = {}) {
+  const limit = parsePositiveInt(args.top_files, 10, 1, 50);
+  const dbFile = indexDbPath(workspaceRoot);
+  const exists = await fs
+    .access(dbFile)
+    .then(() => true)
+    .catch(() => false);
+
+  if (!exists) {
+    return {
+      ok: false,
+      error: "code index not found; run build_code_index first"
+    };
+  }
+
+  const db = openIndexDb(workspaceRoot);
+  try {
+    const statements = buildSqlStatements(db);
+    const aggregates = collectDbStats(db, statements);
+    const configRaw = readMetaValue(statements, "config", "{}");
+    const updatedAt = readMetaValue(statements, "updated_at", null);
+    const engine = readMetaValue(statements, "engine", "sqlite_fts5");
+
+    let config = {};
+    try {
+      config = JSON.parse(configRaw);
+    } catch {
+      config = {};
+    }
+
+    const languages = statements.selectLanguageCounts.all().map((row) => ({
+      language: row.lang,
+      count: Number(row.count || 0)
+    }));
+    const topFiles = statements.selectLargestFiles.all(limit).map((row) => ({
+      path: row.path,
+      size: Number(row.size || 0),
+      line_count: Number(row.line_count || 0)
+    }));
+
+    return {
+      ok: true,
+      index_path: toPosixPath(path.relative(workspaceRoot, dbFile)),
+      engine,
+      updated_at: updatedAt,
+      config,
+      counts: {
+        files: aggregates.indexed_files,
+        chunks: aggregates.chunk_count,
+        symbols: aggregates.symbol_count,
+        unique_tokens: aggregates.unique_tokens
+      },
+      languages,
+      top_files: topFiles
+    };
+  } finally {
+    db.close();
+  }
 }
 
 export async function queryCodeIndex(workspaceRoot, args = {}) {

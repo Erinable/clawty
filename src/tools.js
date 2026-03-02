@@ -3,7 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildCodeIndex, queryCodeIndex, refreshCodeIndex } from "./code-index.js";
+import {
+  buildCodeIndex,
+  getIndexStats,
+  queryCodeIndex,
+  refreshCodeIndex
+} from "./code-index.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -212,7 +217,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     name: "refresh_code_index",
     description:
-      "Incrementally refresh SQLite code index; only re-index changed/new files and remove deleted files.",
+      "Incrementally refresh SQLite code index. Optionally pass changed_paths/deleted_paths for event-driven updates.",
     parameters: {
       type: "object",
       properties: {
@@ -231,6 +236,35 @@ export const TOOL_DEFINITIONS = [
         force_rebuild: {
           type: "boolean",
           description: "If true, bypass incremental mode and do a full rebuild."
+        },
+        changed_paths: {
+          type: "array",
+          description:
+            "Optional changed file paths (workspace-relative). When provided, refresh runs in event mode.",
+          items: { type: "string" }
+        },
+        deleted_paths: {
+          type: "array",
+          description:
+            "Optional deleted file paths (workspace-relative). Only used when event mode is enabled.",
+          items: { type: "string" }
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "get_index_stats",
+    description: "Return index health and coverage statistics from SQLite index.",
+    parameters: {
+      type: "object",
+      properties: {
+        top_files: {
+          type: "integer",
+          description: "Optional number of largest files to include.",
+          minimum: 1,
+          maximum: 50
         }
       },
       additionalProperties: false
@@ -348,6 +382,10 @@ async function refreshCodeIndexTool(args, context) {
   return refreshCodeIndex(context.workspaceRoot, args);
 }
 
+async function getIndexStatsTool(args, context) {
+  return getIndexStats(context.workspaceRoot, args);
+}
+
 export async function runTool(name, args, context) {
   if (name === "read_file") {
     return readFileTool(args, context);
@@ -369,6 +407,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "refresh_code_index") {
     return refreshCodeIndexTool(args, context);
+  }
+  if (name === "get_index_stats") {
+    return getIndexStatsTool(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

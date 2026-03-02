@@ -14,6 +14,7 @@
   - `build_code_index`
   - `refresh_code_index`
   - `query_code_index`
+  - `get_index_stats`
 - 默认工作目录沙箱（禁止访问工作区外路径）
 - 常见危险命令拦截（如 `rm -rf`, `sudo`）
 
@@ -65,8 +66,9 @@ npm run test:coverage
 - “先构建代码索引，再查找和 apply patch 相关的实现”
 - “代码改完后刷新索引，再查找和增量索引相关的实现”
 - “查询 index 中与 openai client 相关的文件，给我前 5 个结果”
+- “刷新索引（changed_paths: [src/a.js], deleted_paths: [src/b.js]）后给我索引统计”
 
-模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` 完成索引检索。
+模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
 索引存储路径为 `.clawty/index.db`（SQLite FTS5）。
 
 ## 可配置项
