@@ -602,6 +602,59 @@ export const TOOL_DEFINITIONS = [
   },
   {
     type: "function",
+    name: "query_hybrid_index",
+    description:
+      "Hybrid retrieval across semantic graph, syntax index, and code index with lightweight re-ranking.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Symbol or file keyword to retrieve hybrid candidates."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum merged candidates returned.",
+          minimum: 1,
+          maximum: 30
+        },
+        max_neighbors: {
+          type: "integer",
+          description: "Maximum neighbors requested from semantic graph per seed.",
+          minimum: 1,
+          maximum: 100
+        },
+        max_hops: {
+          type: "integer",
+          description: "Optional max traversal hops for semantic graph query.",
+          minimum: 1,
+          maximum: 4
+        },
+        per_hop_limit: {
+          type: "integer",
+          description: "Optional edge expansion cap per hop for semantic graph query.",
+          minimum: 1,
+          maximum: 50
+        },
+        edge_type: {
+          type: "string",
+          description: "Optional edge type filter for semantic graph query."
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix preference during fusion ranking."
+        },
+        explain: {
+          type: "boolean",
+          description: "Include score feature breakdown for each returned candidate."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
     name: "get_semantic_graph_stats",
     description:
       "Return semantic graph stats, including source mix and precise freshness metadata.",
@@ -1123,6 +1176,216 @@ function summarizeFallbackSeedLanguages(seeds) {
   };
 }
 
+const HYBRID_SOURCE_SCORE = Object.freeze({
+  scip: 1,
+  lsif: 0.96,
+  lsp: 0.88,
+  syntax: 0.78,
+  index_seed: 0.7,
+  lsp_anchor: 0.62,
+  syntax_fallback: 0.6,
+  index: 0.5,
+  index_fallback: 0.46,
+  unknown: 0.4
+});
+
+function roundHybridMetric(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Number(numeric.toFixed(4));
+}
+
+function normalizeHybridSource(source) {
+  if (typeof source !== "string") {
+    return "unknown";
+  }
+  const normalized = source.trim().toLowerCase();
+  return normalized || "unknown";
+}
+
+function hybridSourceScore(source) {
+  const normalized = normalizeHybridSource(source);
+  return HYBRID_SOURCE_SCORE[normalized] ?? HYBRID_SOURCE_SCORE.unknown;
+}
+
+function tokenizeHybridQuery(raw) {
+  if (typeof raw !== "string") {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      raw
+        .toLowerCase()
+        .split(/[^a-z0-9_]+/g)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2)
+    )
+  ).slice(0, 16);
+}
+
+function normalizeHybridPathPrefix(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!cleaned) {
+    return null;
+  }
+  return cleaned.endsWith("/") ? cleaned : `${cleaned}/`;
+}
+
+function hybridPathScore(pathValue, pathPrefix) {
+  if (!pathPrefix) {
+    return 0.5;
+  }
+  const candidatePath = typeof pathValue === "string" ? pathValue : "";
+  if (!candidatePath) {
+    return 0;
+  }
+  if (candidatePath.startsWith(pathPrefix)) {
+    return 1;
+  }
+  if (candidatePath.includes(pathPrefix)) {
+    return 0.65;
+  }
+  return 0.05;
+}
+
+function hybridOverlapScore(queryTokens, candidate) {
+  if (!Array.isArray(queryTokens) || queryTokens.length === 0) {
+    return 0;
+  }
+  const haystack = [
+    String(candidate?.name || ""),
+    String(candidate?.path || ""),
+    String(candidate?.kind || "")
+  ]
+    .join(" ")
+    .toLowerCase();
+  let hitCount = 0;
+  for (const token of queryTokens) {
+    if (haystack.includes(token)) {
+      hitCount += 1;
+    }
+  }
+  return hitCount / queryTokens.length;
+}
+
+function hybridHopPenalty(candidate) {
+  const source = normalizeHybridSource(candidate?.source);
+  if (source === "lsp_anchor") {
+    return 0.15;
+  }
+  return 0;
+}
+
+function hybridCandidateKey(candidate) {
+  const candidatePath = String(candidate?.path || "").trim();
+  if (candidatePath) {
+    return `path:${candidatePath}`;
+  }
+  return [
+    "fallback",
+    String(candidate?.kind || ""),
+    String(candidate?.name || "").toLowerCase()
+  ].join("::");
+}
+
+function mapIndexResultToHybridSeed(item) {
+  const filePath = String(item?.path || "");
+  return {
+    path: filePath,
+    name: path.basename(filePath || ""),
+    kind: "file",
+    line: Number(item?.hit_line || 1),
+    column: 1,
+    lang: item?.language || null,
+    source: "index",
+    outgoing: [],
+    incoming: []
+  };
+}
+
+function addHybridCandidate(map, candidate, provider) {
+  const key = hybridCandidateKey(candidate);
+  if (!key || key === "::") {
+    return;
+  }
+
+  const source = normalizeHybridSource(candidate?.source);
+  const providerToken = typeof provider === "string" && provider ? provider : "unknown";
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, {
+      candidate,
+      providers: new Set([providerToken]),
+      source_score: hybridSourceScore(source)
+    });
+    return;
+  }
+
+  existing.providers.add(providerToken);
+  const currentSourceScore = hybridSourceScore(source);
+  if (currentSourceScore > existing.source_score) {
+    existing.candidate = candidate;
+    existing.source_score = currentSourceScore;
+  }
+}
+
+function rankHybridCandidates(entries, options) {
+  const queryTokens = tokenizeHybridQuery(options?.query || "");
+  const pathPrefix = normalizeHybridPathPrefix(options?.path_prefix || null);
+  const explain = Boolean(options?.explain);
+
+  const ranked = entries.map((entry) => {
+    const candidate = entry.candidate;
+    const sourceScore = entry.source_score;
+    const overlapScore = hybridOverlapScore(queryTokens, candidate);
+    const pathScore = hybridPathScore(candidate?.path, pathPrefix);
+    const supportScore = Math.min(1, Math.max(0, (entry.providers.size - 1) / 2));
+    const hopPenalty = hybridHopPenalty(candidate);
+    const finalScore = roundHybridMetric(
+      sourceScore * 0.42 + overlapScore * 0.33 + pathScore * 0.15 + supportScore * 0.1 - hopPenalty
+    );
+
+    const merged = {
+      ...candidate,
+      hybrid_score: finalScore,
+      supporting_providers: Array.from(entry.providers.values()).sort()
+    };
+    if (explain) {
+      merged.hybrid_explain = {
+        source_score: roundHybridMetric(sourceScore),
+        overlap_score: roundHybridMetric(overlapScore),
+        path_score: roundHybridMetric(pathScore),
+        support_score: roundHybridMetric(supportScore),
+        hop_penalty: roundHybridMetric(hopPenalty),
+        final_score: finalScore
+      };
+    }
+    return merged;
+  });
+
+  ranked.sort((a, b) => {
+    if (b.hybrid_score !== a.hybrid_score) {
+      return b.hybrid_score - a.hybrid_score;
+    }
+    const sourceDiff = hybridSourceScore(b.source) - hybridSourceScore(a.source);
+    if (sourceDiff !== 0) {
+      return sourceDiff;
+    }
+    const pathDiff = String(a.path || "").localeCompare(String(b.path || ""));
+    if (pathDiff !== 0) {
+      return pathDiff;
+    }
+    return Number(a.line || 1) - Number(b.line || 1);
+  });
+
+  return ranked;
+}
+
 async function querySemanticGraphTool(args, context) {
   const semanticResult = await querySemanticGraph(context.workspaceRoot, args);
   if (semanticResult.ok) {
@@ -1221,6 +1484,125 @@ async function querySemanticGraphTool(args, context) {
   };
 }
 
+async function queryHybridIndexTool(args, context) {
+  const query = typeof args?.query === "string" ? args.query.trim() : "";
+  if (!query) {
+    return {
+      ok: false,
+      error: "query must be a non-empty string"
+    };
+  }
+
+  const topK = Number.isFinite(Number(args?.top_k))
+    ? Math.max(1, Math.min(30, Math.floor(Number(args.top_k))))
+    : 5;
+  const scanTopK = Math.max(topK * 3, 10);
+  const semanticArgs = {
+    query,
+    top_k: Math.min(30, scanTopK),
+    max_neighbors: args?.max_neighbors,
+    max_hops: args?.max_hops,
+    per_hop_limit: args?.per_hop_limit,
+    edge_type: args?.edge_type,
+    path_prefix: args?.path_prefix
+  };
+
+  const [semanticResult, syntaxResult, indexResult] = await Promise.all([
+    querySemanticGraph(context.workspaceRoot, semanticArgs),
+    querySyntaxIndex(context.workspaceRoot, {
+      query,
+      top_k: Math.min(30, scanTopK),
+      max_neighbors: args?.max_neighbors,
+      path_prefix: args?.path_prefix
+    }),
+    queryCodeIndex(context.workspaceRoot, {
+      query,
+      top_k: Math.min(50, Math.max(scanTopK, 20)),
+      path_prefix: args?.path_prefix
+    })
+  ]);
+
+  const scannedCandidates = [];
+  const deduped = new Map();
+
+  if (semanticResult?.ok && Array.isArray(semanticResult.seeds)) {
+    for (const seed of semanticResult.seeds) {
+      scannedCandidates.push(seed);
+      addHybridCandidate(deduped, seed, "semantic");
+    }
+  }
+
+  if (syntaxResult?.ok && Array.isArray(syntaxResult.seeds)) {
+    for (const seed of syntaxResult.seeds) {
+      const mapped = mapSyntaxSeedToSemanticSeed(seed, args?.edge_type || null);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "syntax");
+    }
+  }
+
+  if (indexResult?.ok && Array.isArray(indexResult.results)) {
+    for (const item of indexResult.results) {
+      const mapped = mapIndexResultToHybridSeed(item);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "index");
+    }
+  }
+
+  const ranked = rankHybridCandidates(Array.from(deduped.values()), {
+    query,
+    path_prefix: args?.path_prefix,
+    explain: args?.explain
+  });
+  const seeds = ranked.slice(0, topK);
+
+  return {
+    ok: true,
+    provider: "hybrid",
+    query,
+    filters: {
+      edge_type: args?.edge_type || null,
+      path_prefix: args?.path_prefix || null,
+      max_hops: Number.isFinite(Number(args?.max_hops))
+        ? Math.max(1, Math.floor(Number(args.max_hops)))
+        : 1,
+      per_hop_limit: Number.isFinite(Number(args?.per_hop_limit))
+        ? Math.max(1, Math.floor(Number(args.per_hop_limit)))
+        : null,
+      explain: Boolean(args?.explain)
+    },
+    sources: {
+      semantic: {
+        ok: Boolean(semanticResult?.ok),
+        candidates: Array.isArray(semanticResult?.seeds) ? semanticResult.seeds.length : 0,
+        fallback: Boolean(semanticResult?.fallback),
+        error: semanticResult?.ok ? null : semanticResult?.error || null
+      },
+      syntax: {
+        ok: Boolean(syntaxResult?.ok),
+        candidates: Array.isArray(syntaxResult?.seeds) ? syntaxResult.seeds.length : 0,
+        error: syntaxResult?.ok ? null : syntaxResult?.error || null
+      },
+      index: {
+        ok: Boolean(indexResult?.ok),
+        candidates: Array.isArray(indexResult?.results) ? indexResult.results.length : 0,
+        error: indexResult?.ok ? null : indexResult?.error || null
+      }
+    },
+    priority_policy: ["semantic", "syntax", "index"],
+    total_seeds: seeds.length,
+    scanned_candidates: scannedCandidates.length,
+    deduped_candidates: deduped.size,
+    language_distribution: {
+      scanned_candidates: summarizeFallbackSeedLanguages(scannedCandidates),
+      deduped_candidates: summarizeFallbackSeedLanguages(
+        Array.from(deduped.values()).map((entry) => entry.candidate)
+      ),
+      returned_seeds: summarizeFallbackSeedLanguages(seeds)
+    },
+    seeds
+  };
+}
+
 async function getSemanticGraphStatsTool(context) {
   return getSemanticGraphStats(context.workspaceRoot);
 }
@@ -1293,6 +1675,9 @@ export async function runTool(name, args, context) {
   }
   if (name === "query_semantic_graph") {
     return querySemanticGraphTool(args, context);
+  }
+  if (name === "query_hybrid_index") {
+    return queryHybridIndexTool(args, context);
   }
   if (name === "get_semantic_graph_stats") {
     return getSemanticGraphStatsTool(context);

@@ -463,3 +463,118 @@ test("query_semantic_graph falls back to index when semantic graph is empty", as
   assert.ok(query.language_distribution);
   assert.ok(query.language_distribution.returned_seeds);
 });
+
+test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix rerank", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-main.ts",
+    "import { hybridDep } from './hybrid-dep';\nexport function hybridSignal() { return hybridDep(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-dep.ts",
+    "export function hybridDep() { return true; }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "tests/hybrid-main.spec.ts",
+    "export function hybridSignal() { return false; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+
+  const builtGraph = await runTool(
+    "build_semantic_graph",
+    {
+      max_symbols: 50,
+      include_definitions: false,
+      include_references: false,
+      include_syntax: true,
+      precise_preferred: false
+    },
+    context
+  );
+  assert.equal(builtGraph.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridSignal",
+      top_k: 5,
+      path_prefix: "src",
+      explain: true,
+      max_neighbors: 6
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.provider, "hybrid");
+  assert.ok(query.total_seeds >= 1);
+  assert.ok(query.sources.semantic.ok);
+  assert.ok(query.sources.syntax.ok);
+  assert.ok(query.sources.index.ok);
+  assert.ok(query.seeds[0].path.startsWith("src/"));
+  assert.ok(Array.isArray(query.seeds[0].supporting_providers));
+  assert.ok(query.seeds[0].supporting_providers.length >= 1);
+  assert.equal(typeof query.seeds[0].hybrid_score, "number");
+  assert.ok(query.seeds[0].hybrid_explain);
+  assert.ok(query.language_distribution);
+});
+
+test("query_hybrid_index still returns candidates when semantic graph is empty", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/hybrid-fallback.ts",
+    "import { fallbackDep } from './fallback-dep';\nexport function hybridFallbackToken() { return fallbackDep(); }\n"
+  );
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/fallback-dep.ts",
+    "export function fallbackDep() { return true; }\n"
+  );
+
+  const context = {
+    ...createContext(workspaceRoot),
+    lsp: { enabled: false }
+  };
+
+  const builtIndex = await runTool("build_code_index", {}, context);
+  assert.equal(builtIndex.ok, true);
+  const builtSyntax = await runTool("build_syntax_index", {}, context);
+  assert.equal(builtSyntax.ok, true);
+
+  const query = await runTool(
+    "query_hybrid_index",
+    {
+      query: "hybridFallbackToken",
+      top_k: 5
+    },
+    context
+  );
+  assert.equal(query.ok, true);
+  assert.equal(query.provider, "hybrid");
+  assert.ok(query.total_seeds >= 1);
+  assert.equal(query.sources.semantic.ok, false);
+  assert.ok(query.sources.syntax.ok);
+  assert.ok(query.sources.index.ok);
+  assert.ok(query.seeds.some((seed) => seed.path === "src/hybrid-fallback.ts"));
+});

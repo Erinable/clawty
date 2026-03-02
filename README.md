@@ -23,6 +23,7 @@
   - `refresh_semantic_graph`
   - `import_precise_index`
   - `query_semantic_graph`
+  - `query_hybrid_index`
   - `get_semantic_graph_stats`
   - `lsp_definition`
   - `lsp_references`
@@ -123,6 +124,7 @@ npm run precise:check:fixture
 - “查询 syntax index（query: syntaxMain）并返回结构邻居”
 - “先构建 semantic graph，再查 `fooToken` 的 definition/reference 邻居”
 - “代码改完后刷新 semantic graph（changed_paths/deleted_paths）再查多跳邻居”
+- “用 `query_hybrid_index` 融合 semantic/syntax/index，返回重排后的 Top5”
 - “导入 `scip.normalized.json`（mode=merge），再查询语义图”
 
 模型会自动调用 `build_code_index` / `refresh_code_index` / `query_code_index` / `get_index_stats`。
@@ -142,6 +144,7 @@ npm run precise:check:fixture
 `import_precise_index` 可导入 SCIP 归一化 JSON（`nodes` + `edges`）并以 `source=scip` 写入语义图，支持 `merge`/`replace`。
 `query_semantic_graph` 会对同实体结果去重，并按来源优先级返回（`scip > lsif > lsp > syntax > index_seed > lsp_anchor`）。
 `query_semantic_graph` 返回 `language_distribution`（`scanned_candidates` / `deduped_candidates` / `returned_seeds`），用于观察召回语言偏置。
+`query_hybrid_index` 会联合 `semantic + syntax + index` 候选并做轻量重排，支持 `path_prefix` 与 `explain`。
 `query_semantic_graph` 支持 `max_hops`（默认 `1`）与 `per_hop_limit`，当 `max_hops > 1` 时每个 seed 会返回 `multi_hop` 路径展开结果（含 `path_score` 与质量因子）。
 `build_semantic_graph` 默认启用“精确优先”：若检测到 `artifacts/scip.normalized.json` 等候选文件，会优先执行 `replace` 导入；不可用时自动回退到 LSP/index 建图。
 `query_semantic_graph` 在语义图为空时会按 `query_syntax_index -> query_code_index` 顺序回退，保证可用性。
