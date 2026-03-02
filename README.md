@@ -68,6 +68,8 @@ npm run bench:semantic
 npm run bench:semantic:check
 npm run bench:graph
 npm run bench:graph:check
+npm run bench:graph:refresh
+npm run bench:graph:refresh:check
 ```
 
 ## 测试
@@ -84,6 +86,9 @@ npm run bench:graph:check
 - `npm run bench:graph`：运行语义图基准（`query_semantic_graph` 检索质量）
 - `npm run bench:graph:check`：按 `tests/bench/semantic-graph.baseline.json` 执行 5% 语义图质量退化门禁
 - `npm run bench:graph:baseline`：重写语义图质量基线
+- `npm run bench:graph:refresh`：运行语义图增量刷新一致性基准（event vs full）
+- `npm run bench:graph:refresh:check`：按 `tests/bench/semantic-graph-refresh.baseline.json` 执行 2% 增量一致性退化门禁
+- `npm run bench:graph:refresh:baseline`：重写语义图增量刷新基线
 - GitHub Actions 会在 `push`/`pull_request` 自动运行测试，配置见 `.github/workflows/ci.yml`
 
 测试文件位于 `tests/`，命名为 `*.test.js`。

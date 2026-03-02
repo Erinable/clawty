@@ -15,6 +15,7 @@
 - [ ] 性能门禁：`npm run bench:index:check`
 - [ ] 语义质量门禁：`npm run bench:semantic:check`
 - [ ] 语义图门禁：`npm run bench:graph:check`
+- [ ] 语义图增量门禁：`npm run bench:graph:refresh:check`
 - [ ] 结构查询门禁：`node --test tests/syntax-index.test.js`
 - [ ] 回退链路门禁：`node --test tests/tools.test.js`
 - [ ] CI 绿灯（`Node 22/24`）后再合并。
@@ -29,6 +30,7 @@
 - [ ] 工具回退回归：`tests/tools.test.js`
 - [ ] 语义任务回归：`npm run bench:semantic:check`
 - [ ] 语义图检索回归：`npm run bench:graph:check`
+- [ ] 语义图增量一致性回归：`npm run bench:graph:refresh:check`
 
 如改动触发以下场景，必须补对应用例：
 
@@ -45,6 +47,7 @@
 - [ ] `bench:index:check` 无回归（阈值 `20%`）。
 - [ ] `bench:semantic:check` 无回归（阈值 `5%`）。
 - [ ] `bench:graph:check` 无回归（阈值 `5%`）。
+- [ ] `bench:graph:refresh:check` 无回归（阈值 `2%`）。
 - [ ] `query_semantic_graph` 回退顺序稳定：`semantic > syntax > index`。
 - [ ] 不允许引入明显不稳定排序（同数据多次查询 top 结果抖动）。
 

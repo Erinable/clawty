@@ -24,7 +24,10 @@
     "bench:semantic:baseline": "node tests/bench/code-index-semantic.bench.js --write-baseline",
     "bench:graph": "node tests/bench/semantic-graph.bench.js",
     "bench:graph:check": "node tests/bench/semantic-graph.bench.js --check-baseline --threshold=5",
-    "bench:graph:baseline": "node tests/bench/semantic-graph.bench.js --write-baseline"
+    "bench:graph:baseline": "node tests/bench/semantic-graph.bench.js --write-baseline",
+    "bench:graph:refresh": "node tests/bench/semantic-graph-refresh.bench.js",
+    "bench:graph:refresh:check": "node tests/bench/semantic-graph-refresh.bench.js --check-baseline --threshold=2",
+    "bench:graph:refresh:baseline": "node tests/bench/semantic-graph-refresh.bench.js --write-baseline"
   },
   "dependencies": {
     "tree-sitter": "0.25.0",

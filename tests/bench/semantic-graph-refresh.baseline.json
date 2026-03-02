@@ -1,0 +1,9 @@
+{
+  "generated_at": "2026-03-02T09:13:34.071Z",
+  "threshold_percent": 2,
+  "metrics": {
+    "signature_match_rate": 1,
+    "primary_seed_match_rate": 1,
+    "path_jaccard_avg": 1
+  }
+}

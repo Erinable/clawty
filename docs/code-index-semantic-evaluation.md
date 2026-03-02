@@ -28,6 +28,9 @@ npm run bench:semantic:baseline
 npm run bench:graph
 npm run bench:graph:check
 npm run bench:graph:baseline
+npm run bench:graph:refresh
+npm run bench:graph:refresh:check
+npm run bench:graph:refresh:baseline
 node --test tests/semantic-graph.test.js
 node --test tests/tools.test.js
 ```
@@ -35,6 +38,7 @@ node --test tests/tools.test.js
 说明：`bench:semantic:*` 评估语义任务质量；`semantic-graph/tools` 测试负责验证
 `semantic -> syntax -> index` 回退链路与结构边接入行为。
 `bench:graph:*` 评估 `query_semantic_graph`（含多跳展开）的检索质量与退化风险。
+`bench:graph:refresh:*` 评估 `refresh_semantic_graph(event)` 与 full rebuild 的查询签名一致性。
 
 ## 质量指标（越高越好）
 
@@ -49,5 +53,6 @@ node --test tests/tools.test.js
 ## 门禁策略
 
 - `bench:semantic:check` 默认阈值 `5%`。
+- `bench:graph:refresh:check` 默认阈值 `2%`（`signature_match_rate` / `primary_seed_match_rate` / `path_jaccard_avg`）。
 - 若核心质量指标任一低于基线允许下限，命令返回非零并阻止合并。
 - 有意变更排序/召回策略时，先评估后更新基线。
