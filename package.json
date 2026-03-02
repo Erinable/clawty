@@ -1,0 +1,16 @@
+{
+  "name": "clawty",
+  "version": "0.1.0",
+  "description": "MVP CLI AI coding assistant",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "clawty": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "chat": "node src/index.js chat",
+    "run": "node src/index.js run",
+    "help": "node src/index.js --help"
+  }
+}
