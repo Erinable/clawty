@@ -228,3 +228,181 @@ test("getIndexStats returns index aggregates and language distribution", async (
   assert.ok(stats.languages.some((item) => item.language === "javascript"));
   assert.ok(Array.isArray(stats.top_files));
 });
+
+test("queryCodeIndex validates query input and clamps top_k", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/main.js",
+    "const alphaToken = 1;\nfunction alphaTokenFn() { return alphaToken; }\n"
+  );
+  await buildCodeIndex(workspaceRoot, {});
+
+  const emptyQuery = await queryCodeIndex(workspaceRoot, { query: "   " });
+  assert.equal(emptyQuery.ok, false);
+  assert.match(emptyQuery.error, /non-empty string/i);
+
+  const noTokenQuery = await queryCodeIndex(workspaceRoot, { query: "++ -- !!" });
+  assert.equal(noTokenQuery.ok, false);
+  assert.match(noTokenQuery.error, /no indexable tokens/i);
+
+  const clamped = await queryCodeIndex(workspaceRoot, {
+    query: "alphaToken",
+    top_k: 999
+  });
+  assert.equal(clamped.ok, true);
+  assert.ok(clamped.results.length <= 50);
+  assert.equal(clamped.candidate_limits.chunks, 571);
+  assert.equal(clamped.candidate_limits.symbols, 820);
+});
+
+test("queryCodeIndex cache expires after TTL", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/cache.js", "const cacheToken = true;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const originalNow = Date.now;
+  let fakeNow = originalNow();
+  Date.now = () => fakeNow;
+  t.after(() => {
+    Date.now = originalNow;
+  });
+
+  const first = await queryCodeIndex(workspaceRoot, { query: "cacheToken", top_k: 5 });
+  assert.equal(first.ok, true);
+  assert.equal(first.cache_hit, false);
+
+  const second = await queryCodeIndex(workspaceRoot, { query: "cacheToken", top_k: 5 });
+  assert.equal(second.ok, true);
+  assert.equal(second.cache_hit, true);
+
+  fakeNow += 10_001;
+  const third = await queryCodeIndex(workspaceRoot, { query: "cacheToken", top_k: 5 });
+  assert.equal(third.ok, true);
+  assert.equal(third.cache_hit, false);
+});
+
+test("buildCodeIndex and refreshCodeIndex invalidate query cache", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/cache-refresh.js", "const refreshToken = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const warm1 = await queryCodeIndex(workspaceRoot, { query: "refreshToken", top_k: 5 });
+  assert.equal(warm1.ok, true);
+  assert.equal(warm1.cache_hit, false);
+
+  const warm2 = await queryCodeIndex(workspaceRoot, { query: "refreshToken", top_k: 5 });
+  assert.equal(warm2.ok, true);
+  assert.equal(warm2.cache_hit, true);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await writeWorkspaceFile(
+    workspaceRoot,
+    "src/cache-refresh.js",
+    "const refreshToken = 2;\nconst changed = true;\n"
+  );
+  const refreshed = await refreshCodeIndex(workspaceRoot, {});
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.mode, "incremental");
+
+  const afterRefresh = await queryCodeIndex(workspaceRoot, { query: "refreshToken", top_k: 5 });
+  assert.equal(afterRefresh.ok, true);
+  assert.equal(afterRefresh.cache_hit, false);
+
+  await buildCodeIndex(workspaceRoot, {});
+  const afterBuild = await queryCodeIndex(workspaceRoot, { query: "refreshToken", top_k: 5 });
+  assert.equal(afterBuild.ok, true);
+  assert.equal(afterBuild.cache_hit, false);
+});
+
+test("refreshCodeIndex supports string force_rebuild and false-like value", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/rebuild.js", "const rebuild = true;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  const rebuilt = await refreshCodeIndex(workspaceRoot, { force_rebuild: "true" });
+  assert.equal(rebuilt.ok, true);
+  assert.equal(rebuilt.mode, "full");
+  assert.equal(rebuilt.fallback_full_rebuild, false);
+
+  const incremental = await refreshCodeIndex(workspaceRoot, { force_rebuild: "0" });
+  assert.equal(incremental.ok, true);
+  assert.equal(incremental.mode, "incremental");
+  assert.ok(incremental.reused_files >= 1);
+});
+
+test("refreshCodeIndex rejects event paths that escape workspace root", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/safe.js", "const safe = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  await assert.rejects(
+    () =>
+      refreshCodeIndex(workspaceRoot, {
+        changed_paths: ["../evil.js"],
+        deleted_paths: []
+      }),
+    /Path escapes workspace root/i
+  );
+});
+
+test("event refresh removes file when changed file becomes binary", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  await writeWorkspaceFile(workspaceRoot, "src/binary-target.js", "const binaryToken = 1;\n");
+  await buildCodeIndex(workspaceRoot, {});
+
+  await writeWorkspaceFile(workspaceRoot, "src/binary-target.js", "abc\0def");
+  const refreshed = await refreshCodeIndex(workspaceRoot, {
+    changed_paths: ["src/binary-target.js"],
+    deleted_paths: []
+  });
+
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.mode, "event");
+  assert.equal(refreshed.skipped_binary_files, 1);
+  assert.equal(refreshed.removed_files, 1);
+  assert.equal(refreshed.indexed_files, 0);
+
+  const query = await queryCodeIndex(workspaceRoot, { query: "binaryToken" });
+  assert.equal(query.ok, false);
+  assert.match(query.error, /index is empty/i);
+});
+
+test("queryCodeIndex reports empty index when DB exists without indexed chunks", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const built = await buildCodeIndex(workspaceRoot, {});
+  assert.equal(built.ok, true);
+  assert.equal(built.indexed_files, 0);
+
+  const query = await queryCodeIndex(workspaceRoot, { query: "anything" });
+  assert.equal(query.ok, false);
+  assert.match(query.error, /index is empty/i);
+});
