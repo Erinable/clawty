@@ -675,6 +675,7 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   );
   assert.equal(query.ok, true);
   assert.equal(query.provider, "hybrid");
+  assert.equal(query.protocol?.version, "hybrid_result.v1");
   assert.equal(typeof query.query_total_ms, "number");
   assert.ok(query.query_total_ms >= 0);
   assert.ok(query.degradation);
@@ -690,6 +691,11 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   assert.ok(Array.isArray(query.seeds[0].supporting_providers));
   assert.ok(query.seeds[0].supporting_providers.length >= 1);
   assert.equal(typeof query.seeds[0].hybrid_score, "number");
+  assert.equal(typeof query.seeds[0].retrieval, "object");
+  assert.equal(typeof query.seeds[0].retrieval.source, "string");
+  assert.equal(typeof query.seeds[0].retrieval.confidence.score, "number");
+  assert.ok(["low", "medium", "high"].includes(query.seeds[0].retrieval.confidence.level));
+  assert.equal(typeof query.seeds[0].retrieval.dedup_key, "string");
   assert.ok(query.seeds[0].hybrid_explain);
   assert.ok(query.language_distribution);
 
@@ -1134,6 +1140,8 @@ test("query_hybrid_index downweights stale vector-supported candidates with fres
   assert.ok(targetSeed.supporting_providers.includes("vector"));
   assert.equal(targetSeed.freshness_stale, true);
   assert.equal(typeof targetSeed.freshness_score, "number");
+  assert.equal(typeof targetSeed.retrieval.freshness.score, "number");
+  assert.equal(targetSeed.retrieval.freshness.stale, true);
   assert.ok(targetSeed.hybrid_explain);
   assert.ok(targetSeed.hybrid_explain.freshness_vector_penalty > 0);
 });

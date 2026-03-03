@@ -1816,6 +1816,61 @@ function hybridCandidateKey(candidate) {
   ].join("::");
 }
 
+function classifyHybridConfidenceLevel(score) {
+  const numeric = Number(score || 0);
+  if (!Number.isFinite(numeric)) {
+    return "low";
+  }
+  if (numeric >= 0.75) {
+    return "high";
+  }
+  if (numeric >= 0.45) {
+    return "medium";
+  }
+  return "low";
+}
+
+function buildHybridRetrievalProtocol(candidate) {
+  const source = normalizeHybridSource(candidate?.source);
+  const confidenceScore = roundHybridMetric(candidate?.hybrid_score);
+  const freshnessScore = Number.isFinite(Number(candidate?.freshness_score))
+    ? roundHybridMetric(candidate.freshness_score)
+    : null;
+  const freshnessAgeMs = Number.isFinite(Number(candidate?.freshness_age_ms))
+    ? Math.floor(Number(candidate.freshness_age_ms))
+    : null;
+  const freshnessStale =
+    typeof candidate?.freshness_stale === "boolean" ? candidate.freshness_stale : null;
+  const providers = Array.isArray(candidate?.supporting_providers)
+    ? Array.from(new Set(candidate.supporting_providers.map((item) => normalizeHybridSource(item)))).sort()
+    : [source];
+
+  return {
+    source,
+    confidence: {
+      score: confidenceScore,
+      level: classifyHybridConfidenceLevel(confidenceScore)
+    },
+    freshness: {
+      score: freshnessScore,
+      age_ms: freshnessAgeMs,
+      stale: freshnessStale
+    },
+    dedup_key: hybridCandidateKey(candidate),
+    supporting_sources: providers
+  };
+}
+
+function attachHybridRetrievalProtocol(candidates) {
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+  return candidates.map((candidate) => ({
+    ...candidate,
+    retrieval: buildHybridRetrievalProtocol(candidate)
+  }));
+}
+
 function buildHybridEmbeddingText(candidate) {
   const outgoingNames = (candidate?.outgoing || [])
     .slice(0, 4)
@@ -2624,7 +2679,7 @@ async function queryHybridIndexTool(args, context) {
   const freshnessRanked = Array.isArray(freshnessRerank?.ranked)
     ? freshnessRerank.ranked
     : finalRanked;
-  const seeds = freshnessRanked.slice(0, topK);
+  const seeds = attachHybridRetrievalProtocol(freshnessRanked.slice(0, topK));
   const embeddingSource = embeddingRerank?.source || {
     enabled: false,
     attempted: false,
@@ -2770,6 +2825,10 @@ async function queryHybridIndexTool(args, context) {
   return {
     ok: true,
     provider: "hybrid",
+    protocol: {
+      version: "hybrid_result.v1",
+      candidate_fields: ["source", "confidence", "freshness", "dedup_key"]
+    },
     query,
     query_total_ms: queryTotalMs,
     filters: {
