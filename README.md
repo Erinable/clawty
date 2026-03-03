@@ -60,11 +60,11 @@
 - 实时索引监听：`watch-index` 支持脏队列、debounce、batch、hash-skip 与 code/syntax/semantic/vector 协同刷新。
 - 长期记忆（Memory）：跨会话存储经验（SQLite），按 `project/global` 作用域检索注入，支持反馈学习与保留期清理。
 - 可观测与门禁：hybrid/watch JSONL 指标落盘、`metrics-report`/`metrics-check`、质量回归基准与覆盖率门禁。
-- 结构化日志：运行时 JSONL 日志（默认 `.clawty/logs/runtime.log`），支持 `level/console/file/path` 配置。
+- 结构化日志：运行时 JSONL 日志（默认 `.clawty/logs/runtime.log`），支持 `level/console/file/path` 配置；`mcp-server` 默认独立日志 `.clawty/logs/mcp-server.log`。
 
 当前边界（未实现）：
 
-- `mcp-server` 已支持 facade + toolset 分层（默认 `analysis+ops`，`edit-safe` 需显式开启），但多租户策略仍未完善。
+- `mcp-server` 已支持 facade + toolset 分层（默认 `analysis+ops`，`edit-safe` 需显式开启），并支持 `stdio/http` 传输、config 端口和 CLI 端口覆盖。
 
 ## 快速开始
 
@@ -110,6 +110,9 @@ node src/index.js completion bash
 node src/index.js doctor
 node src/index.js doctor --json
 node src/index.js watch-index
+node src/index.js mcp-server
+node src/index.js mcp-server --port 8765
+node src/index.js mcp-server --transport http --host 0.0.0.0 --port 9000
 node src/index.js upgrade
 node src/index.js uninstall --yes --skip-npm
 node src/index.js --help
@@ -421,6 +424,10 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 - `CLAWTY_METRICS_PERSIST_WATCH`：是否落盘 watch flush 指标事件，默认 `true`
 - `CLAWTY_METRICS_PERSIST_MEMORY`：是否落盘 memory 查询指标事件，默认 `true`
 - `CLAWTY_METRICS_QUERY_PREVIEW_CHARS`：指标事件中 `query_preview` 长度上限，默认 `160`
+- `CLAWTY_MCP_TRANSPORT`：MCP 传输（`stdio|http`），默认 `stdio`
+- `CLAWTY_MCP_HOST`：MCP HTTP 监听地址，默认 `127.0.0.1`
+- `CLAWTY_MCP_PORT`：MCP HTTP 监听端口（HTTP 模式默认 `8765`）
+- `CLAWTY_MCP_LOG_PATH`：MCP 服务日志路径，默认 `.clawty/logs/mcp-server.log`
 - `CLAWTY_TUNER_ENABLED`：是否启用在线调参引擎，默认 `false`
 - `CLAWTY_TUNER_MODE`：在线调参模式（`off|shadow|active`），默认 `off`
 - `CLAWTY_TUNER_DB_PATH`：在线调参状态库路径，默认 `.clawty/tuner.db`

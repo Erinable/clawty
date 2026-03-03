@@ -1,3 +1,4 @@
+import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildReport } from "../scripts/metrics-report.mjs";
@@ -457,10 +458,10 @@ function safeStringify(value) {
   }
 }
 
-function writeMessage(message) {
+function writeMessage(message, output = process.stdout) {
   const payload = safeStringify(message);
   const byteLength = Buffer.byteLength(payload, "utf8");
-  process.stdout.write(`Content-Length: ${byteLength}\r\n\r\n${payload}`);
+  output.write(`Content-Length: ${byteLength}\r\n\r\n${payload}`);
 }
 
 function isPlainObject(value) {
@@ -1329,7 +1330,48 @@ function buildRpcError(id, code, message, data = null) {
   };
 }
 
+function normalizeTransport(value, fallback = "stdio") {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "stdio" || normalized === "http") {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeHost(value, fallback = "127.0.0.1") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.trim();
+  return normalized || fallback;
+}
+
+function normalizePort(value, fallback, label = "port") {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === "string" && value.trim().length === 0) {
+    return fallback;
+  }
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid ${label}: expected integer in [1, 65535]`);
+  }
+  return port;
+}
+
 function normalizeServerOptions(options = {}) {
+  const hasExplicitPort =
+    options.port !== undefined &&
+    options.port !== null &&
+    !(typeof options.port === "string" && options.port.trim().length === 0);
+  const transportInput =
+    typeof options.transport === "string" && options.transport.trim().length > 0
+      ? options.transport.trim().toLowerCase()
+      : hasExplicitPort
+        ? "http"
+        : "stdio";
+  const transport = normalizeTransport(transportInput, "stdio");
   const workspaceRoot =
     typeof options.workspaceRoot === "string" && options.workspaceRoot.trim().length > 0
       ? path.resolve(options.workspaceRoot)
@@ -1340,6 +1382,10 @@ function normalizeServerOptions(options = {}) {
     workspaceRoot,
     toolTimeoutMs: Number.isFinite(options.toolTimeoutMs) ? options.toolTimeoutMs : 180_000,
     exposeLowLevel: options.exposeLowLevel === true,
+    transport,
+    host: normalizeHost(options.host, "127.0.0.1"),
+    port:
+      transport === "http" ? normalizePort(options.port, 8765, "mcp-server port") : null,
     logger: options.logger && typeof options.logger === "object" ? options.logger : null,
     enabledToolsets,
     exposedFacadeToolNames,
@@ -1350,21 +1396,125 @@ function normalizeServerOptions(options = {}) {
   };
 }
 
-export async function runMcpServer(options = {}) {
-  const serverOptions = normalizeServerOptions(options);
-  const logger = serverOptions.logger?.child
-    ? serverOptions.logger.child({
-        component: "mcp-server",
-        context: {
-          workspace_root: serverOptions.workspaceRoot
+async function handleRpcRequest(request, serverOptions, tools, logger) {
+  const id = request?.id;
+  const method = request?.method;
+  const params = request?.params || {};
+
+  if (!method || typeof method !== "string") {
+    logWith(logger, "warn", "mcp.invalid_request", { id });
+    return {
+      response: buildRpcError(id, -32600, "Invalid Request"),
+      shouldExit: false
+    };
+  }
+
+  if (method === "notifications/initialized") {
+    return { response: null, shouldExit: false };
+  }
+
+  if (method === "shutdown") {
+    return {
+      response: {
+        jsonrpc: "2.0",
+        id: id ?? null,
+        result: {}
+      },
+      shouldExit: false
+    };
+  }
+
+  if (method === "exit") {
+    logWith(logger, "info", "mcp.exit");
+    return { response: null, shouldExit: true };
+  }
+
+  if (method === "initialize") {
+    logWith(logger, "info", "mcp.initialize", { id });
+    return {
+      response: {
+        jsonrpc: "2.0",
+        id: id ?? null,
+        result: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {
+            tools: {}
+          },
+          serverInfo: {
+            name: MCP_SERVER_NAME,
+            version: MCP_SERVER_VERSION
+          }
         }
-      })
-    : serverOptions.logger;
-  const tools = buildToolDefinitions(serverOptions);
-  logWith(logger, "info", "mcp.server_start", {
-    expose_low_level: serverOptions.exposeLowLevel,
-    toolsets: Array.from(serverOptions.enabledToolsets || [])
-  });
+      },
+      shouldExit: false
+    };
+  }
+
+  if (method === "tools/list") {
+    logWith(logger, "debug", "mcp.tools_list", { id, tool_count: tools.length });
+    return {
+      response: {
+        jsonrpc: "2.0",
+        id: id ?? null,
+        result: {
+          tools
+        }
+      },
+      shouldExit: false
+    };
+  }
+
+  if (method === "tools/call") {
+    try {
+      const toolName = typeof params?.name === "string" ? params.name : "";
+      const toolArgs = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
+      const toolStartedAt = Date.now();
+      const result = await callTool(toolName, toolArgs, serverOptions);
+      logWith(logger, "info", "mcp.tool_call", {
+        id,
+        tool_name: toolName,
+        ok: result?.ok !== false,
+        duration_ms: Math.max(0, Date.now() - toolStartedAt)
+      });
+      return {
+        response: {
+          jsonrpc: "2.0",
+          id: id ?? null,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(result, null, 2)
+              }
+            ],
+            structuredContent: result
+          }
+        },
+        shouldExit: false
+      };
+    } catch (error) {
+      logWith(logger, "error", "mcp.tool_call_failed", {
+        id,
+        tool_name: params?.name || null,
+        error
+      });
+      return {
+        response: buildRpcError(id, -32603, error?.message || "Internal error", {
+          tool: params?.name || null
+        }),
+        shouldExit: false
+      };
+    }
+  }
+
+  logWith(logger, "warn", "mcp.method_not_found", { id, method });
+  return {
+    response: buildRpcError(id, -32601, `Method not found: ${method}`),
+    shouldExit: false
+  };
+}
+
+async function runStdioTransport(serverOptions, tools, logger) {
   let rawBuffer = Buffer.alloc(0);
   let shouldExit = false;
 
@@ -1383,109 +1533,18 @@ export async function runMcpServer(options = {}) {
       return;
     }
 
-    const id = request?.id;
-    const method = request?.method;
-    const params = request?.params || {};
-
-    if (!method || typeof method !== "string") {
-      writeMessage(buildRpcError(id, -32600, "Invalid Request"));
-      logWith(logger, "warn", "mcp.invalid_request", { id });
-      return;
+    const { response, shouldExit: shouldClose } = await handleRpcRequest(
+      request,
+      serverOptions,
+      tools,
+      logger
+    );
+    if (response) {
+      writeMessage(response);
     }
-
-    if (method === "notifications/initialized") {
-      return;
-    }
-
-    if (method === "shutdown") {
-      writeMessage({
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {}
-      });
-      return;
-    }
-
-    if (method === "exit") {
+    if (shouldClose) {
       shouldExit = true;
-      logWith(logger, "info", "mcp.exit");
-      return;
     }
-
-    if (method === "initialize") {
-      logWith(logger, "info", "mcp.initialize", { id });
-      writeMessage({
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: MCP_SERVER_NAME,
-            version: MCP_SERVER_VERSION
-          }
-        }
-      });
-      return;
-    }
-
-    if (method === "tools/list") {
-      logWith(logger, "debug", "mcp.tools_list", { id, tool_count: tools.length });
-      writeMessage({
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {
-          tools
-        }
-      });
-      return;
-    }
-
-    if (method === "tools/call") {
-      try {
-        const toolName = typeof params?.name === "string" ? params.name : "";
-        const toolArgs =
-          params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
-        const toolStartedAt = Date.now();
-        const result = await callTool(toolName, toolArgs, serverOptions);
-        logWith(logger, "info", "mcp.tool_call", {
-          id,
-          tool_name: toolName,
-          ok: result?.ok !== false,
-          duration_ms: Math.max(0, Date.now() - toolStartedAt)
-        });
-        writeMessage({
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(result, null, 2)
-              }
-            ],
-            structuredContent: result
-          }
-        });
-      } catch (error) {
-        logWith(logger, "error", "mcp.tool_call_failed", {
-          id,
-          tool_name: params?.name || null,
-          error
-        });
-        writeMessage(
-          buildRpcError(id, -32603, error?.message || "Internal error", {
-            tool: params?.name || null
-          })
-        );
-      }
-      return;
-    }
-
-    logWith(logger, "warn", "mcp.method_not_found", { id, method });
-    writeMessage(buildRpcError(id, -32601, `Method not found: ${method}`));
   };
 
   const parseNextPayload = () => {
@@ -1543,10 +1602,7 @@ export async function runMcpServer(options = {}) {
   };
 
   for await (const chunk of process.stdin) {
-    rawBuffer = Buffer.concat([
-      rawBuffer,
-      Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    ]);
+    rawBuffer = Buffer.concat([rawBuffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
 
     while (true) {
       const payload = parseNextPayload();
@@ -1555,19 +1611,190 @@ export async function runMcpServer(options = {}) {
       }
       await handlePayload(payload);
       if (shouldExit) {
-        logWith(logger, "info", "mcp.server_stop");
+        logWith(logger, "info", "mcp.server_stop", { transport: "stdio" });
         return;
       }
     }
   }
 }
 
-function parseMcpServerArgs(argv = []) {
+function readHttpRequestBody(req, maxBytes = 1_000_000) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      const normalized = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += normalized.length;
+      if (size > maxBytes) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(normalized);
+    });
+    req.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", reject);
+  });
+}
+
+function writeJsonResponse(res, statusCode, payload) {
+  const body = safeStringify(payload);
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body, "utf8")
+  });
+  res.end(body);
+}
+
+function writeNoContent(res) {
+  res.statusCode = 204;
+  res.end();
+}
+
+async function runHttpTransport(serverOptions, tools, logger) {
+  const host = serverOptions.host;
+  const port = serverOptions.port;
+  let serverRef = null;
+  let closing = false;
+
+  await new Promise((resolve, reject) => {
+    const cleanupHandlers = [];
+    const registerCleanup = (fn) => {
+      cleanupHandlers.push(fn);
+    };
+    const runCleanup = () => {
+      for (const fn of cleanupHandlers.splice(0)) {
+        try {
+          fn();
+        } catch {
+          // Best-effort cleanup.
+        }
+      }
+    };
+    const closeServer = () => {
+      if (closing || !serverRef) {
+        return;
+      }
+      closing = true;
+      serverRef.close((error) => {
+        runCleanup();
+        if (error) {
+          reject(error);
+          return;
+        }
+        logWith(logger, "info", "mcp.server_stop", { transport: "http" });
+        resolve();
+      });
+    };
+
+    const handleSignal = () => {
+      closeServer();
+    };
+    process.once("SIGINT", handleSignal);
+    process.once("SIGTERM", handleSignal);
+    registerCleanup(() => {
+      process.off("SIGINT", handleSignal);
+      process.off("SIGTERM", handleSignal);
+    });
+
+    const server = http.createServer(async (req, res) => {
+      try {
+        const method = String(req.method || "").toUpperCase();
+        if (method === "GET" && (req.url === "/" || req.url === "/healthz")) {
+          writeJsonResponse(res, 200, {
+            ok: true,
+            transport: "http",
+            host,
+            port
+          });
+          return;
+        }
+        if (method !== "POST") {
+          writeJsonResponse(res, 405, {
+            ok: false,
+            error: "Method not allowed. Use POST for JSON-RPC payloads."
+          });
+          return;
+        }
+
+        const rawBody = await readHttpRequestBody(req);
+        let request;
+        try {
+          request = JSON.parse(rawBody || "");
+        } catch {
+          logWith(logger, "warn", "mcp.parse_error");
+          writeJsonResponse(res, 400, buildRpcError(null, -32700, "Parse error"));
+          return;
+        }
+
+        const { response, shouldExit } = await handleRpcRequest(request, serverOptions, tools, logger);
+        if (response) {
+          writeJsonResponse(res, 200, response);
+        } else {
+          writeNoContent(res);
+        }
+        if (shouldExit) {
+          setTimeout(closeServer, 0);
+        }
+      } catch (error) {
+        logWith(logger, "error", "mcp.http_request_failed", { error });
+        if (!res.headersSent) {
+          writeJsonResponse(res, 500, buildRpcError(null, -32603, "Internal error"));
+        } else {
+          res.end();
+        }
+      }
+    });
+
+    serverRef = server;
+    server.on("error", (error) => {
+      runCleanup();
+      reject(error);
+    });
+    server.listen(port, host, () => {
+      logWith(logger, "info", "mcp.http_listening", { host, port });
+    });
+  });
+}
+
+export async function runMcpServer(options = {}) {
+  const serverOptions = normalizeServerOptions(options);
+  const logger = serverOptions.logger?.child
+    ? serverOptions.logger.child({
+        component: "mcp-server",
+        context: {
+          workspace_root: serverOptions.workspaceRoot
+        }
+      })
+    : serverOptions.logger;
+  const tools = buildToolDefinitions(serverOptions);
+  logWith(logger, "info", "mcp.server_start", {
+    transport: serverOptions.transport,
+    host: serverOptions.transport === "http" ? serverOptions.host : null,
+    port: serverOptions.transport === "http" ? serverOptions.port : null,
+    expose_low_level: serverOptions.exposeLowLevel,
+    toolsets: Array.from(serverOptions.enabledToolsets || [])
+  });
+
+  if (serverOptions.transport === "http") {
+    await runHttpTransport(serverOptions, tools, logger);
+    return;
+  }
+  await runStdioTransport(serverOptions, tools, logger);
+}
+
+export function parseMcpServerArgs(argv = []) {
   const options = {
     help: false,
     workspaceRoot: null,
-    exposeLowLevel: false,
-    toolsets: []
+    exposeLowLevel: null,
+    toolsets: [],
+    transport: null,
+    host: null,
+    port: null,
+    logPath: null
   };
   for (let idx = 0; idx < argv.length; idx += 1) {
     const arg = argv[idx];
@@ -1620,15 +1847,122 @@ function parseMcpServerArgs(argv = []) {
       }
       continue;
     }
+    if (arg === "--transport") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --transport");
+      }
+      const normalized = String(raw).trim().toLowerCase();
+      if (!["stdio", "http"].includes(normalized)) {
+        throw new Error(`Unknown transport: ${raw}. Expected one of: stdio, http`);
+      }
+      options.transport = normalized;
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--transport=")) {
+      const raw = arg.slice("--transport=".length);
+      const normalized = String(raw).trim().toLowerCase();
+      if (!["stdio", "http"].includes(normalized)) {
+        throw new Error(`Unknown transport: ${raw}. Expected one of: stdio, http`);
+      }
+      options.transport = normalized;
+      continue;
+    }
+    if (arg === "--host") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --host");
+      }
+      options.host = String(raw).trim();
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--host=")) {
+      options.host = String(arg.slice("--host=".length)).trim();
+      continue;
+    }
+    if (arg === "--port") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --port");
+      }
+      options.port = normalizePort(raw, null, "--port");
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--port=")) {
+      options.port = normalizePort(arg.slice("--port=".length), null, "--port");
+      continue;
+    }
+    if (arg === "--log-path") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --log-path");
+      }
+      options.logPath = String(raw).trim();
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--log-path=")) {
+      options.logPath = String(arg.slice("--log-path=".length)).trim();
+      continue;
+    }
     throw new Error(`Unknown mcp-server argument: ${arg}`);
   }
   return options;
 }
 
+export function resolveMcpServerRuntimeOptions(args = {}, config = {}) {
+  const parsedArgs = isPlainObject(args) ? args : {};
+  const mcpConfig = isPlainObject(config?.mcpServer) ? config.mcpServer : {};
+  const toolsetsFromArgs = Array.isArray(parsedArgs.toolsets) ? parsedArgs.toolsets : [];
+  const toolsetsFromConfig = parseToolsetTokens(mcpConfig.toolsets);
+  const hasExplicitPort =
+    parsedArgs.port !== undefined &&
+    parsedArgs.port !== null &&
+    !(typeof parsedArgs.port === "string" && parsedArgs.port.trim().length === 0);
+  const hasConfigPort =
+    mcpConfig.port !== undefined &&
+    mcpConfig.port !== null &&
+    !(typeof mcpConfig.port === "string" && mcpConfig.port.trim().length === 0);
+  const hasConfigTransport =
+    typeof mcpConfig.transport === "string" && mcpConfig.transport.trim().length > 0;
+  const transportInput =
+    parsedArgs.transport ||
+    (hasExplicitPort ? "http" : hasConfigTransport ? mcpConfig.transport : hasConfigPort ? "http" : null);
+  const transport = normalizeTransport(transportInput, "stdio");
+  if (transport === "stdio" && hasExplicitPort) {
+    throw new Error("--port cannot be used with --transport stdio");
+  }
+
+  return {
+    workspaceRoot: path.resolve(parsedArgs.workspaceRoot || config.workspaceRoot || process.cwd()),
+    exposeLowLevel: parsedArgs.exposeLowLevel === true || mcpConfig.exposeLowLevel === true,
+    toolsets: toolsetsFromArgs.length > 0 ? toolsetsFromArgs : toolsetsFromConfig,
+    transport,
+    host: normalizeHost(parsedArgs.host || mcpConfig.host, "127.0.0.1"),
+    port:
+      transport === "http"
+        ? normalizePort(parsedArgs.port ?? mcpConfig.port, 8765, "mcp-server port")
+        : null,
+    logPath:
+      typeof parsedArgs.logPath === "string" && parsedArgs.logPath.trim().length > 0
+        ? parsedArgs.logPath.trim()
+        : typeof mcpConfig.logPath === "string" && mcpConfig.logPath.trim().length > 0
+          ? mcpConfig.logPath.trim()
+          : path.join(".clawty", "logs", "mcp-server.log")
+  };
+}
+
 function printMcpHelp() {
   console.log(
-    "Usage: clawty mcp-server [--workspace <path>] [--toolset <name>] [--expose-low-level]"
+    "Usage: clawty mcp-server [--workspace <path>] [--toolset <name>] [--expose-low-level] [--transport <stdio|http>] [--host <host>] [--port <n>] [--log-path <path>]"
   );
+  console.log("");
+  console.log("Quick start:");
+  console.log("- clawty mcp-server                       # use config defaults (recommended)");
+  console.log("- clawty mcp-server --port 8765           # quick HTTP mode on 127.0.0.1:8765");
   console.log("");
   console.log("Toolsets:");
   console.log("- analysis: search/explain/trace/impact/read-only code navigation");
@@ -1644,6 +1978,9 @@ function printMcpHelp() {
   console.log("- reindex_codebase requires --toolset edit-safe (or --toolset all)");
   console.log("");
   console.log("Optional:");
+  console.log("- --transport supports stdio (default) or http.");
+  console.log("- --port implies http transport if --transport is omitted.");
+  console.log("- --log-path overrides log file (default .clawty/logs/mcp-server.log).");
   console.log("- --expose-low-level exposes raw monitoring/index/LSP tools for debugging.");
 }
 
@@ -1654,17 +1991,25 @@ async function main() {
     return;
   }
   const config = loadConfig({ allowMissingApiKey: true });
+  const runtimeOptions = resolveMcpServerRuntimeOptions(args, config);
+  const mcpLogFilePath = path.isAbsolute(runtimeOptions.logPath)
+    ? runtimeOptions.logPath
+    : path.resolve(runtimeOptions.workspaceRoot, runtimeOptions.logPath);
   const logger = createRuntimeLogger(config, {
     component: "mcp-server",
     consoleStream: process.stderr,
+    filePath: mcpLogFilePath,
     context: {
       entrypoint: "mcp-server"
     }
   });
   await runMcpServer({
-    workspaceRoot: args.workspaceRoot || config.workspaceRoot,
-    exposeLowLevel: args.exposeLowLevel,
-    toolsets: args.toolsets,
+    workspaceRoot: runtimeOptions.workspaceRoot,
+    exposeLowLevel: runtimeOptions.exposeLowLevel,
+    toolsets: runtimeOptions.toolsets,
+    transport: runtimeOptions.transport,
+    host: runtimeOptions.host,
+    port: runtimeOptions.port,
     toolTimeoutMs: config.toolTimeoutMs,
     logger,
     lsp: config.lsp,

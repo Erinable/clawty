@@ -202,9 +202,10 @@ export function createLogger(options = {}) {
   };
 }
 
-function resolveLogFilePath(workspaceRoot, logging = {}) {
-  const rawPath =
-    typeof logging.path === "string" && logging.path.trim().length > 0
+function resolveLogFilePath(workspaceRoot, logging = {}, overridePath = null) {
+  const rawPath = typeof overridePath === "string" && overridePath.trim().length > 0
+    ? overridePath.trim()
+    : typeof logging.path === "string" && logging.path.trim().length > 0
       ? logging.path.trim()
       : path.join(".clawty", "logs", "runtime.log");
   if (path.isAbsolute(rawPath)) {
@@ -222,7 +223,7 @@ export function createRuntimeLogger(config = {}, options = {}) {
     console: options.console ?? logging.console ?? false,
     consoleStream: options.consoleStream || process.stderr,
     file: options.file ?? logging.file ?? true,
-    filePath: resolveLogFilePath(workspaceRoot, logging),
+    filePath: resolveLogFilePath(workspaceRoot, logging, options.filePath),
     component: options.component || "runtime",
     context: isPlainObject(options.context) ? options.context : {}
   });

@@ -54,5 +54,9 @@ test("mcp-server help includes workspace option", async () => {
   assert.match(stdout, /clawty mcp-server/);
   assert.match(stdout, /--workspace <path>/);
   assert.match(stdout, /--toolset <name>/);
+  assert.match(stdout, /--transport <stdio\|http>/);
+  assert.match(stdout, /--host <host>/);
+  assert.match(stdout, /--port <n>/);
+  assert.match(stdout, /--log-path <path>/);
   assert.match(stdout, /--expose-low-level/);
 });

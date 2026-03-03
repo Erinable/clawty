@@ -69,6 +69,10 @@ node src/index.js doctor --json
 # 实时索引监听
 node src/index.js watch-index
 
+# MCP 服务（默认读取 config）
+node src/index.js mcp-server
+node src/index.js mcp-server --port 8765
+
 # 生成 shell completion
 node src/index.js completion bash
 
@@ -258,8 +262,9 @@ CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=active node src/index.js run "..."
 1. 默认日志路径是 `.clawty/logs/runtime.log`（JSONL）。
 2. 可通过 `CLAWTY_LOG_LEVEL` 调整日志等级（`debug|info|warn|error|off`）。
 3. 可通过 `CLAWTY_LOG_CONSOLE` 控制是否输出到控制台，`CLAWTY_LOG_FILE` 控制是否写文件。
+4. `mcp-server` 默认日志路径是 `.clawty/logs/mcp-server.log`，可用 `--log-path` 或 `CLAWTY_MCP_LOG_PATH` 覆盖。
 
 ## 9. 当前边界
 
-1. 已支持 `mcp-server`，默认 toolset 为 `analysis+ops`；`reindex_codebase` 需显式 `--toolset edit-safe`，底层工具需 `--expose-low-level`。
+1. 已支持 `mcp-server`，默认 toolset 为 `analysis+ops`；支持 `stdio/http`，`--port` 可直接启 HTTP（也可走 config 端口）；`reindex_codebase` 需显式 `--toolset edit-safe`，底层工具需 `--expose-low-level`。
 2. 长期记忆已是 MVP 形态，当前仍需继续优化学习策略与排序质量。

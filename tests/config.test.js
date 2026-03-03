@@ -65,6 +65,12 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           file: true,
           path: ".clawty/logs/custom-runtime.log"
         },
+        mcpServer: {
+          transport: "http",
+          host: "0.0.0.0",
+          port: 9777,
+          logPath: ".clawty/logs/custom-mcp.log"
+        },
         onlineTuner: {
           enabled: true,
           mode: "shadow",
@@ -141,6 +147,10 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.logging.console, true);
   assert.equal(config.logging.file, true);
   assert.equal(config.logging.path, ".clawty/logs/custom-runtime.log");
+  assert.equal(config.mcpServer.transport, "http");
+  assert.equal(config.mcpServer.host, "0.0.0.0");
+  assert.equal(config.mcpServer.port, 9777);
+  assert.equal(config.mcpServer.logPath, ".clawty/logs/custom-mcp.log");
   assert.equal(config.onlineTuner.enabled, true);
   assert.equal(config.onlineTuner.mode, "shadow");
   assert.equal(config.onlineTuner.dbPath, ".clawty/custom-tuner.db");
@@ -218,6 +228,10 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_LOG_LEVEL: "warn",
       CLAWTY_LOG_CONSOLE: "true",
       CLAWTY_LOG_FILE: "false",
+      CLAWTY_MCP_TRANSPORT: "http",
+      CLAWTY_MCP_HOST: "0.0.0.0",
+      CLAWTY_MCP_PORT: "8899",
+      CLAWTY_MCP_LOG_PATH: ".clawty/logs/mcp-env.log",
       CLAWTY_MEMORY_MIN_LESSON_CHARS: "120",
       CLAWTY_MEMORY_DEDUPE_ENABLED: "false",
       CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6",
@@ -242,6 +256,10 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.logging.level, "warn");
   assert.equal(config.logging.console, true);
   assert.equal(config.logging.file, false);
+  assert.equal(config.mcpServer.transport, "http");
+  assert.equal(config.mcpServer.host, "0.0.0.0");
+  assert.equal(config.mcpServer.port, 8899);
+  assert.equal(config.mcpServer.logPath, ".clawty/logs/mcp-env.log");
   assert.equal(config.memory.minLessonChars, 120);
   assert.equal(config.memory.dedupeEnabled, false);
   assert.equal(config.memory.quarantineThreshold, 6);
@@ -348,6 +366,25 @@ test("loadConfig validates OPENAI_BASE_URL and embedding base URL", async (t) =>
         }
       }),
     /Invalid CLAWTY_EMBEDDING_BASE_URL/
+  );
+});
+
+test("loadConfig validates CLAWTY_MCP_PORT range", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  assert.throws(
+    () =>
+      loadConfig({
+        cwd: workspaceRoot,
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          CLAWTY_MCP_PORT: "70000"
+        }
+      }),
+    /Invalid CLAWTY_MCP_PORT/
   );
 });
 

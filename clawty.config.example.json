@@ -53,6 +53,12 @@
     "file": true,
     "path": ".clawty/logs/runtime.log"
   },
+  "mcpServer": {
+    "transport": "stdio",
+    "host": "127.0.0.1",
+    "port": 8765,
+    "logPath": ".clawty/logs/mcp-server.log"
+  },
   "onlineTuner": {
     "enabled": false,
     "mode": "off",

@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { resolveMcpServerRuntimeOptions } from "../src/mcp-server.js";
 import { runTool } from "../src/tools.js";
 import { createWorkspace, removeWorkspace } from "./helpers/workspace.js";
 
@@ -93,6 +96,131 @@ function createJsonRpcClient(child) {
     notify
   };
 }
+
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on("error", (error) => {
+      if (error?.code === "EPERM" || error?.code === "EACCES") {
+        resolve(null);
+        return;
+      }
+      reject(error);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port || null);
+      });
+    });
+  });
+}
+
+function httpRequest({ method = "GET", host = "127.0.0.1", port, pathName = "/", body = null }) {
+  return new Promise((resolve, reject) => {
+    const bodyText = body == null ? null : JSON.stringify(body);
+    const headers = {};
+    if (bodyText !== null) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(bodyText, "utf8");
+    }
+    const req = http.request(
+      {
+        method,
+        host,
+        port,
+        path: pathName,
+        headers
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          let json = null;
+          try {
+            json = text ? JSON.parse(text) : null;
+          } catch {
+            json = null;
+          }
+          resolve({
+            statusCode: res.statusCode || 0,
+            text,
+            json
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(2000, () => {
+      req.destroy(new Error("HTTP request timeout"));
+    });
+    if (bodyText !== null) {
+      req.write(bodyText);
+    }
+    req.end();
+  });
+}
+
+async function waitForHttpReady(port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await httpRequest({
+        method: "GET",
+        port,
+        pathName: "/healthz"
+      });
+      if (response.statusCode === 200) {
+        return;
+      }
+    } catch {
+      // Retry until timeout.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`mcp http transport did not become ready on port ${port}`);
+}
+
+test("resolveMcpServerRuntimeOptions infers http transport when config provides port", () => {
+  const resolved = resolveMcpServerRuntimeOptions(
+    {
+      toolsets: []
+    },
+    {
+      workspaceRoot: path.resolve("tmp-clawty-test"),
+      mcpServer: {
+        host: "127.0.0.1",
+        port: 9010
+      }
+    }
+  );
+  assert.equal(resolved.transport, "http");
+  assert.equal(resolved.port, 9010);
+});
+
+test("resolveMcpServerRuntimeOptions rejects --transport stdio with --port", () => {
+  assert.throws(
+    () =>
+      resolveMcpServerRuntimeOptions(
+        {
+          transport: "stdio",
+          port: 9011
+        },
+        {
+          workspaceRoot: path.resolve("tmp-clawty-test")
+        }
+      ),
+    /--port cannot be used with --transport stdio/
+  );
+});
 
 test("mcp-server exposes facade tools by default", async (t) => {
   const workspaceRoot = await createWorkspace("clawty-mcp-server-");
@@ -299,4 +427,183 @@ test("mcp-server can expose low-level tools via flag", async (t) => {
   assert.ok(toolNames.has("monitor_report"));
 
   rpc.notify("exit", {});
+});
+
+test("mcp-server supports HTTP transport with explicit port", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-mcp-server-http-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const port = await findFreePort();
+  if (!port) {
+    t.skip("sandbox disallows opening local TCP listeners");
+    return;
+  }
+  const child = spawn(
+    "node",
+    [
+      CLI_PATH,
+      "mcp-server",
+      `--workspace=${workspaceRoot}`,
+      "--transport",
+      "http",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port)
+    ],
+    {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await once(child, "close").catch(() => {});
+    }
+  });
+
+  await waitForHttpReady(port);
+  const initialize = await httpRequest({
+    method: "POST",
+    port,
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {}
+    }
+  });
+  assert.equal(initialize.statusCode, 200);
+  assert.equal(initialize.json?.result?.serverInfo?.name, "clawty-mcp");
+
+  const toolsList = await httpRequest({
+    method: "POST",
+    port,
+    body: {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+      params: {}
+    }
+  });
+  assert.equal(toolsList.statusCode, 200);
+  const toolNames = new Set((toolsList.json?.result?.tools || []).map((tool) => tool.name));
+  assert.ok(toolNames.has("search_code"));
+  assert.ok(toolNames.has("monitor_system"));
+
+  const exitNotification = await httpRequest({
+    method: "POST",
+    port,
+    body: {
+      jsonrpc: "2.0",
+      method: "exit",
+      params: {}
+    }
+  });
+  assert.equal(exitNotification.statusCode, 204);
+  await once(child, "close");
+});
+
+test("mcp-server can read HTTP host/port from config", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-mcp-server-http-config-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const port = await findFreePort();
+  if (!port) {
+    t.skip("sandbox disallows opening local TCP listeners");
+    return;
+  }
+  await fs.mkdir(path.join(workspaceRoot, ".clawty"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceRoot, ".clawty", "config.json"),
+    JSON.stringify(
+      {
+        mcpServer: {
+          transport: "http",
+          host: "127.0.0.1",
+          port
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const child = spawn("node", [CLI_PATH, "mcp-server"], {
+    cwd: workspaceRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await once(child, "close").catch(() => {});
+    }
+  });
+
+  await waitForHttpReady(port);
+  const toolsList = await httpRequest({
+    method: "POST",
+    port,
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {}
+    }
+  });
+  assert.equal(toolsList.statusCode, 200);
+  const toolNames = new Set((toolsList.json?.result?.tools || []).map((tool) => tool.name));
+  assert.ok(toolNames.has("search_code"));
+  assert.ok(toolNames.has("monitor_system"));
+
+  const exitNotification = await httpRequest({
+    method: "POST",
+    port,
+    body: {
+      jsonrpc: "2.0",
+      method: "exit",
+      params: {}
+    }
+  });
+  assert.equal(exitNotification.statusCode, 204);
+  await once(child, "close");
+});
+
+test("mcp-server writes logs to dedicated log file", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-mcp-server-logs-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+  const logPath = path.join(workspaceRoot, "mcp-custom.log");
+  const child = spawn(
+    "node",
+    [CLI_PATH, "mcp-server", `--workspace=${workspaceRoot}`, "--log-path", logPath],
+    {
+      cwd: repoRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    }
+  );
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await once(child, "close").catch(() => {});
+    }
+  });
+
+  const rpc = createJsonRpcClient(child);
+  await rpc.call("initialize", {});
+  rpc.notify("exit", {});
+  await once(child, "close");
+
+  const content = await fs.readFile(logPath, "utf8");
+  assert.match(content, /"event":"mcp\.server_start"/);
 });

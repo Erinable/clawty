@@ -237,6 +237,20 @@ function readHttpUrl(value, fallback, label) {
   return candidate.replace(/\/+$/, "");
 }
 
+function readPort(value, fallback, label) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === "string" && value.trim().length === 0) {
+    return fallback;
+  }
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`Invalid ${label}: expected integer in [1, 65535]`);
+  }
+  return n;
+}
+
 function deepPick(object, pathList) {
   let current = object;
   for (const key of pathList) {
@@ -491,6 +505,28 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const mcpTransport = readEnumString(
+    env.CLAWTY_MCP_TRANSPORT ?? deepPick(fileConfig, ["mcpServer", "transport"]),
+    "stdio",
+    ["stdio", "http"]
+  );
+  const mcpServer = {
+    transport: mcpTransport,
+    host: readString(
+      env.CLAWTY_MCP_HOST ?? deepPick(fileConfig, ["mcpServer", "host"]),
+      "127.0.0.1"
+    ),
+    port: readPort(
+      env.CLAWTY_MCP_PORT ?? deepPick(fileConfig, ["mcpServer", "port"]),
+      null,
+      "CLAWTY_MCP_PORT"
+    ),
+    logPath: readString(
+      env.CLAWTY_MCP_LOG_PATH ?? deepPick(fileConfig, ["mcpServer", "logPath"]),
+      path.join(".clawty", "logs", "mcp-server.log")
+    )
+  };
+
   const onlineTunerEnabled = readBoolean(
     env.CLAWTY_TUNER_ENABLED ?? deepPick(fileConfig, ["onlineTuner", "enabled"]),
     false
@@ -722,6 +758,7 @@ export function loadConfig(options = {}) {
     agentContext,
     metrics,
     logging,
+    mcpServer,
     onlineTuner,
     memory,
     sources: {
