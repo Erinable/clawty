@@ -470,11 +470,17 @@ export function takeDirtyQueueBatch(queueState, maxBatchSize, nowMs = Date.now()
   const size = Math.max(1, Number(maxBatchSize) || 1);
   const firstQueuedAt = Number(queueState.first_enqueued_at_ms || 0);
 
-  for (const filePath of Array.from(queueState.changed_paths.values()).sort().slice(0, size)) {
+  for (const filePath of queueState.changed_paths.values()) {
+    if (changed.length >= size) {
+      break;
+    }
     queueState.changed_paths.delete(filePath);
     changed.push(filePath);
   }
-  for (const filePath of Array.from(queueState.deleted_paths.values()).sort().slice(0, size)) {
+  for (const filePath of queueState.deleted_paths.values()) {
+    if (deleted.length >= size) {
+      break;
+    }
     queueState.deleted_paths.delete(filePath);
     deleted.push(filePath);
   }

@@ -122,6 +122,24 @@ test("dirty queue deduplicates paths and flushes by debounce/batch rules", () =>
   assert.equal(batch.queue_depth_after, 0);
 });
 
+test("takeDirtyQueueBatch preserves insertion order without full sort", () => {
+  const queue = createDirtyQueueState();
+  enqueueDirtyQueue(
+    queue,
+    {
+      changed_paths: ["src/z.ts", "src/a.ts", "src/m.ts"],
+      deleted_paths: ["src/d2.ts", "src/d1.ts"]
+    },
+    1000
+  );
+
+  const batch = takeDirtyQueueBatch(queue, 2, 1200);
+  assert.deepEqual(batch.changed_paths, ["src/z.ts", "src/a.ts"]);
+  assert.deepEqual(batch.deleted_paths, ["src/d2.ts", "src/d1.ts"]);
+  assert.equal(batch.queue_depth_before, 5);
+  assert.equal(batch.queue_depth_after, 1);
+});
+
 test("hash skip filters unchanged files after cache seed", async (t) => {
   const workspaceRoot = await createWorkspace();
   t.after(async () => {
