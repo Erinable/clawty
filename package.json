@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "MVP CLI AI coding assistant",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Erinable/clawty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Erinable/clawty/issues"
+  },
+  "homepage": "https://github.com/Erinable/clawty#readme",
   "type": "module",
   "bin": {
     "clawty": "./src/index.js"
