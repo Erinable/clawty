@@ -37,7 +37,7 @@ const ROOT_COMMANDS = [
   ["clawty init", "bootstrap repository analysis"],
   ["clawty doctor", "run diagnostics and health checks"],
   ["clawty watch-index", "auto refresh indexes on file changes"],
-  ["clawty mcp-server", "start MCP stdio server for monitoring tools"],
+  ["clawty mcp-server", "start MCP stdio server for monitoring and code intelligence"],
   ["clawty upgrade [target]", "upgrade clawty via npm"],
   ["clawty uninstall", "uninstall clawty and cleanup files"]
 ];
@@ -248,7 +248,9 @@ function printMcpServerHelp() {
     renderHelp({
       commands: [["clawty mcp-server", "start MCP stdio server"]],
       options: [
-        ["--workspace <path>", "workspace root for monitoring tools"],
+        ["--workspace <path>", "workspace root for MCP tools"],
+        ["--toolset <name>", "facade toolset: analysis|edit-safe|ops|all (repeatable)"],
+        ["--expose-low-level", "also expose raw index/LSP/monitor tools"],
         ["-h, --help", "show help"]
       ]
     })
@@ -586,7 +588,7 @@ function generateZshCompletion(binary = "clawty") {
     "  'config:manage configuration'",
     "  'memory:manage long-term memory'",
     "  'monitor:show runtime metrics and tuner stats'",
-    "  'mcp-server:start MCP stdio server for monitoring tools'",
+    "  'mcp-server:start MCP stdio server for monitoring and code intelligence'",
     "  'completion:generate shell completion script'",
     "  'upgrade:upgrade clawty via npm'",
     "  'uninstall:uninstall clawty and cleanup files'",
@@ -606,7 +608,7 @@ function generateFishCompletion(binary = "clawty") {
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a config -d \"manage configuration\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a memory -d \"manage long-term memory\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a monitor -d \"show runtime metrics and tuner stats\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a mcp-server -d \"start MCP stdio server for monitoring tools\"`,
+    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a mcp-server -d \"start MCP stdio server for monitoring and code intelligence\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a completion -d \"generate shell completion script\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a upgrade -d \"upgrade clawty via npm\"`,
     `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a uninstall -d \"uninstall clawty and cleanup files\"`,
@@ -1124,6 +1126,8 @@ async function handleMcpServerCommand(argv) {
 
   const { runMcpServer } = await import("./mcp-server.js");
   let workspaceRoot = null;
+  let exposeLowLevel = false;
+  const toolsets = [];
   for (let idx = 0; idx < argv.length; idx += 1) {
     const arg = argv[idx];
     if (arg === "--workspace") {
@@ -1139,12 +1143,36 @@ async function handleMcpServerCommand(argv) {
       workspaceRoot = path.resolve(arg.slice("--workspace=".length));
       continue;
     }
+    if (arg === "--expose-low-level") {
+      exposeLowLevel = true;
+      continue;
+    }
+    if (arg === "--toolset") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --toolset");
+      }
+      toolsets.push(raw);
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--toolset=")) {
+      toolsets.push(arg.slice("--toolset=".length));
+      continue;
+    }
     throw new Error(`Unknown mcp-server argument: ${arg}`);
   }
 
   const config = loadConfig({ allowMissingApiKey: true });
   await runMcpServer({
-    workspaceRoot: workspaceRoot || config.workspaceRoot
+    workspaceRoot: workspaceRoot || config.workspaceRoot,
+    exposeLowLevel,
+    toolsets,
+    toolTimeoutMs: config.toolTimeoutMs,
+    lsp: config.lsp,
+    embedding: config.embedding,
+    metrics: config.metrics,
+    onlineTuner: config.onlineTuner
   });
 }
 

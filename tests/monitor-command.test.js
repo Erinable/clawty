@@ -53,4 +53,6 @@ test("mcp-server help includes workspace option", async () => {
   const { stdout } = await runCli(["mcp-server", "--help"]);
   assert.match(stdout, /clawty mcp-server/);
   assert.match(stdout, /--workspace <path>/);
+  assert.match(stdout, /--toolset <name>/);
+  assert.match(stdout, /--expose-low-level/);
 });

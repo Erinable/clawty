@@ -3,10 +3,450 @@ import { pathToFileURL } from "node:url";
 import { buildReport } from "../scripts/metrics-report.mjs";
 import { buildTunerReport } from "../scripts/tuner-report.mjs";
 import { loadConfig } from "./config.js";
+import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
 const MCP_SERVER_VERSION = "0.1.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
+const DEFAULT_WINDOW_HOURS = 24;
+const MAX_WINDOW_HOURS = 24 * 30;
+const TOOLSET_ANALYSIS = "analysis";
+const TOOLSET_EDIT_SAFE = "edit-safe";
+const TOOLSET_OPS = "ops";
+const TOOLSET_ALL = "all";
+const DEFAULT_TOOLSETS = [TOOLSET_ANALYSIS, TOOLSET_OPS];
+
+const MONITOR_TOOL_DEFINITIONS = [
+  {
+    name: "metrics_report",
+    description: "Build clawty metrics report for the workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional absolute/relative workspace path."
+        },
+        window_hours: {
+          type: "number",
+          description: "Optional report window in hours."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "tuner_report",
+    description: "Build online tuner report including reward distribution and arm stats.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional absolute/relative workspace path."
+        },
+        window_hours: {
+          type: "number",
+          description: "Optional report window in hours."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "monitor_report",
+    description: "Build combined metrics+tuner monitoring report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional absolute/relative workspace path."
+        },
+        window_hours: {
+          type: "number",
+          description: "Optional report window in hours."
+        }
+      },
+      additionalProperties: false
+    }
+  }
+];
+
+const FACADE_TOOL_DEFINITIONS = [
+  {
+    name: "search_code",
+    description:
+      "Search code with strategy routing (hybrid/index/vector) and automatic fallback.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        query: {
+          type: "string",
+          description: "Search query."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum result count.",
+          minimum: 1,
+          maximum: 50
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter."
+        },
+        language: {
+          type: "string",
+          description: "Optional language filter."
+        },
+        strategy: {
+          type: "string",
+          description: "Routing strategy: auto|hybrid|keyword|vector.",
+          enum: ["auto", "hybrid", "keyword", "vector"]
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "go_to_definition",
+    description: "Find symbol definition using LSP-first navigation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        path: {
+          type: "string",
+          description: "Workspace-relative file path."
+        },
+        line: {
+          type: "integer",
+          description: "1-based line number.",
+          minimum: 1
+        },
+        column: {
+          type: "integer",
+          description: "1-based column number.",
+          minimum: 1
+        },
+        max_results: {
+          type: "integer",
+          description: "Maximum locations returned.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      required: ["path", "line", "column"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "find_references",
+    description: "Find symbol references using LSP-first navigation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        path: {
+          type: "string",
+          description: "Workspace-relative file path."
+        },
+        line: {
+          type: "integer",
+          description: "1-based line number.",
+          minimum: 1
+        },
+        column: {
+          type: "integer",
+          description: "1-based column number.",
+          minimum: 1
+        },
+        include_declaration: {
+          type: "boolean",
+          description: "Include declaration in reference results."
+        },
+        max_results: {
+          type: "integer",
+          description: "Maximum locations returned.",
+          minimum: 1,
+          maximum: 1000
+        }
+      },
+      required: ["path", "line", "column"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_code_context",
+    description:
+      "Return combined code context for a query (search hits + semantic neighbors).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        query: {
+          type: "string",
+          description: "Context query."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum context hits returned.",
+          minimum: 1,
+          maximum: 30
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter."
+        },
+        language: {
+          type: "string",
+          description: "Optional language filter."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "reindex_codebase",
+    description:
+      "Run code-intelligence refresh pipeline (code index + syntax index + semantic graph).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        force_full: {
+          type: "boolean",
+          description: "When true, run full rebuild instead of incremental refresh."
+        },
+        changed_paths: {
+          type: "array",
+          description: "Changed file paths (workspace-relative).",
+          items: { type: "string" }
+        },
+        deleted_paths: {
+          type: "array",
+          description: "Deleted file paths (workspace-relative).",
+          items: { type: "string" }
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "monitor_system",
+    description: "Return combined runtime monitoring report (metrics + tuner).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        window_hours: {
+          type: "number",
+          description: "Optional report window in hours."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "explain_code",
+    description:
+      "Read and explain a target file context by path or query (auto-locates best matching file).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        path: {
+          type: "string",
+          description: "Optional workspace-relative file path."
+        },
+        query: {
+          type: "string",
+          description: "Optional query used to locate target file when path is not provided."
+        },
+        max_chars: {
+          type: "integer",
+          description: "Maximum file chars to return.",
+          minimum: 200,
+          maximum: 100000
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "trace_call_chain",
+    description:
+      "Trace call relationships using semantic graph + syntax index for a symbol/query.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        query: {
+          type: "string",
+          description: "Symbol or keyword to trace."
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum seed nodes/files returned.",
+          minimum: 1,
+          maximum: 20
+        },
+        max_hops: {
+          type: "integer",
+          description: "Maximum semantic traversal hops.",
+          minimum: 1,
+          maximum: 4
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "impact_analysis",
+    description:
+      "Estimate change impact from a location (path+line+column) or query across references and semantic neighbors.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Optional workspace path override."
+        },
+        query: {
+          type: "string",
+          description: "Optional symbol/keyword when location is not provided."
+        },
+        path: {
+          type: "string",
+          description: "Optional workspace-relative file path."
+        },
+        line: {
+          type: "integer",
+          description: "Optional 1-based line number (with path+column).",
+          minimum: 1
+        },
+        column: {
+          type: "integer",
+          description: "Optional 1-based column number (with path+line).",
+          minimum: 1
+        },
+        top_k: {
+          type: "integer",
+          description: "Maximum search hits.",
+          minimum: 1,
+          maximum: 30
+        },
+        max_paths: {
+          type: "integer",
+          description: "Maximum impacted paths returned.",
+          minimum: 1,
+          maximum: 200
+        },
+        path_prefix: {
+          type: "string",
+          description: "Optional path prefix filter."
+        },
+        language: {
+          type: "string",
+          description: "Optional language filter."
+        }
+      },
+      additionalProperties: false
+    }
+  }
+];
+
+const FACADE_TOOL_NAME_SET = new Set(FACADE_TOOL_DEFINITIONS.map((tool) => tool.name));
+const FACADE_TOOLSET_MAP = {
+  [TOOLSET_ANALYSIS]: new Set([
+    "search_code",
+    "go_to_definition",
+    "find_references",
+    "get_code_context",
+    "explain_code",
+    "trace_call_chain",
+    "impact_analysis"
+  ]),
+  [TOOLSET_EDIT_SAFE]: new Set(["reindex_codebase"]),
+  [TOOLSET_OPS]: new Set(["monitor_system"])
+};
+const VALID_TOOLSETS = new Set([
+  TOOLSET_ANALYSIS,
+  TOOLSET_EDIT_SAFE,
+  TOOLSET_OPS,
+  TOOLSET_ALL
+]);
+
+const LOW_LEVEL_CODE_TOOL_NAMES = new Set([
+  "read_file",
+  "build_code_index",
+  "refresh_code_index",
+  "query_code_index",
+  "get_index_stats",
+  "build_semantic_graph",
+  "refresh_semantic_graph",
+  "import_precise_index",
+  "query_semantic_graph",
+  "get_semantic_graph_stats",
+  "build_syntax_index",
+  "refresh_syntax_index",
+  "query_syntax_index",
+  "get_syntax_index_stats",
+  "build_vector_index",
+  "refresh_vector_index",
+  "query_vector_index",
+  "get_vector_index_stats",
+  "merge_vector_delta",
+  "query_hybrid_index",
+  "lsp_definition",
+  "lsp_references",
+  "lsp_workspace_symbols",
+  "lsp_health"
+]);
+
+const LOW_LEVEL_CODE_TOOL_DEFINITIONS = TOOL_DEFINITIONS
+  .filter((tool) => tool?.type === "function" && LOW_LEVEL_CODE_TOOL_NAMES.has(tool.name))
+  .map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.parameters
+  }));
+
+const LOW_LEVEL_CODE_TOOL_NAME_SET = new Set(
+  LOW_LEVEL_CODE_TOOL_DEFINITIONS.map((tool) => tool.name)
+);
 
 function safeStringify(value) {
   try {
@@ -20,6 +460,61 @@ function writeMessage(message) {
   const payload = safeStringify(message);
   const byteLength = Buffer.byteLength(payload, "utf8");
   process.stdout.write(`Content-Length: ${byteLength}\r\n\r\n${payload}`);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseToolsetTokens(input) {
+  if (Array.isArray(input)) {
+    return input
+      .flatMap((item) => parseToolsetTokens(item))
+      .filter((item) => typeof item === "string");
+  }
+  if (typeof input !== "string") {
+    return [];
+  }
+  return input
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function resolveEnabledToolsets(toolsetsInput) {
+  const requested = new Set(parseToolsetTokens(toolsetsInput));
+  if (requested.size === 0) {
+    return new Set(DEFAULT_TOOLSETS);
+  }
+  if (requested.has(TOOLSET_ALL)) {
+    return new Set([TOOLSET_ANALYSIS, TOOLSET_EDIT_SAFE, TOOLSET_OPS]);
+  }
+  const enabled = new Set();
+  for (const token of requested) {
+    if (!VALID_TOOLSETS.has(token)) {
+      throw new Error(`Unknown toolset: ${token}. Expected one of: analysis, edit-safe, ops, all`);
+    }
+    enabled.add(token);
+  }
+  if (enabled.size === 0) {
+    return new Set(DEFAULT_TOOLSETS);
+  }
+  return enabled;
+}
+
+function resolveFacadeToolNamesForToolsets(toolsets) {
+  const enabledToolsets = toolsets instanceof Set ? toolsets : new Set(DEFAULT_TOOLSETS);
+  const names = new Set();
+  for (const toolsetName of enabledToolsets) {
+    const mapping = FACADE_TOOLSET_MAP[toolsetName];
+    if (!mapping) {
+      continue;
+    }
+    for (const toolName of mapping) {
+      names.add(toolName);
+    }
+  }
+  return names;
 }
 
 function parseContentLength(headerBlock) {
@@ -54,79 +549,662 @@ function findHeaderTerminator(buffer) {
   return null;
 }
 
-function buildToolDefinitions() {
-  return [
-    {
-      name: "metrics_report",
-      description: "Build clawty metrics report for the workspace.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workspace: {
-            type: "string",
-            description: "Optional absolute/relative workspace path."
-          },
-          window_hours: {
-            type: "number",
-            description: "Optional report window in hours."
-          }
-        },
-        additionalProperties: false
-      }
-    },
-    {
-      name: "tuner_report",
-      description: "Build online tuner report including reward distribution and arm stats.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workspace: {
-            type: "string",
-            description: "Optional absolute/relative workspace path."
-          },
-          window_hours: {
-            type: "number",
-            description: "Optional report window in hours."
-          }
-        },
-        additionalProperties: false
-      }
-    },
-    {
-      name: "monitor_report",
-      description: "Build combined metrics+tuner monitoring report.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workspace: {
-            type: "string",
-            description: "Optional absolute/relative workspace path."
-          },
-          window_hours: {
-            type: "number",
-            description: "Optional report window in hours."
-          }
-        },
-        additionalProperties: false
-      }
-    }
-  ];
+function buildToolDefinitions(serverOptions = {}) {
+  const exposedFacadeToolNames =
+    serverOptions.exposedFacadeToolNames instanceof Set
+      ? serverOptions.exposedFacadeToolNames
+      : resolveFacadeToolNamesForToolsets(new Set(DEFAULT_TOOLSETS));
+  const exposedFacadeTools = FACADE_TOOL_DEFINITIONS.filter((tool) =>
+    exposedFacadeToolNames.has(tool.name)
+  );
+  if (serverOptions.exposeLowLevel) {
+    return [
+      ...exposedFacadeTools,
+      ...MONITOR_TOOL_DEFINITIONS,
+      ...LOW_LEVEL_CODE_TOOL_DEFINITIONS
+    ];
+  }
+  return exposedFacadeTools;
 }
 
 function parseWorkspaceAndWindow(args = {}, fallbackWorkspace) {
+  const normalizedArgs = isPlainObject(args) ? args : {};
   const workspace =
-    typeof args?.workspace === "string" && args.workspace.trim().length > 0
-      ? path.resolve(args.workspace.trim())
+    typeof normalizedArgs.workspace === "string" && normalizedArgs.workspace.trim().length > 0
+      ? path.resolve(normalizedArgs.workspace.trim())
       : path.resolve(fallbackWorkspace || process.cwd());
-  const windowHoursRaw = Number(args?.window_hours);
+  const windowHoursRaw = Number(normalizedArgs.window_hours);
   const window_hours =
-    Number.isFinite(windowHoursRaw) && windowHoursRaw > 0 && windowHoursRaw <= 24 * 30
+    Number.isFinite(windowHoursRaw) && windowHoursRaw > 0 && windowHoursRaw <= MAX_WINDOW_HOURS
       ? windowHoursRaw
-      : 24;
+      : DEFAULT_WINDOW_HOURS;
   return { workspace, window_hours };
 }
 
-async function callTool(name, args, serverOptions = {}) {
+function splitWorkspaceArg(args, fallbackWorkspace) {
+  const normalizedArgs = isPlainObject(args) ? { ...args } : {};
+  let workspaceRoot = path.resolve(fallbackWorkspace || process.cwd());
+  if (typeof normalizedArgs.workspace === "string" && normalizedArgs.workspace.trim().length > 0) {
+    workspaceRoot = path.resolve(normalizedArgs.workspace.trim());
+  }
+  delete normalizedArgs.workspace;
+  return {
+    workspaceRoot,
+    toolArgs: normalizedArgs
+  };
+}
+
+function createToolContext(workspaceRoot, serverOptions = {}) {
+  return {
+    workspaceRoot,
+    toolTimeoutMs: serverOptions.toolTimeoutMs,
+    lsp: serverOptions.lsp || {},
+    embedding: serverOptions.embedding || {},
+    metrics: serverOptions.metrics || {},
+    onlineTuner: serverOptions.onlineTuner || {}
+  };
+}
+
+function toFiniteInteger(value, fallback, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  const rounded = Math.trunc(number);
+  if (rounded < min) {
+    return min;
+  }
+  if (rounded > max) {
+    return max;
+  }
+  return rounded;
+}
+
+function normalizeSearchStrategy(value) {
+  if (typeof value !== "string") {
+    return "auto";
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["auto", "hybrid", "keyword", "vector"].includes(normalized)) {
+    return normalized;
+  }
+  return "auto";
+}
+
+function looksLikeSymbolQuery(query) {
+  if (typeof query !== "string") {
+    return false;
+  }
+  const trimmed = query.trim();
+  if (!trimmed || /\s/.test(trimmed)) {
+    return false;
+  }
+  return /^[A-Za-z_$][\w.$:/-]*$/.test(trimmed);
+}
+
+function pickAutoSearchStrategy(query) {
+  if (looksLikeSymbolQuery(query)) {
+    return "keyword";
+  }
+  return "hybrid";
+}
+
+function countResultItems(payload) {
+  if (!isPlainObject(payload)) {
+    return 0;
+  }
+  if (Array.isArray(payload.results)) {
+    return payload.results.length;
+  }
+  if (Array.isArray(payload.locations)) {
+    return payload.locations.length;
+  }
+  return 0;
+}
+
+function isArrayOfStrings(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+async function callLowLevelCodeTool(name, args, serverOptions = {}) {
+  const { workspaceRoot, toolArgs } = splitWorkspaceArg(args, serverOptions.workspaceRoot);
+  const toolContext = createToolContext(workspaceRoot, serverOptions);
+  return runTool(name, toolArgs, toolContext);
+}
+
+async function runSearchStrategy(strategy, args, serverOptions = {}) {
+  if (strategy === "keyword") {
+    return callLowLevelCodeTool(
+      "query_code_index",
+      {
+        ...args,
+        explain: true
+      },
+      serverOptions
+    );
+  }
+  if (strategy === "vector") {
+    return callLowLevelCodeTool("query_vector_index", args, serverOptions);
+  }
+  return callLowLevelCodeTool(
+    "query_hybrid_index",
+    {
+      ...args,
+      explain: true
+    },
+    serverOptions
+  );
+}
+
+function buildSearchPlan(strategy, query) {
+  const requested = normalizeSearchStrategy(strategy);
+  if (requested === "auto") {
+    const selected = pickAutoSearchStrategy(query);
+    if (selected === "keyword") {
+      return ["keyword", "hybrid"];
+    }
+    return ["hybrid", "keyword"];
+  }
+  if (requested === "keyword") {
+    return ["keyword", "hybrid"];
+  }
+  if (requested === "vector") {
+    return ["vector", "hybrid", "keyword"];
+  }
+  return ["hybrid", "keyword"];
+}
+
+async function callSearchCodeFacade(args, serverOptions = {}) {
+  if (!isPlainObject(args) || typeof args.query !== "string" || !args.query.trim()) {
+    throw new Error("search_code requires non-empty string argument: query");
+  }
+
+  const searchArgs = {
+    workspace: args.workspace,
+    query: args.query.trim(),
+    top_k: toFiniteInteger(args.top_k, 10, 1, 50),
+    path_prefix: typeof args.path_prefix === "string" ? args.path_prefix : undefined,
+    language: typeof args.language === "string" ? args.language : undefined
+  };
+  const plannedStrategies = buildSearchPlan(args.strategy, searchArgs.query);
+  const attempted = [];
+  let selected = null;
+
+  for (const strategy of plannedStrategies) {
+    const attempt = {
+      strategy,
+      ok: false,
+      result_count: 0
+    };
+    try {
+      const payload = await runSearchStrategy(strategy, searchArgs, serverOptions);
+      attempt.ok = payload?.ok === true;
+      attempt.result_count = countResultItems(payload);
+      if (attempt.ok && selected === null) {
+        selected = {
+          strategy,
+          payload
+        };
+      }
+      if (attempt.ok && attempt.result_count > 0) {
+        selected = {
+          strategy,
+          payload
+        };
+        attempted.push(attempt);
+        break;
+      }
+    } catch (error) {
+      attempt.error = error?.message || String(error);
+    }
+    attempted.push(attempt);
+  }
+
+  if (!selected) {
+    return {
+      ok: false,
+      query: searchArgs.query,
+      strategy_requested: normalizeSearchStrategy(args.strategy),
+      strategy_used: null,
+      attempted_strategies: attempted,
+      error: "no strategy produced a successful result"
+    };
+  }
+
+  const payload = selected.payload;
+  return {
+    ok: payload?.ok === true,
+    query: searchArgs.query,
+    strategy_requested: normalizeSearchStrategy(args.strategy),
+    strategy_used: selected.strategy,
+    attempted_strategies: attempted,
+    provider: payload?.provider || null,
+    fallback: payload?.fallback === true,
+    results: Array.isArray(payload?.results) ? payload.results : [],
+    raw: payload
+  };
+}
+
+async function callGoToDefinitionFacade(args, serverOptions = {}) {
+  return callLowLevelCodeTool("lsp_definition", args, serverOptions);
+}
+
+async function callFindReferencesFacade(args, serverOptions = {}) {
+  return callLowLevelCodeTool("lsp_references", args, serverOptions);
+}
+
+async function callCodeContextFacade(args, serverOptions = {}) {
+  if (!isPlainObject(args) || typeof args.query !== "string" || !args.query.trim()) {
+    throw new Error("get_code_context requires non-empty string argument: query");
+  }
+
+  const query = args.query.trim();
+  const topK = toFiniteInteger(args.top_k, 8, 1, 30);
+  const search = await callSearchCodeFacade(
+    {
+      workspace: args.workspace,
+      query,
+      top_k: topK,
+      path_prefix: args.path_prefix,
+      language: args.language,
+      strategy: "auto"
+    },
+    serverOptions
+  );
+
+  let semantic = null;
+  try {
+    semantic = await callLowLevelCodeTool(
+      "query_semantic_graph",
+      {
+        workspace: args.workspace,
+        query,
+        top_k: Math.min(topK, 10),
+        max_neighbors: 20
+      },
+      serverOptions
+    );
+  } catch (error) {
+    semantic = {
+      ok: false,
+      error: error?.message || String(error)
+    };
+  }
+
+  return {
+    ok: search.ok === true,
+    query,
+    strategy_used: search.strategy_used,
+    search_hits: search.results,
+    search,
+    semantic
+  };
+}
+
+async function callReindexCodebaseFacade(args, serverOptions = {}) {
+  const safeArgs = isPlainObject(args) ? args : {};
+  const changedPaths = isArrayOfStrings(safeArgs.changed_paths) ? safeArgs.changed_paths : undefined;
+  const deletedPaths = isArrayOfStrings(safeArgs.deleted_paths) ? safeArgs.deleted_paths : undefined;
+  const forceFull = safeArgs.force_full === true;
+  const baseArgs = {
+    workspace: safeArgs.workspace
+  };
+
+  const steps = [];
+  if (forceFull) {
+    steps.push(["build_code_index", {}]);
+    steps.push(["build_syntax_index", {}]);
+    steps.push(["build_semantic_graph", {}]);
+  } else {
+    const refreshArgs = {};
+    if (changedPaths) {
+      refreshArgs.changed_paths = changedPaths;
+    }
+    if (deletedPaths) {
+      refreshArgs.deleted_paths = deletedPaths;
+    }
+    steps.push(["refresh_code_index", refreshArgs]);
+    steps.push(["refresh_syntax_index", refreshArgs]);
+    steps.push(["refresh_semantic_graph", refreshArgs]);
+  }
+
+  const results = [];
+  let ok = true;
+  for (const [name, toolArgs] of steps) {
+    try {
+      const payload = await callLowLevelCodeTool(name, { ...baseArgs, ...toolArgs }, serverOptions);
+      const stepOk = payload?.ok === true;
+      results.push({
+        tool: name,
+        ok: stepOk,
+        result: payload
+      });
+      if (!stepOk) {
+        ok = false;
+      }
+    } catch (error) {
+      ok = false;
+      results.push({
+        tool: name,
+        ok: false,
+        error: error?.message || String(error)
+      });
+    }
+  }
+
+  return {
+    ok,
+    mode: forceFull ? "full" : "refresh",
+    steps: results
+  };
+}
+
+function collectPathsFromSearchResult(payload) {
+  const paths = [];
+  if (!isPlainObject(payload) || !Array.isArray(payload.results)) {
+    return paths;
+  }
+  for (const item of payload.results) {
+    if (isPlainObject(item) && typeof item.path === "string" && item.path.trim()) {
+      paths.push(item.path.trim());
+    }
+  }
+  return paths;
+}
+
+function collectPathsFromSemanticResult(payload) {
+  const paths = [];
+  if (!isPlainObject(payload) || !Array.isArray(payload.seeds)) {
+    return paths;
+  }
+
+  for (const seed of payload.seeds) {
+    if (isPlainObject(seed) && typeof seed.path === "string" && seed.path.trim()) {
+      paths.push(seed.path.trim());
+    }
+    const outgoing = Array.isArray(seed?.outgoing) ? seed.outgoing : [];
+    for (const item of outgoing) {
+      if (isPlainObject(item) && typeof item.path === "string" && item.path.trim()) {
+        paths.push(item.path.trim());
+      }
+    }
+    const incoming = Array.isArray(seed?.incoming) ? seed.incoming : [];
+    for (const item of incoming) {
+      if (isPlainObject(item) && typeof item.path === "string" && item.path.trim()) {
+        paths.push(item.path.trim());
+      }
+    }
+  }
+
+  return paths;
+}
+
+function dedupePaths(paths, maxPaths = 100) {
+  const deduped = [];
+  const seen = new Set();
+  for (const rawPath of paths) {
+    if (typeof rawPath !== "string") {
+      continue;
+    }
+    const normalized = rawPath.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    deduped.push(normalized);
+    if (deduped.length >= maxPaths) {
+      break;
+    }
+  }
+  return deduped;
+}
+
+async function callExplainCodeFacade(args, serverOptions = {}) {
+  const safeArgs = isPlainObject(args) ? args : {};
+  let targetPath =
+    typeof safeArgs.path === "string" && safeArgs.path.trim() ? safeArgs.path.trim() : null;
+  let search = null;
+
+  if (!targetPath) {
+    if (typeof safeArgs.query !== "string" || !safeArgs.query.trim()) {
+      throw new Error("explain_code requires path or query");
+    }
+    search = await callSearchCodeFacade(
+      {
+        workspace: safeArgs.workspace,
+        query: safeArgs.query.trim(),
+        top_k: 1,
+        path_prefix: safeArgs.path_prefix,
+        language: safeArgs.language,
+        strategy: "auto"
+      },
+      serverOptions
+    );
+    targetPath = Array.isArray(search.results) ? search.results[0]?.path || null : null;
+    if (!targetPath) {
+      return {
+        ok: false,
+        error: "no matching file found for query",
+        query: safeArgs.query.trim(),
+        search
+      };
+    }
+  }
+
+  const maxChars = toFiniteInteger(safeArgs.max_chars, 2400, 200, 100_000);
+  const file = await callLowLevelCodeTool(
+    "read_file",
+    {
+      workspace: safeArgs.workspace,
+      path: targetPath,
+      max_chars: maxChars
+    },
+    serverOptions
+  );
+
+  const content = typeof file?.content === "string" ? file.content : "";
+  return {
+    ok: file?.ok === true,
+    path: targetPath,
+    max_chars: maxChars,
+    content,
+    content_preview: content.slice(0, Math.min(content.length, 1200)),
+    search
+  };
+}
+
+async function callTraceCallChainFacade(args, serverOptions = {}) {
+  if (!isPlainObject(args) || typeof args.query !== "string" || !args.query.trim()) {
+    throw new Error("trace_call_chain requires non-empty string argument: query");
+  }
+
+  const query = args.query.trim();
+  const topK = toFiniteInteger(args.top_k, 5, 1, 20);
+  const maxHops = toFiniteInteger(args.max_hops, 2, 1, 4);
+  const pathPrefix = typeof args.path_prefix === "string" ? args.path_prefix : undefined;
+
+  let semantic = null;
+  try {
+    semantic = await callLowLevelCodeTool(
+      "query_semantic_graph",
+      {
+        workspace: args.workspace,
+        query,
+        top_k: topK,
+        max_neighbors: 30,
+        max_hops: maxHops,
+        path_prefix: pathPrefix
+      },
+      serverOptions
+    );
+  } catch (error) {
+    semantic = {
+      ok: false,
+      error: error?.message || String(error)
+    };
+  }
+
+  let syntax = null;
+  try {
+    syntax = await callLowLevelCodeTool(
+      "query_syntax_index",
+      {
+        workspace: args.workspace,
+        query,
+        top_k: topK,
+        max_neighbors: 30,
+        path_prefix: pathPrefix
+      },
+      serverOptions
+    );
+  } catch (error) {
+    syntax = {
+      ok: false,
+      error: error?.message || String(error)
+    };
+  }
+
+  return {
+    ok: semantic?.ok === true || syntax?.ok === true,
+    query,
+    semantic,
+    syntax,
+    summary: {
+      semantic_seed_count: Array.isArray(semantic?.seeds) ? semantic.seeds.length : 0,
+      syntax_seed_count: Array.isArray(syntax?.seeds) ? syntax.seeds.length : 0
+    }
+  };
+}
+
+function hasLocationArgs(args) {
+  if (!isPlainObject(args)) {
+    return false;
+  }
+  return (
+    typeof args.path === "string" &&
+    args.path.trim() &&
+    Number.isFinite(Number(args.line)) &&
+    Number(args.line) > 0 &&
+    Number.isFinite(Number(args.column)) &&
+    Number(args.column) > 0
+  );
+}
+
+function collectReferencePaths(payload) {
+  if (!isPlainObject(payload) || !Array.isArray(payload.locations)) {
+    return [];
+  }
+  const paths = [];
+  for (const location of payload.locations) {
+    if (isPlainObject(location) && typeof location.path === "string" && location.path.trim()) {
+      paths.push(location.path.trim());
+    }
+  }
+  return paths;
+}
+
+async function callImpactAnalysisFacade(args, serverOptions = {}) {
+  const safeArgs = isPlainObject(args) ? args : {};
+  const maxPaths = toFiniteInteger(safeArgs.max_paths, 60, 1, 200);
+
+  if (hasLocationArgs(safeArgs)) {
+    const line = toFiniteInteger(safeArgs.line, 1, 1, 1_000_000);
+    const column = toFiniteInteger(safeArgs.column, 1, 1, 1_000_000);
+    const baseArgs = {
+      workspace: safeArgs.workspace,
+      path: safeArgs.path.trim(),
+      line,
+      column,
+      max_results: toFiniteInteger(safeArgs.max_results, 200, 1, 1000),
+      include_declaration: safeArgs.include_declaration === true
+    };
+
+    const [definition, references] = await Promise.all([
+      callGoToDefinitionFacade(baseArgs, serverOptions).catch((error) => ({
+        ok: false,
+        error: error?.message || String(error)
+      })),
+      callFindReferencesFacade(baseArgs, serverOptions).catch((error) => ({
+        ok: false,
+        error: error?.message || String(error)
+      }))
+    ]);
+
+    const impactedPaths = dedupePaths(
+      [...collectReferencePaths(definition), ...collectReferencePaths(references)],
+      maxPaths
+    );
+
+    return {
+      ok: definition?.ok === true || references?.ok === true,
+      mode: "location",
+      input: {
+        path: baseArgs.path,
+        line,
+        column
+      },
+      impacted_paths: impactedPaths,
+      definition,
+      references
+    };
+  }
+
+  if (typeof safeArgs.query !== "string" || !safeArgs.query.trim()) {
+    throw new Error("impact_analysis requires query or location(path+line+column)");
+  }
+
+  const query = safeArgs.query.trim();
+  const topK = toFiniteInteger(safeArgs.top_k, 10, 1, 30);
+  const search = await callSearchCodeFacade(
+    {
+      workspace: safeArgs.workspace,
+      query,
+      top_k: topK,
+      path_prefix: safeArgs.path_prefix,
+      language: safeArgs.language,
+      strategy: "auto"
+    },
+    serverOptions
+  );
+
+  let semantic = null;
+  try {
+    semantic = await callLowLevelCodeTool(
+      "query_semantic_graph",
+      {
+        workspace: safeArgs.workspace,
+        query,
+        top_k: Math.min(topK, 12),
+        max_neighbors: 25,
+        max_hops: 2,
+        path_prefix: safeArgs.path_prefix
+      },
+      serverOptions
+    );
+  } catch (error) {
+    semantic = {
+      ok: false,
+      error: error?.message || String(error)
+    };
+  }
+
+  const impactedPaths = dedupePaths(
+    [...collectPathsFromSearchResult(search), ...collectPathsFromSemanticResult(semantic)],
+    maxPaths
+  );
+
+  return {
+    ok: search?.ok === true || semantic?.ok === true,
+    mode: "query",
+    query,
+    strategy_used: search?.strategy_used || null,
+    impacted_paths: impactedPaths,
+    search,
+    semantic
+  };
+}
+
+async function callMonitorTool(name, args, serverOptions = {}) {
   const { workspace, window_hours } = parseWorkspaceAndWindow(
     args,
     serverOptions.workspaceRoot
@@ -169,6 +1247,68 @@ async function callTool(name, args, serverOptions = {}) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
+async function callTool(name, args, serverOptions = {}) {
+  const exposedFacadeToolNames =
+    serverOptions.exposedFacadeToolNames instanceof Set
+      ? serverOptions.exposedFacadeToolNames
+      : resolveFacadeToolNamesForToolsets(new Set(DEFAULT_TOOLSETS));
+  if (FACADE_TOOL_NAME_SET.has(name) && !exposedFacadeToolNames.has(name)) {
+    throw new Error(`Tool not exposed by current policy: ${name}`);
+  }
+
+  if (name === "monitor_system") {
+    return callMonitorTool("monitor_report", args, serverOptions);
+  }
+
+  if (name === "search_code") {
+    return callSearchCodeFacade(args, serverOptions);
+  }
+
+  if (name === "go_to_definition") {
+    return callGoToDefinitionFacade(args, serverOptions);
+  }
+
+  if (name === "find_references") {
+    return callFindReferencesFacade(args, serverOptions);
+  }
+
+  if (name === "get_code_context") {
+    return callCodeContextFacade(args, serverOptions);
+  }
+
+  if (name === "reindex_codebase") {
+    return callReindexCodebaseFacade(args, serverOptions);
+  }
+
+  if (name === "explain_code") {
+    return callExplainCodeFacade(args, serverOptions);
+  }
+
+  if (name === "trace_call_chain") {
+    return callTraceCallChainFacade(args, serverOptions);
+  }
+
+  if (name === "impact_analysis") {
+    return callImpactAnalysisFacade(args, serverOptions);
+  }
+
+  if (name === "metrics_report" || name === "tuner_report" || name === "monitor_report") {
+    if (!serverOptions.exposeLowLevel) {
+      throw new Error(`Tool not exposed by current policy: ${name}`);
+    }
+    return callMonitorTool(name, args, serverOptions);
+  }
+
+  if (LOW_LEVEL_CODE_TOOL_NAME_SET.has(name)) {
+    if (!serverOptions.exposeLowLevel) {
+      throw new Error(`Tool not exposed by current policy: ${name}`);
+    }
+    return callLowLevelCodeTool(name, args, serverOptions);
+  }
+
+  throw new Error(`Unknown tool: ${name}`);
+}
+
 function buildRpcError(id, code, message, data = null) {
   return {
     jsonrpc: "2.0",
@@ -186,14 +1326,24 @@ function normalizeServerOptions(options = {}) {
     typeof options.workspaceRoot === "string" && options.workspaceRoot.trim().length > 0
       ? path.resolve(options.workspaceRoot)
       : path.resolve(process.cwd());
+  const enabledToolsets = resolveEnabledToolsets(options.toolsets);
+  const exposedFacadeToolNames = resolveFacadeToolNamesForToolsets(enabledToolsets);
   return {
-    workspaceRoot
+    workspaceRoot,
+    toolTimeoutMs: Number.isFinite(options.toolTimeoutMs) ? options.toolTimeoutMs : 180_000,
+    exposeLowLevel: options.exposeLowLevel === true,
+    enabledToolsets,
+    exposedFacadeToolNames,
+    lsp: isPlainObject(options.lsp) ? options.lsp : {},
+    embedding: isPlainObject(options.embedding) ? options.embedding : {},
+    metrics: isPlainObject(options.metrics) ? options.metrics : {},
+    onlineTuner: isPlainObject(options.onlineTuner) ? options.onlineTuner : {}
   };
 }
 
 export async function runMcpServer(options = {}) {
   const serverOptions = normalizeServerOptions(options);
-  const tools = buildToolDefinitions();
+  const tools = buildToolDefinitions(serverOptions);
   let rawBuffer = Buffer.alloc(0);
   let shouldExit = false;
 
@@ -375,7 +1525,9 @@ export async function runMcpServer(options = {}) {
 function parseMcpServerArgs(argv = []) {
   const options = {
     help: false,
-    workspaceRoot: null
+    workspaceRoot: null,
+    exposeLowLevel: false,
+    toolsets: []
   };
   for (let idx = 0; idx < argv.length; idx += 1) {
     const arg = argv[idx];
@@ -396,18 +1548,63 @@ function parseMcpServerArgs(argv = []) {
       options.workspaceRoot = path.resolve(arg.slice("--workspace=".length));
       continue;
     }
+    if (arg === "--expose-low-level") {
+      options.exposeLowLevel = true;
+      continue;
+    }
+    if (arg === "--toolset") {
+      const raw = argv[idx + 1];
+      if (!raw) {
+        throw new Error("Missing value for --toolset");
+      }
+      for (const token of parseToolsetTokens(raw)) {
+        if (!VALID_TOOLSETS.has(token)) {
+          throw new Error(
+            `Unknown toolset: ${token}. Expected one of: analysis, edit-safe, ops, all`
+          );
+        }
+        options.toolsets.push(token);
+      }
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--toolset=")) {
+      const raw = arg.slice("--toolset=".length);
+      for (const token of parseToolsetTokens(raw)) {
+        if (!VALID_TOOLSETS.has(token)) {
+          throw new Error(
+            `Unknown toolset: ${token}. Expected one of: analysis, edit-safe, ops, all`
+          );
+        }
+        options.toolsets.push(token);
+      }
+      continue;
+    }
     throw new Error(`Unknown mcp-server argument: ${arg}`);
   }
   return options;
 }
 
 function printMcpHelp() {
-  console.log("Usage: clawty mcp-server [--workspace <path>]");
+  console.log(
+    "Usage: clawty mcp-server [--workspace <path>] [--toolset <name>] [--expose-low-level]"
+  );
   console.log("");
-  console.log("Starts MCP stdio server with monitoring tools:");
-  console.log("- metrics_report");
-  console.log("- tuner_report");
-  console.log("- monitor_report");
+  console.log("Toolsets:");
+  console.log("- analysis: search/explain/trace/impact/read-only code navigation");
+  console.log("- ops: monitor_system");
+  console.log("- edit-safe: reindex_codebase");
+  console.log("- all: enable all facade toolsets");
+  console.log("- default: analysis + ops");
+  console.log("");
+  console.log("Default exposed facade tools:");
+  console.log("- search_code / go_to_definition / find_references");
+  console.log("- get_code_context / explain_code / trace_call_chain / impact_analysis");
+  console.log("- monitor_system");
+  console.log("- reindex_codebase requires --toolset edit-safe (or --toolset all)");
+  console.log("");
+  console.log("Optional:");
+  console.log("- --expose-low-level exposes raw monitoring/index/LSP tools for debugging.");
 }
 
 async function main() {
@@ -418,7 +1615,14 @@ async function main() {
   }
   const config = loadConfig({ allowMissingApiKey: true });
   await runMcpServer({
-    workspaceRoot: args.workspaceRoot || config.workspaceRoot
+    workspaceRoot: args.workspaceRoot || config.workspaceRoot,
+    exposeLowLevel: args.exposeLowLevel,
+    toolsets: args.toolsets,
+    toolTimeoutMs: config.toolTimeoutMs,
+    lsp: config.lsp,
+    embedding: config.embedding,
+    metrics: config.metrics,
+    onlineTuner: config.onlineTuner
   });
 }
 

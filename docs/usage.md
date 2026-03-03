@@ -255,5 +255,5 @@ CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=active node src/index.js run "..."
 
 ## 9. 当前边界
 
-1. 目前是本地 CLI 形态，不是 MCP Server 形态。
+1. 已支持 `mcp-server`，默认 toolset 为 `analysis+ops`；`reindex_codebase` 需显式 `--toolset edit-safe`，底层工具需 `--expose-low-level`。
 2. 长期记忆已是 MVP 形态，当前仍需继续优化学习策略与排序质量。

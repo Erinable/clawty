@@ -63,7 +63,7 @@
 
 当前边界（未实现）：
 
-- MCP Server 形态（当前为本地 CLI 架构）。
+- `mcp-server` 已支持 facade + toolset 分层（默认 `analysis+ops`，`edit-safe` 需显式开启），但多租户策略仍未完善。
 
 ## 快速开始
 
@@ -497,4 +497,4 @@ node src/index.js config validate
 
 - 当前是 MVP，目标是先跑通“模型 + 工具调用 + 基础安全约束”的闭环。
 - 当前能力已覆盖：代码/语法/语义/向量索引与 hybrid 融合检索、watch 自动增量刷新、长期记忆沉淀与召回。
-- 后续重点可继续扩展：MCP Server 形态、团队协作与策略编排能力。
+- 后续重点可继续扩展：MCP 多租户权限模型、团队协作与策略编排能力。
