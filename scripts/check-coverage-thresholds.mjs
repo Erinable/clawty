@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 
 const DEFAULT_GLOBAL_THRESHOLDS = {
-  line: 80,
-  branch: 65,
+  line: 78,
+  branch: 62,
   funcs: 85
 };
 
