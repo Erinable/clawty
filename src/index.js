@@ -641,41 +641,24 @@ async function handleMonitorCommand(argv) {
 }
 
 async function handleMcpServerCommand(argv) {
-  const { runMcpServer, parseMcpServerArgs, resolveMcpServerRuntimeOptions } = await import(
-    "./mcp-server.js"
-  );
-  const args = parseMcpServerArgs(argv);
-  if (args.help) {
-    printMcpServerHelp();
-    return;
-  }
-
-  const config = loadConfig({ allowMissingApiKey: true });
-  const runtimeOptions = resolveMcpServerRuntimeOptions(args, config);
-  const mcpLogFilePath = path.isAbsolute(runtimeOptions.logPath)
-    ? runtimeOptions.logPath
-    : path.resolve(runtimeOptions.workspaceRoot, runtimeOptions.logPath);
-  const logger = createRuntimeLogger(config, {
-    component: "mcp-server",
-    consoleStream: process.stderr,
-    filePath: mcpLogFilePath,
-    context: {
-      entrypoint: "index"
-    }
-  });
-  await runMcpServer({
-    workspaceRoot: runtimeOptions.workspaceRoot,
-    exposeLowLevel: runtimeOptions.exposeLowLevel,
-    toolsets: runtimeOptions.toolsets,
-    transport: runtimeOptions.transport,
-    host: runtimeOptions.host,
-    port: runtimeOptions.port,
-    toolTimeoutMs: config.toolTimeoutMs,
-    logger,
-    lsp: config.lsp,
-    embedding: config.embedding,
-    metrics: config.metrics,
-    onlineTuner: config.onlineTuner
+  const [
+    { runMcpServer, parseMcpServerArgs, resolveMcpServerRuntimeOptions },
+    { runMcpServerCliWithDeps }
+  ] = await Promise.all([
+    import("./mcp-server.js"),
+    import("./mcp-server-cli.js")
+  ]);
+  await runMcpServerCliWithDeps(argv, {
+    parseMcpServerArgs,
+    resolveMcpServerRuntimeOptions,
+    loadConfig,
+    createRuntimeLogger,
+    runMcpServer,
+    isAbsolutePath: path.isAbsolute,
+    resolvePath: path.resolve,
+    stderr: process.stderr,
+    printHelp: printMcpServerHelp,
+    entrypoint: "index"
   });
 }
 

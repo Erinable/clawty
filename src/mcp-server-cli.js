@@ -36,12 +36,14 @@ export async function runMcpServerCliWithDeps(argv = [], deps = {}) {
     runMcpServer,
     isAbsolutePath,
     resolvePath,
-    stderr
+    stderr,
+    printHelp = printMcpHelp,
+    entrypoint = "mcp-server"
   } = deps;
 
   const args = parseMcpServerArgs(argv);
   if (args.help) {
-    printMcpHelp();
+    printHelp();
     return;
   }
 
@@ -55,7 +57,7 @@ export async function runMcpServerCliWithDeps(argv = [], deps = {}) {
     consoleStream: stderr,
     filePath: mcpLogFilePath,
     context: {
-      entrypoint: "mcp-server"
+      entrypoint
     }
   });
   await runMcpServer({
