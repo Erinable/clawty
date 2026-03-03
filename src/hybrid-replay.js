@@ -36,6 +36,25 @@ function normalizeLabel(value, fallback = "unknown") {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
+function normalizeQueryPattern(caseDef) {
+  if (typeof caseDef?.query_pattern === "string" && caseDef.query_pattern.trim()) {
+    return caseDef.query_pattern.trim();
+  }
+  if (Array.isArray(caseDef?.query_patterns)) {
+    const first = caseDef.query_patterns.find((item) => typeof item === "string" && item.trim());
+    if (first) {
+      return first.trim();
+    }
+  }
+  if (Array.isArray(caseDef?.tags)) {
+    const first = caseDef.tags.find((item) => typeof item === "string" && item.trim());
+    if (first) {
+      return first.trim();
+    }
+  }
+  return "unknown";
+}
+
 export function mergeHybridReplayArgs(baseArgs, overrideArgs) {
   const base = baseArgs && typeof baseArgs === "object" ? baseArgs : {};
   const override = overrideArgs && typeof overrideArgs === "object" ? overrideArgs : {};
@@ -76,6 +95,7 @@ export function summarizeHybridReplayTask(caseDef, queryResult, queryMs) {
   const language = normalizeLabel(caseDef?.language || caseDef?.args?.language, "unknown");
   const fileType = normalizeLabel(caseDef?.file_type, "unknown");
   const intent = normalizeLabel(caseDef?.intent, "unknown");
+  const queryPattern = normalizeQueryPattern(caseDef);
 
   return {
     name: caseDef?.name || "unknown_case",
@@ -83,6 +103,7 @@ export function summarizeHybridReplayTask(caseDef, queryResult, queryMs) {
     language,
     file_type: fileType,
     intent,
+    query_pattern: queryPattern,
     query: caseDef?.args?.query || "",
     query_ok: queryOk,
     query_ms: roundMetric(queryMs),
@@ -163,7 +184,8 @@ export function aggregateHybridReplayByBucket(taskResults) {
     ),
     language: groupBy((item) => normalizeLabel(item?.language, "unknown")),
     file_type: groupBy((item) => normalizeLabel(item?.file_type, "unknown")),
-    intent: groupBy((item) => normalizeLabel(item?.intent, "unknown"))
+    intent: groupBy((item) => normalizeLabel(item?.intent, "unknown")),
+    query_pattern: groupBy((item) => normalizeQueryPattern(item))
   };
 }
 

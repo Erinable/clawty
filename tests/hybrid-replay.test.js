@@ -29,6 +29,7 @@ test("summarizeHybridReplayTask derives top ranks and match flags", () => {
       language: "typescript",
       file_type: "test",
       intent: "rerank",
+      query_pattern: "symbol_exact",
       args: { query: "token" },
       expected_primary_path: "src/a.ts",
       expected_embedding_status: "EMBEDDING_OK",
@@ -48,6 +49,7 @@ test("summarizeHybridReplayTask derives top ranks and match flags", () => {
   assert.equal(row.language, "typescript");
   assert.equal(row.file_type, "test");
   assert.equal(row.intent, "rerank");
+  assert.equal(row.query_pattern, "symbol_exact");
   assert.equal(row.primary_rank, 1);
   assert.equal(row.top1, true);
   assert.equal(row.top3, true);
@@ -102,6 +104,7 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
       language: "typescript",
       file_type: "source",
       intent: "baseline",
+      query_pattern: "identifier_exact",
       success: true,
       top1: true,
       top3: true,
@@ -118,6 +121,7 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
       language: "python",
       file_type: "test",
       intent: "degrade_timeout",
+      query_patterns: ["timeout_embedding"],
       success: false,
       top1: false,
       top3: false,
@@ -141,6 +145,8 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
   assert.equal(grouped.file_type.test.task_count, 1);
   assert.equal(grouped.intent.baseline.task_count, 1);
   assert.equal(grouped.intent.degrade_timeout.task_count, 1);
+  assert.equal(grouped.query_pattern.identifier_exact.task_count, 1);
+  assert.equal(grouped.query_pattern.timeout_embedding.task_count, 1);
 });
 
 test("sortHybridReplaySummaries ranks by score then quality ties", () => {

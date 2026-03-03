@@ -37,6 +37,7 @@ node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/re
   - `language`
   - `file_type`
   - `intent`
+  - `query_pattern`
 - `score`: 综合分（用于多 preset 排序）
 
 ## 基线门禁
