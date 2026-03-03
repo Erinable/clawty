@@ -36,6 +36,14 @@
   - `bench:hybrid:replay:failures` 导出失败样本集
   - `bench:hybrid:replay:failure:check` 校验“无新增失败样本”门禁
 
+阶段 3 起步（已落地）：
+
+- `watch-index` 新增队列反压参数与动态 debounce：
+  - `backpressure_threshold_ratio`
+  - `backpressure_debounce_ms`
+  - `no-backpressure`
+- `watch_metrics`/`watch-flush` 增加反压观测字段（poll/flush 计数、effective debounce）。
+
 ## 当前基线（已落地能力）
 
 基线能力以 `README.md` 已实现清单为准，核心包括：

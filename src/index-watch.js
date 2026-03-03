@@ -27,7 +27,7 @@ import {
   WATCH_FLUSH_METRICS_FILE,
   WATCH_RUN_METRICS_FILE
 } from "./index-watch-metrics.js";
-import { runIndexWatchLoopWithDeps } from "./index-watch-loop.js";
+import { resolveWatchBackpressure, runIndexWatchLoopWithDeps } from "./index-watch-loop.js";
 import {
   ensureIndexesWithDeps,
   refreshCodeIndexInBatchesWithDeps,
@@ -54,6 +54,7 @@ export {
   shouldFlushDirtyQueue,
   takeDirtyQueueBatch
 } from "./index-watch-queue.js";
+export { resolveWatchBackpressure } from "./index-watch-loop.js";
 export { parseWatchCliArgs, resolveWatchConfig };
 
 function chunkArray(items, chunkSize) {

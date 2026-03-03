@@ -15,7 +15,37 @@ function createWatchMetrics() {
     hashed_paths: 0,
     hash_seeded_files: 0,
     refreshed_changed: 0,
-    refreshed_deleted: 0
+    refreshed_deleted: 0,
+    backpressure_poll_count: 0,
+    backpressure_flush_count: 0,
+    last_effective_debounce_ms: 0
+  };
+}
+
+function normalizePositiveNumber(value, fallback, min) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) {
+    return fallback;
+  }
+  return n;
+}
+
+export function resolveWatchBackpressure(config = {}, queueDepth = 0) {
+  const maxBatchSize = normalizePositiveNumber(config.max_batch_size, 1, 1);
+  const baseDebounceMs = normalizePositiveNumber(config.debounce_ms, 100, 50);
+  const enabled = config.backpressure_enabled !== false;
+  const thresholdRatio = normalizePositiveNumber(config.backpressure_threshold_ratio, 2, 1);
+  const threshold = Math.max(1, Math.floor(maxBatchSize * thresholdRatio));
+  const backpressureDebounceMs = normalizePositiveNumber(
+    config.backpressure_debounce_ms,
+    baseDebounceMs,
+    50
+  );
+  const active = Boolean(enabled && Number(queueDepth || 0) >= threshold);
+  return {
+    active,
+    threshold,
+    effective_debounce_ms: active ? Math.min(baseDebounceMs, backpressureDebounceMs) : baseDebounceMs
   };
 }
 
@@ -119,7 +149,25 @@ export async function runIndexWatchLoopWithDeps(workspaceRoot, args = {}, deps =
       if (metrics.queue_depth <= 0) {
         continue;
       }
-      await flushDirtyQueue(root, config, queueState, metrics);
+      const backpressure = resolveWatchBackpressure(config, metrics.queue_depth);
+      if (backpressure.active) {
+        metrics.backpressure_poll_count += 1;
+      }
+      metrics.last_effective_debounce_ms = Number(backpressure.effective_debounce_ms || 0);
+      await flushDirtyQueue(
+        root,
+        {
+          ...config,
+          debounce_ms: backpressure.effective_debounce_ms
+        },
+        queueState,
+        metrics,
+        {
+          backpressure_active: backpressure.active,
+          effective_debounce_ms: backpressure.effective_debounce_ms,
+          backpressure_threshold: backpressure.threshold
+        }
+      );
       metrics.queue_depth = getDirtyQueueDepth(queueState);
     }
 
@@ -152,7 +200,10 @@ export async function runIndexWatchLoopWithDeps(workspaceRoot, args = {}, deps =
         hashed_paths: Number(metrics.hashed_paths || 0),
         hash_seeded_files: Number(metrics.hash_seeded_files || 0),
         refreshed_changed: Number(metrics.refreshed_changed || 0),
-        refreshed_deleted: Number(metrics.refreshed_deleted || 0)
+        refreshed_deleted: Number(metrics.refreshed_deleted || 0),
+        backpressure_poll_count: Number(metrics.backpressure_poll_count || 0),
+        backpressure_flush_count: Number(metrics.backpressure_flush_count || 0),
+        last_effective_debounce_ms: Number(metrics.last_effective_debounce_ms || 0)
       }
     });
     return {

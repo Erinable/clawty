@@ -349,6 +349,7 @@ hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
 clawty watch-index
 clawty watch-index --interval-ms 1000 --max-batch-size 200
 clawty watch-index --debounce-ms 500 --hash-init-max-files 3000
+clawty watch-index --backpressure-threshold-ratio 2 --backpressure-debounce-ms 120
 clawty watch-index --include-vector true --vector-layer delta
 clawty watch-index --no-semantic --quiet
 npm run watch:index
@@ -360,9 +361,12 @@ npm run watch:index
 - `--max-files <n>`：最大跟踪文件数
 - `--max-batch-size <n>`：单次增量刷新批大小
 - `--debounce-ms <n>`：事件抖动合并窗口（毫秒）
+- `--backpressure-threshold-ratio <n>`：队列深度达到 `max_batch_size*n` 时进入反压模式
+- `--backpressure-debounce-ms <n>`：反压模式下的 debounce（通常小于 `--debounce-ms`）
 - `--hash-skip-enabled <bool>`：内容 hash 不变时跳过刷新
 - `--hash-init-max-files <n>`：启动时初始化 hash 缓存的文件上限
 - `--no-build-on-start`：跳过启动时全量构建
+- `--no-backpressure`：关闭反压模式
 - `--no-hash-skip`：关闭 hash skip
 - `--no-syntax`：关闭 syntax 刷新
 - `--no-semantic`：关闭 semantic 刷新
@@ -371,7 +375,7 @@ npm run watch:index
 - `--no-vector`：关闭 vector 刷新
 - `--quiet`：关闭日志输出
 
-watch 结果会返回 `watch_metrics`（如 `queue_depth`、`index_lag_ms`、`dropped_by_hash`）用于观测增量调度效果。
+watch 结果会返回 `watch_metrics`（如 `queue_depth`、`index_lag_ms`、`dropped_by_hash`、`backpressure_poll_count`）用于观测增量调度效果。
 
 ## LSP 语义检索（TS/JS）
 

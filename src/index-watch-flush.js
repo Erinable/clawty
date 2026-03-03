@@ -20,6 +20,9 @@ export async function flushDirtyQueueWithDeps(
     roundWatchMetric
   } = deps;
   const force = Boolean(options.force);
+  const backpressureActive = Boolean(options.backpressure_active);
+  const effectiveDebounceMs = Number(options.effective_debounce_ms || config.debounce_ms || 0);
+  const backpressureThreshold = Number(options.backpressure_threshold || 0);
   while (
     shouldFlushDirtyQueue(
       queueState,
@@ -78,12 +81,18 @@ export async function flushDirtyQueueWithDeps(
         queue_depth_before: Number(batch.queue_depth_before || 0),
         queue_depth_after: Number(metrics.queue_depth || 0),
         index_lag_ms: Number(batch.index_lag_ms || 0),
-        refresh_ms: roundWatchMetric(refreshMs)
+        refresh_ms: roundWatchMetric(refreshMs),
+        backpressure_active: backpressureActive,
+        effective_debounce_ms: Number.isFinite(effectiveDebounceMs) ? effectiveDebounceMs : null,
+        backpressure_threshold: Number.isFinite(backpressureThreshold) ? backpressureThreshold : null
       });
       break;
     }
 
     metrics.flush_count += 1;
+    if (backpressureActive) {
+      metrics.backpressure_flush_count += 1;
+    }
     metrics.last_flush_duration_ms = refreshMs;
     metrics.refreshed_changed += batch.changed_paths.length;
     metrics.refreshed_deleted += batch.deleted_paths.length;
@@ -112,7 +121,10 @@ export async function flushDirtyQueueWithDeps(
       queue_depth_before: Number(batch.queue_depth_before || 0),
       queue_depth_after: Number(batch.queue_depth_after || 0),
       index_lag_ms: Number(batch.index_lag_ms || 0),
-      refresh_ms: roundWatchMetric(refreshMs)
+      refresh_ms: roundWatchMetric(refreshMs),
+      backpressure_active: backpressureActive,
+      effective_debounce_ms: Number.isFinite(effectiveDebounceMs) ? effectiveDebounceMs : null,
+      backpressure_threshold: Number.isFinite(backpressureThreshold) ? backpressureThreshold : null
     });
 
     if (

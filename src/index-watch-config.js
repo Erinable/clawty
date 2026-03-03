@@ -2,10 +2,14 @@ const DEFAULT_WATCH_INTERVAL_MS = 2000;
 const DEFAULT_WATCH_MAX_FILES = 20_000;
 const DEFAULT_WATCH_MAX_BATCH_SIZE = 300;
 const DEFAULT_WATCH_DEBOUNCE_MS = 500;
+const DEFAULT_WATCH_BACKPRESSURE_ENABLED = true;
+const DEFAULT_WATCH_BACKPRESSURE_THRESHOLD_RATIO = 2;
+const DEFAULT_WATCH_BACKPRESSURE_DEBOUNCE_MS = 120;
 const DEFAULT_WATCH_HASH_INIT_MAX_FILES = 2000;
 const MAX_WATCH_MAX_FILES = 50_000;
 const MAX_WATCH_MAX_BATCH_SIZE = 5000;
 const MAX_WATCH_HASH_INIT_MAX_FILES = 100_000;
+const MAX_WATCH_BACKPRESSURE_THRESHOLD_RATIO = 20;
 const DEFAULT_METRICS_ENABLED = true;
 const DEFAULT_METRICS_PERSIST_WATCH = true;
 
@@ -66,6 +70,22 @@ export function resolveWatchConfig(args = {}) {
       args.debounce_ms ?? process.env.CLAWTY_WATCH_DEBOUNCE_MS,
       DEFAULT_WATCH_DEBOUNCE_MS,
       100,
+      10_000
+    ),
+    backpressure_enabled: parseBoolean(
+      args.backpressure_enabled ?? process.env.CLAWTY_WATCH_BACKPRESSURE_ENABLED,
+      DEFAULT_WATCH_BACKPRESSURE_ENABLED
+    ),
+    backpressure_threshold_ratio: parsePositiveInt(
+      args.backpressure_threshold_ratio ?? process.env.CLAWTY_WATCH_BACKPRESSURE_THRESHOLD_RATIO,
+      DEFAULT_WATCH_BACKPRESSURE_THRESHOLD_RATIO,
+      1,
+      MAX_WATCH_BACKPRESSURE_THRESHOLD_RATIO
+    ),
+    backpressure_debounce_ms: parsePositiveInt(
+      args.backpressure_debounce_ms ?? process.env.CLAWTY_WATCH_BACKPRESSURE_DEBOUNCE_MS,
+      DEFAULT_WATCH_BACKPRESSURE_DEBOUNCE_MS,
+      50,
       10_000
     ),
     hash_skip_enabled: parseBoolean(
@@ -162,6 +182,10 @@ export function parseWatchCliArgs(argv = []) {
     }
     if (arg === "--no-hash-skip") {
       parsed.hash_skip_enabled = false;
+      continue;
+    }
+    if (arg === "--no-backpressure") {
+      parsed.backpressure_enabled = false;
       continue;
     }
     if (arg.startsWith("--") && arg.includes("=")) {

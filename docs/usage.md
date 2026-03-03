@@ -154,6 +154,7 @@ node src/index.js watch-index
 
 # 高频改动场景建议
 node src/index.js watch-index --interval-ms 1000 --max-batch-size 200 --debounce-ms 500
+node src/index.js watch-index --backpressure-threshold-ratio 2 --backpressure-debounce-ms 120
 
 # 需要向量增量时开启
 node src/index.js watch-index --include-vector true --vector-layer delta
@@ -162,7 +163,7 @@ node src/index.js watch-index --include-vector true --vector-layer delta
 说明：
 
 1. `watch-index` 会自动刷新 `code -> syntax -> semantic`（vector 可选）。
-2. 支持脏队列、batch、debounce、hash skip，减少重复刷新。
+2. 支持脏队列、batch、debounce、hash skip 与反压模式，减少重复刷新与堆积。
 3. 返回 `watch_metrics`，可用于观察索引滞后与队列深度。
 
 ## 5. 高质量提问模板（直接可用）
