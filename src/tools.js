@@ -31,6 +31,7 @@ import {
   getVectorIndexStats,
   mergeVectorDelta
 } from "./vector-index.js";
+import { queryHybridRetrievalSources } from "./retrieval-orchestrator.js";
 import {
   lspDefinition,
   lspHealth,
@@ -2553,63 +2554,16 @@ async function queryHybridIndexTool(args, context) {
     : 5;
   const scanTopK = Math.max(topK * 3, 10);
   const vectorEnabled = parseHybridBoolean(effectiveArgs?.include_vector, true);
-  const semanticArgs = {
-    query,
-    top_k: Math.min(30, scanTopK),
-    max_neighbors: effectiveArgs?.max_neighbors,
-    max_hops: effectiveArgs?.max_hops,
-    per_hop_limit: effectiveArgs?.per_hop_limit,
-    edge_type: effectiveArgs?.edge_type,
-    path_prefix: effectiveArgs?.path_prefix
-  };
-
-  const vectorQueryPromise = vectorEnabled
-    ? queryVectorIndex(
-        context.workspaceRoot,
-        {
-          query,
-          top_k: Math.min(100, Math.max(scanTopK, topK * 4)),
-          max_candidates: effectiveArgs?.vector_max_candidates,
-          path_prefix: effectiveArgs?.path_prefix,
-          language: effectiveArgs?.language,
-          layers: effectiveArgs?.vector_layers,
-          model: effectiveArgs?.embedding_model
-        },
-        {
-          embedding: context.embedding || {}
-        }
-      ).catch((error) => ({
-        ok: false,
-        skipped: false,
-        error: error?.message || String(error),
-        error_code:
-          /embedding api key is missing/i.test(String(error?.message || "")) ||
-          /EMBEDDING_API_KEY_MISSING/i.test(String(error?.code || ""))
-            ? "EMBEDDING_API_KEY_MISSING"
-            : "VECTOR_QUERY_FAILED"
-      }))
-    : Promise.resolve({
-        ok: false,
-        skipped: true,
-        error: "vector source disabled"
-      });
-
-  const [semanticResult, syntaxResult, indexResult, vectorResult] = await Promise.all([
-    querySemanticGraph(context.workspaceRoot, semanticArgs),
-    querySyntaxIndex(context.workspaceRoot, {
+  const { semanticResult, syntaxResult, indexResult, vectorResult } =
+    await queryHybridRetrievalSources({
+      workspaceRoot: context.workspaceRoot,
       query,
-      top_k: Math.min(30, scanTopK),
-      max_neighbors: effectiveArgs?.max_neighbors,
-      path_prefix: effectiveArgs?.path_prefix
-    }),
-    queryCodeIndex(context.workspaceRoot, {
-      query,
-      top_k: Math.min(50, Math.max(scanTopK, 20)),
-      path_prefix: effectiveArgs?.path_prefix,
-      language: effectiveArgs?.language
-    }),
-    vectorQueryPromise
-  ]);
+      scanTopK,
+      topK,
+      effectiveArgs,
+      vectorEnabled,
+      embedding: context.embedding || {}
+    });
 
   const scannedCandidates = [];
   const deduped = new Map();
