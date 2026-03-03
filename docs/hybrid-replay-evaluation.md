@@ -23,6 +23,8 @@ npm run bench:hybrid:replay:baseline
 ```bash
 node tests/bench/hybrid-replay.bench.js --json
 node tests/bench/hybrid-replay.bench.js --preset=baseline_fixture,freshness_aggressive
+node tests/bench/hybrid-replay.bench.js --query-pattern=cross_file_semantic
+node tests/bench/hybrid-replay.bench.js --intent=rerank,degrade_timeout
 node tests/bench/hybrid-replay.bench.js --cases=tests/fixtures/hybrid-cases/expected.json
 node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/replay-presets.json
 ```

@@ -31,7 +31,9 @@ function parseArgs(argv) {
     writeBaseline: false,
     checkBaseline: false,
     json: false,
-    presetFilter: null
+    presetFilter: null,
+    queryPatternFilter: null,
+    intentFilter: null
   };
 
   for (const arg of argv) {
@@ -62,6 +64,22 @@ function parseArgs(argv) {
     if (arg.startsWith("--preset=")) {
       const raw = arg.slice("--preset=".length);
       options.presetFilter = raw
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      continue;
+    }
+    if (arg.startsWith("--query-pattern=")) {
+      const raw = arg.slice("--query-pattern=".length);
+      options.queryPatternFilter = raw
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      continue;
+    }
+    if (arg.startsWith("--intent=")) {
+      const raw = arg.slice("--intent=".length);
+      options.intentFilter = raw
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean);
@@ -105,6 +123,33 @@ async function loadCases(filePath) {
     throw new Error(`Hybrid replay cases are empty: ${filePath}`);
   }
   return cases;
+}
+
+function normalizeLabel(value, fallback = "unknown") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
+function resolveCaseQueryPattern(caseDef) {
+  if (typeof caseDef?.query_pattern === "string" && caseDef.query_pattern.trim()) {
+    return caseDef.query_pattern.trim();
+  }
+  if (Array.isArray(caseDef?.query_patterns)) {
+    const first = caseDef.query_patterns.find((item) => typeof item === "string" && item.trim());
+    if (first) {
+      return first.trim();
+    }
+  }
+  if (Array.isArray(caseDef?.tags)) {
+    const first = caseDef.tags.find((item) => typeof item === "string" && item.trim());
+    if (first) {
+      return first.trim();
+    }
+  }
+  return "unknown";
 }
 
 function normalizePreset(preset) {
@@ -249,7 +294,24 @@ async function runPresetReplay(workspaceRoot, cases, preset) {
 }
 
 async function runReplayBenchmark(options) {
-  const cases = await loadCases(options.casesPath);
+  let cases = await loadCases(options.casesPath);
+  const queryPatternFilter = Array.isArray(options.queryPatternFilter)
+    ? options.queryPatternFilter
+    : [];
+  if (queryPatternFilter.length > 0) {
+    const filterSet = new Set(queryPatternFilter);
+    cases = cases.filter((item) => filterSet.has(resolveCaseQueryPattern(item)));
+  }
+  const intentFilter = Array.isArray(options.intentFilter) ? options.intentFilter : [];
+  if (intentFilter.length > 0) {
+    const filterSet = new Set(intentFilter);
+    cases = cases.filter((item) => filterSet.has(normalizeLabel(item?.intent, "unknown")));
+  }
+  if (cases.length === 0) {
+    throw new Error(
+      "No replay cases remained after applying --query-pattern/--intent filters"
+    );
+  }
   let presets = await loadPresets(options.presetsPath);
   if (Array.isArray(options.presetFilter) && options.presetFilter.length > 0) {
     const filterSet = new Set(options.presetFilter);
@@ -274,7 +336,9 @@ async function runReplayBenchmark(options) {
         case_count: cases.length,
         preset_count: presets.length,
         cases_path: path.relative(process.cwd(), options.casesPath),
-        presets_path: path.relative(process.cwd(), options.presetsPath)
+        presets_path: path.relative(process.cwd(), options.presetsPath),
+        query_pattern_filter: queryPatternFilter,
+        intent_filter: intentFilter
       },
       build_ms: buildMs,
       presets: presetRuns,
@@ -290,6 +354,12 @@ function printBenchmark(benchmark) {
   console.log("Hybrid Replay Benchmark");
   console.log(`- cases: ${benchmark.dataset.case_count}`);
   console.log(`- presets: ${benchmark.dataset.preset_count}`);
+  if (Array.isArray(benchmark.dataset.query_pattern_filter) && benchmark.dataset.query_pattern_filter.length > 0) {
+    console.log(`- query patterns: ${benchmark.dataset.query_pattern_filter.join(", ")}`);
+  }
+  if (Array.isArray(benchmark.dataset.intent_filter) && benchmark.dataset.intent_filter.length > 0) {
+    console.log(`- intents: ${benchmark.dataset.intent_filter.join(", ")}`);
+  }
   console.log(`- build: ${benchmark.build_ms.toFixed(3)}ms`);
   console.log(`- best preset: ${benchmark.best_preset || "n/a"}`);
   console.log("");
