@@ -5,11 +5,16 @@ const DEFAULT_WATCH_DEBOUNCE_MS = 500;
 const DEFAULT_WATCH_BACKPRESSURE_ENABLED = true;
 const DEFAULT_WATCH_BACKPRESSURE_THRESHOLD_RATIO = 2;
 const DEFAULT_WATCH_BACKPRESSURE_DEBOUNCE_MS = 120;
+const DEFAULT_WATCH_DB_RETRY_BUDGET = 2;
+const DEFAULT_WATCH_DB_RETRY_BACKOFF_MS = 120;
+const DEFAULT_WATCH_DB_RETRY_BACKOFF_MAX_MS = 1200;
+const DEFAULT_WATCH_SLOW_FLUSH_WARN_MS = 2500;
 const DEFAULT_WATCH_HASH_INIT_MAX_FILES = 2000;
 const MAX_WATCH_MAX_FILES = 50_000;
 const MAX_WATCH_MAX_BATCH_SIZE = 5000;
 const MAX_WATCH_HASH_INIT_MAX_FILES = 100_000;
 const MAX_WATCH_BACKPRESSURE_THRESHOLD_RATIO = 20;
+const MAX_WATCH_DB_RETRY_BUDGET = 20;
 const DEFAULT_METRICS_ENABLED = true;
 const DEFAULT_METRICS_PERSIST_WATCH = true;
 
@@ -87,6 +92,30 @@ export function resolveWatchConfig(args = {}) {
       DEFAULT_WATCH_BACKPRESSURE_DEBOUNCE_MS,
       50,
       10_000
+    ),
+    db_retry_budget: parsePositiveInt(
+      args.db_retry_budget ?? process.env.CLAWTY_WATCH_DB_RETRY_BUDGET,
+      DEFAULT_WATCH_DB_RETRY_BUDGET,
+      0,
+      MAX_WATCH_DB_RETRY_BUDGET
+    ),
+    db_retry_backoff_ms: parsePositiveInt(
+      args.db_retry_backoff_ms ?? process.env.CLAWTY_WATCH_DB_RETRY_BACKOFF_MS,
+      DEFAULT_WATCH_DB_RETRY_BACKOFF_MS,
+      10,
+      30_000
+    ),
+    db_retry_backoff_max_ms: parsePositiveInt(
+      args.db_retry_backoff_max_ms ?? process.env.CLAWTY_WATCH_DB_RETRY_BACKOFF_MAX_MS,
+      DEFAULT_WATCH_DB_RETRY_BACKOFF_MAX_MS,
+      10,
+      60_000
+    ),
+    slow_flush_warn_ms: parsePositiveInt(
+      args.slow_flush_warn_ms ?? process.env.CLAWTY_WATCH_SLOW_FLUSH_WARN_MS,
+      DEFAULT_WATCH_SLOW_FLUSH_WARN_MS,
+      100,
+      120_000
     ),
     hash_skip_enabled: parseBoolean(
       args.hash_skip_enabled ?? process.env.CLAWTY_WATCH_HASH_SKIP_ENABLED,

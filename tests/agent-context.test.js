@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { collectIncrementalContext, formatIncrementalContextForPrompt } from "../src/agent.js";
+import {
+  collectIncrementalContext,
+  formatIncrementalContextForPrompt,
+  normalizeAgentRuntimeConfig
+} from "../src/agent.js";
 import {
   createWorkspace,
   initGitRepo,
@@ -68,3 +72,18 @@ test("collectIncrementalContext captures changed paths and git diff excerpt", as
   assert.match(promptBlock, /src\/base\.js/);
 });
 
+test("normalizeAgentRuntimeConfig clamps invalid runtime values", () => {
+  const normalized = normalizeAgentRuntimeConfig({
+    maxToolIterations: -5,
+    toolTimeoutMs: Number.NaN
+  });
+  assert.equal(normalized.maxToolIterations, 8);
+  assert.equal(normalized.toolTimeoutMs, 120_000);
+
+  const clamped = normalizeAgentRuntimeConfig({
+    maxToolIterations: 1000,
+    toolTimeoutMs: 999_999
+  });
+  assert.equal(clamped.maxToolIterations, 100);
+  assert.equal(clamped.toolTimeoutMs, 300_000);
+});

@@ -6,6 +6,8 @@ const DEFAULT_THRESHOLDS = {
   codeIndexLagP95Ms: 2000,
   watchBackpressureFlushRate: null,
   watchEffectiveDebounceP95Ms: null,
+  watchDbRetryExhaustedRate: null,
+  watchSlowFlushRate: null,
   staleHitRateAvg: 0.05,
   queryHybridP95Ms: 2000,
   degradeRate: 0.1,
@@ -108,6 +110,24 @@ function parseArgs(argv) {
         "--max-watch-effective-debounce-p95-ms",
         1,
         86_400_000
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-db-retry-exhausted-rate=")) {
+      options.thresholds.watchDbRetryExhaustedRate = parsePositiveNumber(
+        arg.slice("--max-watch-db-retry-exhausted-rate=".length),
+        "--max-watch-db-retry-exhausted-rate",
+        0,
+        1
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-slow-flush-rate=")) {
+      options.thresholds.watchSlowFlushRate = parsePositiveNumber(
+        arg.slice("--max-watch-slow-flush-rate=".length),
+        "--max-watch-slow-flush-rate",
+        0,
+        1
       );
       continue;
     }
@@ -332,6 +352,20 @@ function evaluateReport(report, options) {
       "watch_effective_debounce_p95_ms",
       report?.kpi?.watch_effective_debounce_p95_ms,
       options.thresholds.watchEffectiveDebounceP95Ms,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "watch_db_retry_exhausted_rate",
+      report?.kpi?.watch_db_retry_exhausted_rate,
+      options.thresholds.watchDbRetryExhaustedRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "watch_slow_flush_rate",
+      report?.kpi?.watch_slow_flush_rate,
+      options.thresholds.watchSlowFlushRate,
       options.allowMissing,
       failures
     ),

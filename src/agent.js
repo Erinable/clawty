@@ -46,6 +46,28 @@ function clampInt(value, fallback, min, max) {
   return Math.min(max, Math.floor(n));
 }
 
+const DEFAULT_MAX_TOOL_ITERATIONS = 8;
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+const MAX_ALLOWED_TOOL_ITERATIONS = 100;
+const MAX_ALLOWED_TOOL_TIMEOUT_MS = 300_000;
+
+export function normalizeAgentRuntimeConfig(config = {}) {
+  return {
+    maxToolIterations: clampInt(
+      config?.maxToolIterations,
+      DEFAULT_MAX_TOOL_ITERATIONS,
+      1,
+      MAX_ALLOWED_TOOL_ITERATIONS
+    ),
+    toolTimeoutMs: clampInt(
+      config?.toolTimeoutMs,
+      DEFAULT_TOOL_TIMEOUT_MS,
+      1000,
+      MAX_ALLOWED_TOOL_TIMEOUT_MS
+    )
+  };
+}
+
 function clampText(input, maxChars) {
   const text = typeof input === "string" ? input.trim() : "";
   if (!text) {
@@ -179,6 +201,12 @@ async function callModel(config, state, input, logger = null, traceContext = {})
 }
 
 export async function runAgentTurn({ config, state, userInput, onText, onTool, logger = null }) {
+  const runtimeConfig = normalizeAgentRuntimeConfig(config);
+  const normalizedConfig = {
+    ...config,
+    maxToolIterations: runtimeConfig.maxToolIterations,
+    toolTimeoutMs: runtimeConfig.toolTimeoutMs
+  };
   let initialInput = userInput;
   const toolCalls = [];
   const textChunks = [];
@@ -207,7 +235,9 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
     : logger;
 
   logWith(turnLogger, "info", "agent.turn_start", {
-    user_input_chars: typeof userInput === "string" ? userInput.length : 0
+    user_input_chars: typeof userInput === "string" ? userInput.length : 0,
+    max_tool_iterations: runtimeConfig.maxToolIterations,
+    tool_timeout_ms: runtimeConfig.toolTimeoutMs
   });
 
   if (typeof userInput === "string") {
@@ -272,7 +302,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
 
   try {
     let modelCall = await callModel(
-      config,
+      normalizedConfig,
       state,
       initialInput,
       turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger,
@@ -281,7 +311,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
     let response = modelCall.response;
     let requestTrace = modelCall.requestTrace;
 
-    for (let i = 0; i < config.maxToolIterations; i += 1) {
+    for (let i = 0; i < runtimeConfig.maxToolIterations; i += 1) {
       const text = extractText(response);
       if (text) {
         textChunks.push(text);
@@ -315,7 +345,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
 
       const { outputs, toolCalls: executedToolCalls } = await executeFunctionCalls({
         calls,
-        config,
+        config: normalizedConfig,
         requestTrace,
         onTool,
         onToolCallResult(call, result, durationMs) {
@@ -332,7 +362,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
 
       state.previousResponseId = response.id;
       modelCall = await callModel(
-        config,
+        normalizedConfig,
         state,
         outputs,
         turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger,
@@ -343,7 +373,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
     }
 
     throw new Error(
-      `Tool loop exceeded ${config.maxToolIterations} rounds. Increase CLAWTY_MAX_TOOL_ITERATIONS if needed.`
+      `Tool loop exceeded ${runtimeConfig.maxToolIterations} rounds. Increase CLAWTY_MAX_TOOL_ITERATIONS if needed.`
     );
   } catch (error) {
     await persistTurnMemory({

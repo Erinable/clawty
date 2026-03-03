@@ -107,7 +107,13 @@ export async function filterChangedPathsByHash(workspaceRoot, changedPaths, hash
   });
 }
 
-async function refreshCodeIndexInBatches(workspaceRoot, changedPaths, deletedPaths, maxBatchSize) {
+async function refreshCodeIndexInBatches(
+  workspaceRoot,
+  changedPaths,
+  deletedPaths,
+  maxBatchSize,
+  retryOptions = {}
+) {
   return refreshCodeIndexInBatchesWithDeps(
     workspaceRoot,
     changedPaths,
@@ -115,7 +121,8 @@ async function refreshCodeIndexInBatches(workspaceRoot, changedPaths, deletedPat
     maxBatchSize,
     {
       chunkArray,
-      refreshCodeIndex
+      refreshCodeIndex,
+      retryOptions
     }
   );
 }

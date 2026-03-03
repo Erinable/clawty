@@ -224,6 +224,9 @@ function computeWatchKpis(watchFlushEvents) {
   const refreshValues = [];
   const effectiveDebounceValues = [];
   let backpressureFlushCount = 0;
+  let dbRetryCount = 0;
+  let dbRetryExhaustedCount = 0;
+  let slowFlushCount = 0;
   for (const event of watchFlushEvents) {
     const lag = Number(event?.index_lag_ms);
     if (Number.isFinite(lag) && lag >= 0) {
@@ -239,6 +242,13 @@ function computeWatchKpis(watchFlushEvents) {
     }
     if (event?.backpressure_active === true) {
       backpressureFlushCount += 1;
+    }
+    dbRetryCount += Number(event?.db_retry_count || 0);
+    if (event?.db_retry_exhausted === true) {
+      dbRetryExhaustedCount += 1;
+    }
+    if (event?.slow_flush === true) {
+      slowFlushCount += 1;
     }
   }
   return {
@@ -265,11 +275,22 @@ function computeWatchKpis(watchFlushEvents) {
       effectiveDebounceValues.length > 0
         ? roundMetric(percentile(effectiveDebounceValues, 95))
         : null,
+    watch_db_retry_avg_per_flush:
+      watchFlushEvents.length > 0 ? roundMetric(dbRetryCount / watchFlushEvents.length, 4) : null,
+    watch_db_retry_exhausted_rate:
+      watchFlushEvents.length > 0
+        ? roundMetric(dbRetryExhaustedCount / watchFlushEvents.length, 4)
+        : null,
+    watch_slow_flush_rate:
+      watchFlushEvents.length > 0 ? roundMetric(slowFlushCount / watchFlushEvents.length, 4) : null,
     sample_sizes: {
       index_lag_samples: lagValues.length,
       refresh_duration_samples: refreshValues.length,
       backpressure_flush_samples: backpressureFlushCount,
-      effective_debounce_samples: effectiveDebounceValues.length
+      effective_debounce_samples: effectiveDebounceValues.length,
+      db_retry_samples: dbRetryCount,
+      db_retry_exhausted_samples: dbRetryExhaustedCount,
+      slow_flush_samples: slowFlushCount
     }
   };
 }
@@ -347,6 +368,13 @@ function printTextReport(report) {
       "ms"
     )}`
   );
+  console.log(
+    `- watch_db_retry_avg_per_flush: ${formatMetricValue(report.kpi.watch_db_retry_avg_per_flush)}`
+  );
+  console.log(
+    `- watch_db_retry_exhausted_rate: ${formatMetricValue(report.kpi.watch_db_retry_exhausted_rate)}`
+  );
+  console.log(`- watch_slow_flush_rate: ${formatMetricValue(report.kpi.watch_slow_flush_rate)}`);
   console.log(`- stale_hit_rate_avg: ${formatMetricValue(report.kpi.stale_hit_rate_avg)}`);
   console.log(`- query_hybrid_p95_ms: ${formatMetricValue(report.kpi.query_hybrid_p95_ms, "ms")}`);
   console.log(`- degrade_rate: ${formatMetricValue(report.kpi.degrade_rate)}`);
@@ -448,6 +476,9 @@ async function buildReport(options) {
       watch_backpressure_flush_rate: watchKpis.watch_backpressure_flush_rate,
       watch_effective_debounce_avg_ms: watchKpis.watch_effective_debounce_avg_ms,
       watch_effective_debounce_p95_ms: watchKpis.watch_effective_debounce_p95_ms,
+      watch_db_retry_avg_per_flush: watchKpis.watch_db_retry_avg_per_flush,
+      watch_db_retry_exhausted_rate: watchKpis.watch_db_retry_exhausted_rate,
+      watch_slow_flush_rate: watchKpis.watch_slow_flush_rate,
       stale_hit_rate_avg: hybridKpis.stale_hit_rate_avg,
       query_hybrid_p95_ms: hybridKpis.query_hybrid_p95_ms,
       degrade_rate: hybridKpis.degrade_rate,
@@ -481,6 +512,9 @@ async function buildReport(options) {
       refresh_duration_samples: watchKpis.sample_sizes.refresh_duration_samples,
       backpressure_flush_samples: watchKpis.sample_sizes.backpressure_flush_samples,
       effective_debounce_samples: watchKpis.sample_sizes.effective_debounce_samples,
+      db_retry_samples: watchKpis.sample_sizes.db_retry_samples,
+      db_retry_exhausted_samples: watchKpis.sample_sizes.db_retry_exhausted_samples,
+      slow_flush_samples: watchKpis.sample_sizes.slow_flush_samples,
       memory_query_duration_samples: memoryKpis.sample_sizes.memory_query_duration_samples
     }
   };

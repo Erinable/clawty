@@ -18,7 +18,11 @@ function createWatchMetrics() {
     refreshed_deleted: 0,
     backpressure_poll_count: 0,
     backpressure_flush_count: 0,
-    last_effective_debounce_ms: 0
+    last_effective_debounce_ms: 0,
+    db_retry_count: 0,
+    db_retry_exhausted_count: 0,
+    last_db_retry_count: 0,
+    slow_flush_count: 0
   };
 }
 
@@ -203,7 +207,11 @@ export async function runIndexWatchLoopWithDeps(workspaceRoot, args = {}, deps =
         refreshed_deleted: Number(metrics.refreshed_deleted || 0),
         backpressure_poll_count: Number(metrics.backpressure_poll_count || 0),
         backpressure_flush_count: Number(metrics.backpressure_flush_count || 0),
-        last_effective_debounce_ms: Number(metrics.last_effective_debounce_ms || 0)
+        last_effective_debounce_ms: Number(metrics.last_effective_debounce_ms || 0),
+        db_retry_count: Number(metrics.db_retry_count || 0),
+        db_retry_exhausted_count: Number(metrics.db_retry_exhausted_count || 0),
+        last_db_retry_count: Number(metrics.last_db_retry_count || 0),
+        slow_flush_count: Number(metrics.slow_flush_count || 0)
       }
     });
     return {

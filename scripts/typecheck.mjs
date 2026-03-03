@@ -1,101 +1,26 @@
 #!/usr/bin/env node
 
-const CONTRACTS = [
-  {
-    modulePath: "../src/agent.js",
-    required: {
-      runAgentTurn: "function",
-      collectIncrementalContext: "function",
-      formatIncrementalContextForPrompt: "function"
-    }
-  },
-  {
-    modulePath: "../src/tools.js",
-    required: {
-      runTool: "function",
-      TOOL_DEFINITIONS: "object"
-    }
-  },
-  {
-    modulePath: "../src/tool-query-handlers.js",
-    required: {
-      createQueryToolHandlers: "function"
-    }
-  },
-  {
-    modulePath: "../src/retrieval-result-protocol.js",
-    required: {
-      buildRetrievalResultProtocol: "function"
-    }
-  },
-  {
-    modulePath: "../src/trace-context.js",
-    required: {
-      createTraceContext: "function",
-      createTurnTraceContext: "function",
-      createRequestTraceContext: "function",
-      pickTraceFields: "function"
-    }
-  }
-];
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
-function validateType(value, expected) {
-  if (expected === "array") {
-    return Array.isArray(value);
-  }
-  if (expected === "null") {
-    return value === null;
-  }
-  return typeof value === expected;
+const isWindows = process.platform === "win32";
+const tscPath = path.resolve(
+  process.cwd(),
+  "node_modules",
+  ".bin",
+  isWindows ? "tsc.cmd" : "tsc"
+);
+
+if (!fs.existsSync(tscPath)) {
+  console.error(
+    "typecheck failed: local TypeScript compiler not found. Run `npm install` to install dev dependencies."
+  );
+  process.exitCode = 1;
+} else {
+  const result = spawnSync(tscPath, ["-p", "tsconfig.checkjs.json", "--noEmit"], {
+    cwd: process.cwd(),
+    stdio: "inherit"
+  });
+  process.exitCode = Number.isFinite(result.status) ? result.status : 1;
 }
-
-async function verifyContract(contract) {
-  const loaded = await import(new URL(contract.modulePath, import.meta.url));
-  const failures = [];
-  for (const [key, expectedType] of Object.entries(contract.required)) {
-    if (!Object.prototype.hasOwnProperty.call(loaded, key)) {
-      failures.push(`missing export \`${key}\``);
-      continue;
-    }
-    if (!validateType(loaded[key], expectedType)) {
-      failures.push(`export \`${key}\` expected type ${expectedType}, got ${typeof loaded[key]}`);
-    }
-  }
-  return failures;
-}
-
-async function main() {
-  const failures = [];
-  for (const contract of CONTRACTS) {
-    try {
-      const contractFailures = await verifyContract(contract);
-      if (contractFailures.length > 0) {
-        failures.push({
-          modulePath: contract.modulePath,
-          errors: contractFailures
-        });
-      }
-    } catch (error) {
-      failures.push({
-        modulePath: contract.modulePath,
-        errors: [error.message || String(error)]
-      });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error("typecheck failed:");
-    for (const failure of failures) {
-      console.error(`- ${failure.modulePath}`);
-      for (const message of failure.errors) {
-        console.error(`  - ${message}`);
-      }
-    }
-    process.exitCode = 1;
-    return;
-  }
-
-  console.log(`typecheck passed: ${CONTRACTS.length} module contract(s) verified.`);
-}
-
-await main();

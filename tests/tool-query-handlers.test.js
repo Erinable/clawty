@@ -131,6 +131,15 @@ test("createQueryToolHandlers attaches retrieval protocol to query responses", a
     provider: "syntax",
     seeds: [{ path: "src/a.ts", source: "syntax_fallback", name: "a", kind: "file" }]
   });
+  deps.queryVectorIndex = async () => ({
+    ok: true,
+    results: [{ path: "src/a.ts", chunk_id: "chunk-1", start_line: 1, end_line: 10, score: 0.88 }]
+  });
+  deps.runHybridQueryPipeline = async () => ({
+    ok: true,
+    provider: "hybrid",
+    seeds: [{ path: "src/a.ts", source: "semantic", hybrid_score: 0.9 }]
+  });
   const handlers = createQueryToolHandlers(deps);
   const context = { workspaceRoot: "/repo" };
 
@@ -145,4 +154,12 @@ test("createQueryToolHandlers attaches retrieval protocol to query responses", a
   const semanticResult = await handlers.query_semantic_graph({ query: "a" }, context);
   assert.equal(typeof semanticResult.seeds[0].retrieval, "object");
   assert.equal(semanticResult.seeds[0].retrieval.source, "syntax_fallback");
+
+  const vectorResult = await handlers.query_vector_index({ query: "a" }, context);
+  assert.equal(typeof vectorResult.results[0].retrieval, "object");
+  assert.equal(vectorResult.results[0].retrieval.source, "vector");
+
+  const hybridResult = await handlers.query_hybrid_index({ query: "a" }, context);
+  assert.equal(typeof hybridResult.seeds[0].retrieval, "object");
+  assert.equal(hybridResult.seeds[0].retrieval.source, "semantic");
 });

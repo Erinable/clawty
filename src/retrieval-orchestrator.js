@@ -37,6 +37,7 @@ export async function queryHybridRetrievalSourcesWithDeps(
     queryCodeIndex: queryCodeIndexFn,
     queryVectorIndex: queryVectorIndexFn
   } = deps;
+  const retrievalArgs = /** @type {Record<string, any>} */ (effectiveArgs || {});
 
   const vectorQueryPromise = vectorEnabled
     ? queryVectorIndexFn(
@@ -44,11 +45,11 @@ export async function queryHybridRetrievalSourcesWithDeps(
         {
           query,
           top_k: Math.min(100, Math.max(scanTopK, topK * 4)),
-          max_candidates: effectiveArgs?.vector_max_candidates,
-          path_prefix: effectiveArgs?.path_prefix,
-          language: effectiveArgs?.language,
-          layers: effectiveArgs?.vector_layers,
-          model: effectiveArgs?.embedding_model
+          max_candidates: retrievalArgs.vector_max_candidates,
+          path_prefix: retrievalArgs.path_prefix,
+          language: retrievalArgs.language,
+          layers: retrievalArgs.vector_layers,
+          model: retrievalArgs.embedding_model
         },
         {
           embedding
@@ -69,23 +70,23 @@ export async function queryHybridRetrievalSourcesWithDeps(
     querySemanticGraphFn(workspaceRoot, {
       query,
       top_k: Math.min(30, scanTopK),
-      max_neighbors: effectiveArgs?.max_neighbors,
-      max_hops: effectiveArgs?.max_hops,
-      per_hop_limit: effectiveArgs?.per_hop_limit,
-      edge_type: effectiveArgs?.edge_type,
-      path_prefix: effectiveArgs?.path_prefix
+      max_neighbors: retrievalArgs.max_neighbors,
+      max_hops: retrievalArgs.max_hops,
+      per_hop_limit: retrievalArgs.per_hop_limit,
+      edge_type: retrievalArgs.edge_type,
+      path_prefix: retrievalArgs.path_prefix
     }),
     querySyntaxIndexFn(workspaceRoot, {
       query,
       top_k: Math.min(30, scanTopK),
-      max_neighbors: effectiveArgs?.max_neighbors,
-      path_prefix: effectiveArgs?.path_prefix
+      max_neighbors: retrievalArgs.max_neighbors,
+      path_prefix: retrievalArgs.path_prefix
     }),
     queryCodeIndexFn(workspaceRoot, {
       query,
       top_k: Math.min(50, Math.max(scanTopK, 20)),
-      path_prefix: effectiveArgs?.path_prefix,
-      language: effectiveArgs?.language
+      path_prefix: retrievalArgs.path_prefix,
+      language: retrievalArgs.language
     }),
     vectorQueryPromise
   ]);

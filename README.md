@@ -240,7 +240,8 @@ npm run build:bin:clean
 - `npm run test:coverage`：生成覆盖率报告（实验特性）
 - `npm run lint`：执行 JS 语法门禁（覆盖 `src/`、`tests/`、`scripts/`）
 - `npm run lint:check`：`lint` 别名，便于门禁链路统一命名
-- `npm run typecheck`：执行模块导出契约检查（无外部依赖）
+- `npm run contract:check`：执行模块导出契约检查（接口漂移门禁）
+- `npm run typecheck`：执行 TypeScript `checkJs` 静态检查（`tsconfig.checkjs.json`）
 - `npm run coverage:check`：执行覆盖率硬门禁（全局阈值 + 核心文件阈值）
   - 可选环境变量：`COVERAGE_MIN_LINE` / `COVERAGE_MIN_BRANCH` / `COVERAGE_MIN_FUNCS`
   - 可选核心文件覆盖率覆盖：`COVERAGE_CORE_LINE_THRESHOLDS=\"code-index.js=90,semantic-graph.js=75\"`
@@ -280,6 +281,7 @@ hybrid 回放评测说明位于 `docs/hybrid-replay-evaluation.md`。
 主流方案对齐路线图位于 `docs/code-index-mainstream-roadmap.md`。
 语法索引说明位于 `docs/syntax-index.md`。
 hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
+SQLite 同步链路风险处置手册位于 `docs/db-sync-risk-runbook.md`。
 发布清单已覆盖 `query_syntax_index` 与 `semantic -> syntax -> index` 回退验收门禁。
 
 ## 代码索引使用建议

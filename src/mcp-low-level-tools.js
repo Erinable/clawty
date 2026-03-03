@@ -20,11 +20,13 @@ export function createCallLowLevelCodeTool(deps = {}) {
   function createToolContext(workspaceRoot, serverOptions = {}) {
     return {
       workspaceRoot,
+      defaultTimeoutMs: serverOptions.toolTimeoutMs,
       toolTimeoutMs: serverOptions.toolTimeoutMs,
       lsp: serverOptions.lsp || {},
       embedding: serverOptions.embedding || {},
       metrics: serverOptions.metrics || {},
-      onlineTuner: serverOptions.onlineTuner || {}
+      onlineTuner: serverOptions.onlineTuner || {},
+      trace: serverOptions.trace || {}
     };
   }
 

@@ -348,6 +348,8 @@ test("vector index tools are callable through runTool", async (t) => {
   assert.equal(queriedVector.ok, true);
   assert.ok(queriedVector.results.length >= 1);
   assert.equal(queriedVector.results[0].path, "src/vector-alpha.js");
+  assert.equal(typeof queriedVector.results[0].retrieval, "object");
+  assert.equal(queriedVector.results[0].retrieval.source, "vector");
 
   const hybrid = await runTool(
     "query_hybrid_index",
@@ -363,6 +365,7 @@ test("vector index tools are callable through runTool", async (t) => {
   assert.equal(hybrid.sources.vector.enabled, true);
   assert.equal(hybrid.sources.vector.ok, true);
   assert.ok(hybrid.sources.vector.candidates >= 1);
+  assert.equal(typeof hybrid.seeds[0].retrieval, "object");
 
   await writeWorkspaceFile(
     workspaceRoot,

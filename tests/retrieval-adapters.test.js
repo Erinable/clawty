@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  attachHybridRetrievalProtocol,
   attachIndexRetrievalProtocol,
   attachSemanticRetrievalProtocol,
-  attachSyntaxRetrievalProtocol
+  attachSyntaxRetrievalProtocol,
+  attachVectorRetrievalProtocol
 } from "../src/retrieval-adapters.js";
 
 test("attachIndexRetrievalProtocol keeps response shape and appends retrieval", () => {
@@ -49,4 +51,43 @@ test("attachSemanticRetrievalProtocol supports fallback seed sources", () => {
   assert.equal(output.seeds.length, 1);
   assert.equal(output.seeds[0].retrieval.source, "syntax_fallback");
   assert.equal(typeof output.seeds[0].retrieval.dedup_key, "string");
+});
+
+test("attachVectorRetrievalProtocol appends retrieval for vector results", () => {
+  const input = {
+    ok: true,
+    results: [
+      {
+        chunk_id: "chunk-1",
+        path: "src/vector.ts",
+        start_line: 2,
+        end_line: 9,
+        score: 0.77
+      }
+    ]
+  };
+  const output = attachVectorRetrievalProtocol(input);
+  assert.equal(output.ok, true);
+  assert.equal(output.results.length, 1);
+  assert.equal(output.results[0].retrieval.source, "vector");
+  assert.equal(typeof output.results[0].retrieval.confidence.score, "number");
+});
+
+test("attachHybridRetrievalProtocol backfills missing retrieval fields", () => {
+  const input = {
+    ok: true,
+    seeds: [
+      {
+        path: "src/hybrid.ts",
+        source: "semantic",
+        hybrid_score: 0.91,
+        freshness_score: 0.6
+      }
+    ]
+  };
+  const output = attachHybridRetrievalProtocol(input);
+  assert.equal(output.ok, true);
+  assert.equal(output.seeds.length, 1);
+  assert.equal(output.seeds[0].retrieval.source, "semantic");
+  assert.equal(typeof output.seeds[0].retrieval.timeliness.score, "number");
 });

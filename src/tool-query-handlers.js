@@ -1,7 +1,9 @@
 import {
+  attachHybridRetrievalProtocol,
   attachIndexRetrievalProtocol,
   attachSemanticRetrievalProtocol,
-  attachSyntaxRetrievalProtocol
+  attachSyntaxRetrievalProtocol,
+  attachVectorRetrievalProtocol
 } from "./retrieval-adapters.js";
 
 export function createQueryToolHandlers(deps = {}) {
@@ -89,13 +91,14 @@ export function createQueryToolHandlers(deps = {}) {
   }
 
   async function queryHybridIndexTool(args, context) {
-    return runHybridQueryPipeline({
+    const result = await runHybridQueryPipeline({
       args,
       context,
       resolveSafePath,
       metricsSubdir: metricsSubdir,
       metricsFileName: hybridQueryMetricsFile
     });
+    return attachHybridRetrievalProtocol(result);
   }
 
   async function getSemanticGraphStatsTool(args, context) {
@@ -132,9 +135,10 @@ export function createQueryToolHandlers(deps = {}) {
   }
 
   async function queryVectorIndexTool(args, context) {
-    return queryVectorIndex(context.workspaceRoot, args, {
+    const result = await queryVectorIndex(context.workspaceRoot, args, {
       embedding: context.embedding || {}
     });
+    return attachVectorRetrievalProtocol(result);
   }
 
   async function getVectorIndexStatsTool(args, context) {

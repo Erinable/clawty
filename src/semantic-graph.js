@@ -351,6 +351,7 @@ function openDb(workspaceRoot) {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
+  db.exec("PRAGMA busy_timeout = 5000;");
   return db;
 }
 
@@ -1955,7 +1956,7 @@ export async function refreshSemanticGraph(workspaceRoot, args = {}, lspInput = 
   const deletedPaths = parsePathList(workspaceRoot, args.deleted_paths);
   const eventMode = changedPaths.length > 0 || deletedPaths.length > 0;
 
-  const refreshArgs = { ...args };
+  const refreshArgs = /** @type {Record<string, any>} */ ({ ...args });
   if (typeof refreshArgs.precise_preferred === "undefined") {
     refreshArgs.precise_preferred = false;
   }

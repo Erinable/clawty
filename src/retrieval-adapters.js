@@ -25,6 +25,14 @@ function normalizeCodeConfidence(rawScore) {
   return roundScore(numeric / (numeric + 4));
 }
 
+function normalizeScore01(rawScore, fallback = 0) {
+  const numeric = Number(rawScore);
+  if (!Number.isFinite(numeric)) {
+    return roundScore(fallback);
+  }
+  return roundScore(Math.max(0, Math.min(1, numeric)));
+}
+
 function normalizeSyntaxConfidence(seed) {
   const importCount = Number(seed?.import_count || 0);
   const callCount = Number(seed?.call_count || 0);
@@ -119,6 +127,53 @@ function semanticSeedRetrieval(seed, provider = null) {
   );
 }
 
+function vectorResultRetrieval(item) {
+  const candidatePath = String(item?.path || "").trim();
+  const startLine = Number(item?.start_line || 1);
+  const endLine = Number(item?.end_line || startLine);
+  return buildRetrievalResultProtocol(
+    {
+      source: "vector",
+      hybrid_score: normalizeScore01(item?.score, 0.5),
+      supporting_providers: ["vector"]
+    },
+    {
+      normalizeSource,
+      roundMetric: roundScore,
+      dedupKey:
+        candidatePath
+          ? `vector:${candidatePath}:${Math.max(1, startLine)}:${Math.max(1, endLine)}`
+          : `vector:${String(item?.chunk_id || "")}`
+    }
+  );
+}
+
+function hybridSeedRetrieval(seed) {
+  const candidatePath = String(seed?.path || "").trim();
+  return buildRetrievalResultProtocol(
+    {
+      source: normalizeSource(seed?.source || "hybrid"),
+      hybrid_score: normalizeScore01(seed?.hybrid_score, 0.5),
+      freshness_score: Number.isFinite(Number(seed?.freshness_score))
+        ? Number(seed.freshness_score)
+        : null,
+      freshness_age_ms: Number.isFinite(Number(seed?.freshness_age_ms))
+        ? Number(seed.freshness_age_ms)
+        : null,
+      freshness_stale:
+        typeof seed?.freshness_stale === "boolean" ? seed.freshness_stale : null,
+      supporting_providers: Array.isArray(seed?.supporting_providers)
+        ? seed.supporting_providers
+        : [normalizeSource(seed?.source || "hybrid")]
+    },
+    {
+      normalizeSource,
+      roundMetric: roundScore,
+      dedupKey: candidatePath ? `path:${candidatePath}` : `hybrid:${String(seed?.name || "")}`
+    }
+  );
+}
+
 export function attachIndexRetrievalProtocol(result) {
   if (!result?.ok || !Array.isArray(result.results)) {
     return result;
@@ -155,5 +210,36 @@ export function attachSemanticRetrievalProtocol(result) {
       ...seed,
       retrieval: semanticSeedRetrieval(seed, result.provider || null)
     }))
+  };
+}
+
+export function attachVectorRetrievalProtocol(result) {
+  if (!result?.ok || !Array.isArray(result.results)) {
+    return result;
+  }
+  return {
+    ...result,
+    results: result.results.map((item) => ({
+      ...item,
+      retrieval: vectorResultRetrieval(item)
+    }))
+  };
+}
+
+export function attachHybridRetrievalProtocol(result) {
+  if (!result?.ok || !Array.isArray(result.seeds)) {
+    return result;
+  }
+  return {
+    ...result,
+    seeds: result.seeds.map((seed) => {
+      if (seed?.retrieval && typeof seed.retrieval === "object") {
+        return seed;
+      }
+      return {
+        ...seed,
+        retrieval: hybridSeedRetrieval(seed)
+      };
+    })
   };
 }
