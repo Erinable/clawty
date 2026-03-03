@@ -695,6 +695,8 @@ test("query_hybrid_index fuses semantic/syntax/index and respects path_prefix re
   assert.equal(typeof query.seeds[0].retrieval.source, "string");
   assert.equal(typeof query.seeds[0].retrieval.confidence.score, "number");
   assert.ok(["low", "medium", "high"].includes(query.seeds[0].retrieval.confidence.level));
+  assert.equal(typeof query.seeds[0].retrieval.timeliness, "object");
+  assert.equal(typeof query.seeds[0].retrieval.timeliness.score, "number");
   assert.equal(typeof query.seeds[0].retrieval.dedup_key, "string");
   assert.ok(query.seeds[0].hybrid_explain);
   assert.ok(query.language_distribution);
@@ -1142,6 +1144,7 @@ test("query_hybrid_index downweights stale vector-supported candidates with fres
   assert.equal(typeof targetSeed.freshness_score, "number");
   assert.equal(typeof targetSeed.retrieval.freshness.score, "number");
   assert.equal(targetSeed.retrieval.freshness.stale, true);
+  assert.equal(targetSeed.retrieval.timeliness.stale, true);
   assert.ok(targetSeed.hybrid_explain);
   assert.ok(targetSeed.hybrid_explain.freshness_vector_penalty > 0);
 });

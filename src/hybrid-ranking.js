@@ -1,4 +1,5 @@
 import path from "node:path";
+import { buildRetrievalResultProtocol } from "./retrieval-result-protocol.js";
 
 const HYBRID_SOURCE_SCORE = Object.freeze({
   scip: 1,
@@ -119,58 +120,17 @@ export function hybridCandidateKey(candidate) {
   ].join("::");
 }
 
-function classifyHybridConfidenceLevel(score) {
-  const numeric = Number(score || 0);
-  if (!Number.isFinite(numeric)) {
-    return "low";
-  }
-  if (numeric >= 0.75) {
-    return "high";
-  }
-  if (numeric >= 0.45) {
-    return "medium";
-  }
-  return "low";
-}
-
-function buildHybridRetrievalProtocol(candidate) {
-  const source = normalizeHybridSource(candidate?.source);
-  const confidenceScore = roundHybridMetric(candidate?.hybrid_score);
-  const freshnessScore = Number.isFinite(Number(candidate?.freshness_score))
-    ? roundHybridMetric(candidate.freshness_score)
-    : null;
-  const freshnessAgeMs = Number.isFinite(Number(candidate?.freshness_age_ms))
-    ? Math.floor(Number(candidate.freshness_age_ms))
-    : null;
-  const freshnessStale =
-    typeof candidate?.freshness_stale === "boolean" ? candidate.freshness_stale : null;
-  const providers = Array.isArray(candidate?.supporting_providers)
-    ? Array.from(new Set(candidate.supporting_providers.map((item) => normalizeHybridSource(item)))).sort()
-    : [source];
-
-  return {
-    source,
-    confidence: {
-      score: confidenceScore,
-      level: classifyHybridConfidenceLevel(confidenceScore)
-    },
-    freshness: {
-      score: freshnessScore,
-      age_ms: freshnessAgeMs,
-      stale: freshnessStale
-    },
-    dedup_key: hybridCandidateKey(candidate),
-    supporting_sources: providers
-  };
-}
-
 export function attachHybridRetrievalProtocol(candidates) {
   if (!Array.isArray(candidates)) {
     return [];
   }
   return candidates.map((candidate) => ({
     ...candidate,
-    retrieval: buildHybridRetrievalProtocol(candidate)
+    retrieval: buildRetrievalResultProtocol(candidate, {
+      normalizeSource: normalizeHybridSource,
+      roundMetric: roundHybridMetric,
+      getDedupKey: hybridCandidateKey
+    })
   }));
 }
 

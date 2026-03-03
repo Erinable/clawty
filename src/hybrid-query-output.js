@@ -183,7 +183,14 @@ export function buildHybridQueryResponse({
     provider: "hybrid",
     protocol: {
       version: "hybrid_result.v1",
-      candidate_fields: ["source", "confidence", "freshness", "dedup_key"]
+      candidate_fields: [
+        "source",
+        "confidence",
+        "timeliness",
+        "freshness",
+        "dedup_key",
+        "supporting_sources"
+      ]
     },
     query,
     query_total_ms: queryTotalMs,
