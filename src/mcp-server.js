@@ -57,6 +57,7 @@ import {
   writeNoContent
 } from "./mcp-transport-utils.js";
 import { runHttpTransportWithDeps, runStdioTransportWithDeps } from "./mcp-transport-runners.js";
+import { isPlainObject, logWith, toFiniteInteger } from "./mcp-server-utils.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
@@ -65,38 +66,12 @@ const MCP_PROTOCOL_VERSION = "2024-11-05";
 const LOW_LEVEL_CODE_TOOL_DEFINITIONS = buildLowLevelCodeToolDefinitions(TOOL_DEFINITIONS);
 const LOW_LEVEL_CODE_TOOL_NAME_SET = new Set(LOW_LEVEL_CODE_TOOL_DEFINITIONS.map((tool) => tool.name));
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function logWith(logger, level, event, fields = {}) {
-  if (!logger || typeof logger[level] !== "function") {
-    return;
-  }
-  logger[level](event, fields);
-}
-
 function buildToolDefinitions(serverOptions = {}) {
   return buildToolDefinitionsWithDeps(serverOptions, {
     resolveFacadeToolNamesForToolsets,
     monitorToolDefinitions: MONITOR_TOOL_DEFINITIONS,
     lowLevelCodeToolDefinitions: LOW_LEVEL_CODE_TOOL_DEFINITIONS
   });
-}
-
-function toFiniteInteger(value, fallback, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return fallback;
-  }
-  const rounded = Math.trunc(number);
-  if (rounded < min) {
-    return min;
-  }
-  if (rounded > max) {
-    return max;
-  }
-  return rounded;
 }
 
 const callLowLevelCodeTool = createCallLowLevelCodeTool({
