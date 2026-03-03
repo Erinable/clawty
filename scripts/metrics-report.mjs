@@ -221,17 +221,43 @@ function computeHybridKpis(hybridEvents) {
 
 function computeWatchKpis(watchFlushEvents) {
   const lagValues = [];
+  const effectiveDebounceValues = [];
+  let backpressureFlushCount = 0;
   for (const event of watchFlushEvents) {
     const lag = Number(event?.index_lag_ms);
     if (Number.isFinite(lag) && lag >= 0) {
       lagValues.push(lag);
     }
+    const effectiveDebounce = Number(event?.effective_debounce_ms);
+    if (Number.isFinite(effectiveDebounce) && effectiveDebounce >= 0) {
+      effectiveDebounceValues.push(effectiveDebounce);
+    }
+    if (event?.backpressure_active === true) {
+      backpressureFlushCount += 1;
+    }
   }
   return {
     watch_flush_count: watchFlushEvents.length,
     code_index_lag_p95_ms: lagValues.length > 0 ? roundMetric(percentile(lagValues, 95)) : null,
+    watch_backpressure_flush_rate:
+      watchFlushEvents.length > 0
+        ? roundMetric(backpressureFlushCount / watchFlushEvents.length, 4)
+        : null,
+    watch_effective_debounce_avg_ms:
+      effectiveDebounceValues.length > 0
+        ? roundMetric(
+            effectiveDebounceValues.reduce((sum, value) => sum + value, 0) /
+              effectiveDebounceValues.length
+          )
+        : null,
+    watch_effective_debounce_p95_ms:
+      effectiveDebounceValues.length > 0
+        ? roundMetric(percentile(effectiveDebounceValues, 95))
+        : null,
     sample_sizes: {
-      index_lag_samples: lagValues.length
+      index_lag_samples: lagValues.length,
+      backpressure_flush_samples: backpressureFlushCount,
+      effective_debounce_samples: effectiveDebounceValues.length
     }
   };
 }
@@ -292,6 +318,21 @@ function printTextReport(report) {
   console.log("");
   console.log("Core KPI");
   console.log(`- code_index_lag_p95_ms: ${formatMetricValue(report.kpi.code_index_lag_p95_ms, "ms")}`);
+  console.log(
+    `- watch_backpressure_flush_rate: ${formatMetricValue(report.kpi.watch_backpressure_flush_rate)}`
+  );
+  console.log(
+    `- watch_effective_debounce_avg_ms: ${formatMetricValue(
+      report.kpi.watch_effective_debounce_avg_ms,
+      "ms"
+    )}`
+  );
+  console.log(
+    `- watch_effective_debounce_p95_ms: ${formatMetricValue(
+      report.kpi.watch_effective_debounce_p95_ms,
+      "ms"
+    )}`
+  );
   console.log(`- stale_hit_rate_avg: ${formatMetricValue(report.kpi.stale_hit_rate_avg)}`);
   console.log(`- query_hybrid_p95_ms: ${formatMetricValue(report.kpi.query_hybrid_p95_ms, "ms")}`);
   console.log(`- degrade_rate: ${formatMetricValue(report.kpi.degrade_rate)}`);
@@ -319,6 +360,8 @@ function printTextReport(report) {
     `- embedding_unmapped_status_samples: ${report.sample_sizes.embedding_unmapped_status_samples}`
   );
   console.log(`- index_lag_samples: ${report.sample_sizes.index_lag_samples}`);
+  console.log(`- backpressure_flush_samples: ${report.sample_sizes.backpressure_flush_samples}`);
+  console.log(`- effective_debounce_samples: ${report.sample_sizes.effective_debounce_samples}`);
   console.log(`- memory_query_duration_samples: ${report.sample_sizes.memory_query_duration_samples}`);
   if (Array.isArray(report.runbook.embedding_unmapped_status_codes)) {
     console.log(
@@ -385,6 +428,9 @@ async function buildReport(options) {
     },
     kpi: {
       code_index_lag_p95_ms: watchKpis.code_index_lag_p95_ms,
+      watch_backpressure_flush_rate: watchKpis.watch_backpressure_flush_rate,
+      watch_effective_debounce_avg_ms: watchKpis.watch_effective_debounce_avg_ms,
+      watch_effective_debounce_p95_ms: watchKpis.watch_effective_debounce_p95_ms,
       stale_hit_rate_avg: hybridKpis.stale_hit_rate_avg,
       query_hybrid_p95_ms: hybridKpis.query_hybrid_p95_ms,
       degrade_rate: hybridKpis.degrade_rate,
@@ -415,6 +461,8 @@ async function buildReport(options) {
       embedding_unmapped_status_samples:
         hybridKpis.sample_sizes.embedding_unmapped_status_samples,
       index_lag_samples: watchKpis.sample_sizes.index_lag_samples,
+      backpressure_flush_samples: watchKpis.sample_sizes.backpressure_flush_samples,
+      effective_debounce_samples: watchKpis.sample_sizes.effective_debounce_samples,
       memory_query_duration_samples: memoryKpis.sample_sizes.memory_query_duration_samples
     }
   };
