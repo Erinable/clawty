@@ -13,10 +13,6 @@ const BLOCKED_COMMAND_PATTERNS = [
   /:\(\)\s*\{\s*:\|:&\s*\};:/i
 ];
 
-export function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 export function truncate(text, maxChars = DEFAULT_MAX_TOOL_TEXT) {
   if (!text) {
     return "";

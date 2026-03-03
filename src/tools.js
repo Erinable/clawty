@@ -43,7 +43,6 @@ import {
   DEFAULT_MAX_TOOL_TEXT,
   extractPatchedFiles,
   isBlockedCommand,
-  isPlainObject,
   resolveRunShellExecutable,
   resolveSafePath,
   truncate
