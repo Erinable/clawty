@@ -1,4 +1,3 @@
-import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
@@ -45,6 +44,7 @@ import {
   writeMessage,
   writeNoContent
 } from "./mcp-transport-utils.js";
+import { runHttpTransportWithDeps, runStdioTransportWithDeps } from "./mcp-transport-runners.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
@@ -664,212 +664,24 @@ async function handleRpcRequest(request, serverOptions, tools, logger) {
 }
 
 async function runStdioTransport(serverOptions, tools, logger) {
-  let rawBuffer = Buffer.alloc(0);
-  let shouldExit = false;
-
-  const handlePayload = async (payloadText) => {
-    const payload = payloadText.trim();
-    if (!payload) {
-      return;
-    }
-
-    let request;
-    try {
-      request = JSON.parse(payload);
-    } catch {
-      writeMessage(buildRpcError(null, -32700, "Parse error"));
-      logWith(logger, "warn", "mcp.parse_error");
-      return;
-    }
-
-    const { response, shouldExit: shouldClose } = await handleRpcRequest(
-      request,
-      serverOptions,
-      tools,
-      logger
-    );
-    if (response) {
-      writeMessage(response);
-    }
-    if (shouldClose) {
-      shouldExit = true;
-    }
-  };
-
-  const parseNextPayload = () => {
-    if (rawBuffer.length === 0) {
-      return null;
-    }
-
-    let skip = 0;
-    while (skip < rawBuffer.length) {
-      const code = rawBuffer[skip];
-      if (code !== 0x20 && code !== 0x09 && code !== 0x0d && code !== 0x0a) {
-        break;
-      }
-      skip += 1;
-    }
-    if (skip > 0) {
-      rawBuffer = rawBuffer.slice(skip);
-    }
-    if (rawBuffer.length === 0) {
-      return null;
-    }
-
-    const firstByte = rawBuffer[0];
-    if (firstByte === 0x7b || firstByte === 0x5b) {
-      const newlineIndex = rawBuffer.indexOf("\n");
-      if (newlineIndex < 0) {
-        return null;
-      }
-      const payload = rawBuffer.slice(0, newlineIndex).toString("utf8");
-      rawBuffer = rawBuffer.slice(newlineIndex + 1);
-      return payload;
-    }
-
-    const headerTerminator = findHeaderTerminator(rawBuffer);
-    if (!headerTerminator) {
-      return null;
-    }
-    const headerEnd = headerTerminator.index;
-    const headerBlock = rawBuffer.slice(0, headerEnd).toString("utf8");
-    const contentLength = parseContentLength(headerBlock);
-    if (contentLength === null) {
-      rawBuffer = rawBuffer.slice(headerEnd + headerTerminator.delimiterLength);
-      writeMessage(buildRpcError(null, -32600, "Invalid Content-Length header"));
-      return "";
-    }
-
-    const bodyStart = headerEnd + headerTerminator.delimiterLength;
-    const bodyEnd = bodyStart + contentLength;
-    if (rawBuffer.length < bodyEnd) {
-      return null;
-    }
-    const payload = rawBuffer.slice(bodyStart, bodyEnd).toString("utf8");
-    rawBuffer = rawBuffer.slice(bodyEnd);
-    return payload;
-  };
-
-  for await (const chunk of process.stdin) {
-    rawBuffer = Buffer.concat([rawBuffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-
-    while (true) {
-      const payload = parseNextPayload();
-      if (payload === null) {
-        break;
-      }
-      await handlePayload(payload);
-      if (shouldExit) {
-        logWith(logger, "info", "mcp.server_stop", { transport: "stdio" });
-        return;
-      }
-    }
-  }
+  return runStdioTransportWithDeps(serverOptions, tools, logger, {
+    handleRpcRequest,
+    buildRpcError,
+    writeMessage,
+    logWith,
+    findHeaderTerminator,
+    parseContentLength
+  });
 }
 
 async function runHttpTransport(serverOptions, tools, logger) {
-  const host = serverOptions.host;
-  const port = serverOptions.port;
-  let serverRef = null;
-  let closing = false;
-
-  await new Promise((resolve, reject) => {
-    const cleanupHandlers = [];
-    const registerCleanup = (fn) => {
-      cleanupHandlers.push(fn);
-    };
-    const runCleanup = () => {
-      for (const fn of cleanupHandlers.splice(0)) {
-        try {
-          fn();
-        } catch {
-          // Best-effort cleanup.
-        }
-      }
-    };
-    const closeServer = () => {
-      if (closing || !serverRef) {
-        return;
-      }
-      closing = true;
-      serverRef.close((error) => {
-        runCleanup();
-        if (error) {
-          reject(error);
-          return;
-        }
-        logWith(logger, "info", "mcp.server_stop", { transport: "http" });
-        resolve();
-      });
-    };
-
-    const handleSignal = () => {
-      closeServer();
-    };
-    process.once("SIGINT", handleSignal);
-    process.once("SIGTERM", handleSignal);
-    registerCleanup(() => {
-      process.off("SIGINT", handleSignal);
-      process.off("SIGTERM", handleSignal);
-    });
-
-    const server = http.createServer(async (req, res) => {
-      try {
-        const method = String(req.method || "").toUpperCase();
-        if (method === "GET" && (req.url === "/" || req.url === "/healthz")) {
-          writeJsonResponse(res, 200, {
-            ok: true,
-            transport: "http",
-            host,
-            port
-          });
-          return;
-        }
-        if (method !== "POST") {
-          writeJsonResponse(res, 405, {
-            ok: false,
-            error: "Method not allowed. Use POST for JSON-RPC payloads."
-          });
-          return;
-        }
-
-        const rawBody = await readHttpRequestBody(req);
-        let request;
-        try {
-          request = JSON.parse(rawBody || "");
-        } catch {
-          logWith(logger, "warn", "mcp.parse_error");
-          writeJsonResponse(res, 400, buildRpcError(null, -32700, "Parse error"));
-          return;
-        }
-
-        const { response, shouldExit } = await handleRpcRequest(request, serverOptions, tools, logger);
-        if (response) {
-          writeJsonResponse(res, 200, response);
-        } else {
-          writeNoContent(res);
-        }
-        if (shouldExit) {
-          setTimeout(closeServer, 0);
-        }
-      } catch (error) {
-        logWith(logger, "error", "mcp.http_request_failed", { error });
-        if (!res.headersSent) {
-          writeJsonResponse(res, 500, buildRpcError(null, -32603, "Internal error"));
-        } else {
-          res.end();
-        }
-      }
-    });
-
-    serverRef = server;
-    server.on("error", (error) => {
-      runCleanup();
-      reject(error);
-    });
-    server.listen(port, host, () => {
-      logWith(logger, "info", "mcp.http_listening", { host, port });
-    });
+  return runHttpTransportWithDeps(serverOptions, tools, logger, {
+    handleRpcRequest,
+    buildRpcError,
+    readHttpRequestBody,
+    writeJsonResponse,
+    writeNoContent,
+    logWith
   });
 }
 
