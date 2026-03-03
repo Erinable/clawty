@@ -40,11 +40,11 @@ test("monitor report returns combined metrics+tuner payload", async (t) => {
   assert.equal(await realpath(payload.tuner.workspace_root), expectedWorkspace);
 });
 
-test("monitor help includes subcommands and watch options", async () => {
+test("monitor help includes simplified report command and watch options", async () => {
   const { stdout } = await runCli(["monitor", "--help"]);
-  assert.match(stdout, /clawty monitor report/);
-  assert.match(stdout, /clawty monitor metrics/);
-  assert.match(stdout, /clawty monitor tuner/);
+  assert.match(stdout, /clawty monitor \[report\]/);
+  assert.doesNotMatch(stdout, /clawty monitor metrics/);
+  assert.doesNotMatch(stdout, /clawty monitor tuner/);
   assert.match(stdout, /--watch/);
   assert.match(stdout, /--interval-ms <n>/);
 });
@@ -53,10 +53,10 @@ test("mcp-server help includes workspace option", async () => {
   const { stdout } = await runCli(["mcp-server", "--help"]);
   assert.match(stdout, /clawty mcp-server/);
   assert.match(stdout, /--workspace <path>/);
-  assert.match(stdout, /--toolset <name>/);
-  assert.match(stdout, /--transport <stdio\|http>/);
-  assert.match(stdout, /--host <host>/);
   assert.match(stdout, /--port <n>/);
   assert.match(stdout, /--log-path <path>/);
-  assert.match(stdout, /--expose-low-level/);
+  assert.doesNotMatch(stdout, /--toolset <name>/);
+  assert.doesNotMatch(stdout, /--transport <stdio\|http>/);
+  assert.doesNotMatch(stdout, /--host <host>/);
+  assert.doesNotMatch(stdout, /--expose-low-level/);
 });

@@ -50,17 +50,12 @@ node src/index.js init --include-vector
 
 # 查看生效配置（敏感字段脱敏）
 node src/index.js config show
-node src/index.js config path --json
-node src/index.js config validate
+node src/index.js doctor --json
 
-# 长期记忆（搜索/统计/解释/反馈/清理）
+# 长期记忆（搜索/统计/解释）
 node src/index.js memory search "auth retry" --top-k 5
 node src/index.js memory search "auth retry" --top-k 5 --explain
 node src/index.js memory stats
-node src/index.js memory inspect 12
-node src/index.js memory feedback 12 --vote up --reason good --note "worked"
-node src/index.js memory prune --days 90
-node src/index.js memory reindex
 
 # 运行本地健康诊断
 node src/index.js doctor
@@ -72,13 +67,6 @@ node src/index.js watch-index
 # MCP 服务（默认读取 config）
 node src/index.js mcp-server
 node src/index.js mcp-server --port 8765
-
-# 生成 shell completion
-node src/index.js completion bash
-
-# 升级 / 卸载（谨慎执行）
-node src/index.js upgrade
-node src/index.js uninstall --yes --skip-npm
 
 # 构建单文件二进制（实验）
 npm run build:bin
@@ -153,8 +141,8 @@ node src/index.js init --include-vector
 
 1. 用 `memory search` 先查有没有历史经验可复用。
 2. 完成任务后在 `chat/run` 中自动写入一条经验（默认开启）。
-3. 对检索命中的经验用 `memory feedback` 投票，提升后续排序。
-4. 定期 `memory prune --days 90` 清理过期条目。
+3. 用 `memory search --explain` 检查排序依据是否符合预期。
+4. 用 `memory stats` 观察经验规模和作用域分布。
 
 ## 4. 实时索引监听（watch-index）
 

@@ -9,10 +9,10 @@
 - `init`：一键初始化新仓库分析流程（doctor + code/syntax/semantic，可选 vector）
 - `doctor`：本地环境与依赖健康诊断（支持 `--json`）
 - `watch-index`：监听文件变更并自动刷新索引
-- `completion`：生成 shell completion 脚本（bash/zsh/fish）
-- `config path/validate`：查看配置路径与校验配置有效性
-- `memory search/stats/inspect/feedback/prune/reindex`：长期记忆检索、诊断与维护
-- `upgrade` / `uninstall`：CLI 自升级与卸载命令
+- `config [show]`：查看生效配置（敏感字段脱敏）
+- `memory search/stats`：长期记忆检索与统计
+- `monitor [report]`：查看 metrics + tuner 组合报表
+- `mcp-server`：启动 MCP 服务（支持从 config 读取端口和日志配置）
 - `chat/run` 自动注入当前工作区 `changed_paths + git diff` 增量上下文（可配置开关）
 - 模型可调用本地工具：
   - `read_file`
@@ -58,7 +58,7 @@
 - 混合检索（Hybrid）：融合 semantic/syntax/index/vector，支持 embedding 二阶段重排与 freshness 降权。
 - LSP 语义导航：`lsp_definition` / `lsp_references` / `lsp_workspace_symbols` / `lsp_health`，不可用时可回退到索引。
 - 实时索引监听：`watch-index` 支持脏队列、debounce、batch、hash-skip 与 code/syntax/semantic/vector 协同刷新。
-- 长期记忆（Memory）：跨会话存储经验（SQLite），按 `project/global` 作用域检索注入，支持反馈学习与保留期清理。
+- 长期记忆（Memory）：跨会话存储经验（SQLite），按 `project/global` 作用域检索注入，支持检索解释与统计观测。
 - 可观测与门禁：hybrid/watch JSONL 指标落盘、`metrics-report`/`metrics-check`、质量回归基准与覆盖率门禁。
 - 结构化日志：运行时 JSONL 日志（默认 `.clawty/logs/runtime.log`），支持 `level/console/file/path` 配置；`mcp-server` 默认独立日志 `.clawty/logs/mcp-server.log`。
 
@@ -97,24 +97,14 @@ node src/index.js run "your task"
 node src/index.js init
 node src/index.js init --include-vector
 node src/index.js config show
-node src/index.js config path --json
-node src/index.js config validate
 node src/index.js memory search "auth retry" --top-k 5
 node src/index.js memory search "auth retry" --top-k 5 --explain
 node src/index.js memory stats
-node src/index.js memory inspect 12
-node src/index.js memory feedback 12 --vote up --reason good --note "worked"
-node src/index.js memory prune --days 90
-node src/index.js memory reindex
-node src/index.js completion bash
 node src/index.js doctor
 node src/index.js doctor --json
 node src/index.js watch-index
 node src/index.js mcp-server
 node src/index.js mcp-server --port 8765
-node src/index.js mcp-server --transport http --host 0.0.0.0 --port 9000
-node src/index.js upgrade
-node src/index.js uninstall --yes --skip-npm
 node src/index.js --help
 npm run build:bin
 npm run build:bin:clean
@@ -179,10 +169,6 @@ node src/index.js init --json
 node src/index.js memory search "auth timeout" --top-k 5
 node src/index.js memory search "auth timeout" --top-k 5 --explain
 node src/index.js memory stats
-node src/index.js memory inspect 12
-node src/index.js memory feedback 12 --vote up --reason good --note "有效"
-node src/index.js memory prune --days 90
-node src/index.js memory reindex
 ```
 
 作用域参数：
@@ -491,12 +477,11 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 4. 全局配置（`~/.clawty/config.json`）
 5. 内置默认值
 
-你可以通过下面命令查看最终生效配置与路径（API Key 会脱敏）：
+你可以通过下面命令查看最终生效配置与诊断结果（API Key 会脱敏）：
 
 ```bash
 node src/index.js config show
-node src/index.js config path --json
-node src/index.js config validate
+node src/index.js doctor --json
 ```
 
 可参考示例文件：`clawty.config.example.json`。

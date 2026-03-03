@@ -25,83 +25,50 @@ async function runCli(args, options = {}) {
   });
 }
 
-test("config path reports global/project locations with json", async (t) => {
+test("config show returns effective config JSON", async (t) => {
   const workspaceRoot = await createWorkspace();
-  const fakeHome = path.join(workspaceRoot, "fake-home");
   t.after(async () => {
     await removeWorkspace(workspaceRoot);
   });
 
-  await writeWorkspaceFile(
-    workspaceRoot,
-    path.join("fake-home", ".clawty", "config.json"),
-    JSON.stringify({ model: "global-model" }, null, 2)
-  );
   await writeWorkspaceFile(
     workspaceRoot,
     path.join(".clawty", "config.json"),
-    JSON.stringify({ model: "project-model" }, null, 2)
+    JSON.stringify(
+      {
+        model: "gpt-4.1-mini",
+        logging: {
+          level: "warn"
+        }
+      },
+      null,
+      2
+    )
   );
 
-  const { stdout } = await runCli(["config", "path", "--json"], {
+  const { stdout } = await runCli(["config", "show"], {
     cwd: workspaceRoot,
     env: {
-      HOME: fakeHome,
-      USERPROFILE: fakeHome
+      OPENAI_API_KEY: "sk-test"
     }
   });
-
   const payload = JSON.parse(stdout);
-  assert.match(payload.project_config_path || "", /\.clawty\/config\.json$/);
-  assert.match(payload.global_config_path || "", /fake-home\/\.clawty\/config\.json$/);
-  assert.match(payload.active_config_path || "", /\.clawty\/config\.json$/);
+  assert.equal(payload.model, "gpt-4.1-mini");
+  assert.equal(payload.logging.level, "warn");
 });
 
-test("config validate returns warning for missing api key and no failure", async (t) => {
+test("config path and validate are removed from public CLI", async (t) => {
   const workspaceRoot = await createWorkspace();
-  const fakeHome = path.join(workspaceRoot, "fake-home");
   t.after(async () => {
     await removeWorkspace(workspaceRoot);
   });
-
-  await writeWorkspaceFile(
-    workspaceRoot,
-    path.join("fake-home", ".clawty", "config.json"),
-    JSON.stringify({ model: "global-model" }, null, 2)
-  );
-
-  const { stdout } = await runCli(["config", "validate", "--json"], {
-    cwd: workspaceRoot,
-    env: {
-      HOME: fakeHome,
-      USERPROFILE: fakeHome,
-      OPENAI_API_KEY: ""
-    }
-  });
-
-  const report = JSON.parse(stdout);
-  assert.equal(report.ok, true);
-  assert.ok(report.summary.warn >= 1);
-});
-
-test("config validate fails for invalid project config json", async (t) => {
-  const workspaceRoot = await createWorkspace();
-  const fakeHome = path.join(workspaceRoot, "fake-home");
-  t.after(async () => {
-    await removeWorkspace(workspaceRoot);
-  });
-
-  await writeWorkspaceFile(workspaceRoot, path.join(".clawty", "config.json"), "{ invalid ");
 
   await assert.rejects(
-    async () =>
-      runCli(["config", "validate", "--json"], {
-        cwd: workspaceRoot,
-        env: {
-          HOME: fakeHome,
-          USERPROFILE: fakeHome
-        }
-      }),
-    /Command failed/
+    async () => runCli(["config", "path"], { cwd: workspaceRoot }),
+    /removed from public CLI/
+  );
+  await assert.rejects(
+    async () => runCli(["config", "validate"], { cwd: workspaceRoot }),
+    /removed from public CLI/
   );
 });

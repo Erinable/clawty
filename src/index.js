@@ -3,44 +3,26 @@
 import readline from "node:readline/promises";
 import process from "node:process";
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs/promises";
-import { spawn } from "node:child_process";
-import { loadConfig, resolveConfigSources } from "./config.js";
+import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
 
 const LOGO = "== clawty ==";
-const STATUS = {
-  PASS: "pass",
-  FAIL: "fail",
-  WARN: "warn",
-  SKIP: "skip"
-};
-
-const STATUS_ICON = {
-  [STATUS.PASS]: "✓",
-  [STATUS.FAIL]: "✗",
-  [STATUS.WARN]: "⚠",
-  [STATUS.SKIP]: "○"
-};
 
 let shouldAttemptLspCleanup = false;
 let agentTurnModulePromise = null;
 let packageVersionPromise = null;
 
 const ROOT_COMMANDS = [
-  ["clawty completion [shell]", "generate shell completion script"],
-  ["clawty config <command>", "manage configuration"],
-  ["clawty memory <command>", "manage long-term memory"],
-  ["clawty monitor [subcommand]", "show runtime metrics and tuner stats"],
+  ["clawty config [show]", "show effective configuration"],
+  ["clawty memory [search|stats]", "search or inspect memory stats"],
+  ["clawty monitor [report]", "show runtime metrics and tuner stats"],
   ["clawty run [message..]", "run clawty with a message"],
   ["clawty chat", "start interactive chat mode"],
   ["clawty init", "bootstrap repository analysis"],
   ["clawty doctor", "run diagnostics and health checks"],
   ["clawty watch-index", "auto refresh indexes on file changes"],
-  ["clawty mcp-server", "start MCP server for monitoring and code intelligence"],
-  ["clawty upgrade [target]", "upgrade clawty via npm"],
-  ["clawty uninstall", "uninstall clawty and cleanup files"]
+  ["clawty mcp-server", "start MCP server for monitoring and code intelligence"]
 ];
 
 const ROOT_OPTIONS = [
@@ -145,25 +127,12 @@ function printWatchHelp() {
       commands: [["clawty watch-index [options]", "start watch loop and refresh indexes"]],
       options: [
         ["--interval-ms <n>", "poll interval in milliseconds"],
-        ["--max-files <n>", "max tracked files in snapshot"],
-        ["--max-batch-size <n>", "max changed/deleted files per refresh batch"],
-        ["--debounce-ms <n>", "delay before queue flush"],
-        ["--build-on-start <bool>", "build indexes once before watch loop"],
-        ["--no-build-on-start", "disable initial build"],
-        ["--hash-skip-enabled <bool>", "skip unchanged files by content hash"],
-        ["--hash-init-max-files <n>", "max files hashed during startup seed"],
-        ["--no-hash-skip", "disable hash-skip optimization"],
-        ["--include-syntax <bool>", "include syntax refresh"],
-        ["--no-syntax", "disable syntax refresh"],
-        ["--include-semantic <bool>", "include semantic refresh"],
-        ["--no-semantic", "disable semantic refresh"],
-        ["--include-vector <bool>", "include vector refresh"],
         ["--no-vector", "disable vector refresh"],
-        ["--vector-layer <base|delta>", "target vector layer"],
-        ["--semantic-include-definitions <bool>", "include definition edges in semantic refresh"],
-        ["--semantic-include-references <bool>", "include reference edges in semantic refresh"],
         ["--quiet", "disable loop logs"],
         ["-h, --help", "show help"]
+      ],
+      footer: [
+        "Advanced watch parameters are still supported via .clawty/config.json and env vars."
       ]
     })
   );
@@ -172,25 +141,14 @@ function printWatchHelp() {
 function printConfigHelp() {
   console.log(
     renderHelp({
-      commands: [
-        ["clawty config show", "show effective config (redacted)"],
-        ["clawty config path", "show resolved config file paths"],
-        ["clawty config validate", "validate config files and report warnings"]
-      ],
+      commands: [["clawty config [show]", "show effective config (redacted)"]],
       options: [
-        ["--json", "output JSON report for path/validate"],
+        ["--json", "output JSON"],
         ["-h, --help", "show help"]
+      ],
+      footer: [
+        "`config path` and `config validate` have been removed from the public CLI; use `doctor --json`."
       ]
-    })
-  );
-}
-
-function printCompletionHelp() {
-  console.log(
-    renderHelp({
-      commands: [["clawty completion [shell]", "print shell completion script"]],
-      positionals: [["shell", "target shell: bash | zsh | fish"]],
-      options: [["-h, --help", "show help"]]
     })
   );
 }
@@ -200,26 +158,18 @@ function printMemoryHelp() {
     renderHelp({
       commands: [
         ["clawty memory search <query>", "search memory lessons"],
-        ["clawty memory stats", "show memory usage statistics"],
-        ["clawty memory inspect <lessonId>", "inspect one memory lesson detail"],
-        ["clawty memory feedback <lessonId>", "mark lesson as up/down vote"],
-        ["clawty memory prune", "remove stale memory entries"],
-        ["clawty memory reindex", "rebuild memory tags/fts metadata"]
+        ["clawty memory stats", "show memory usage statistics"]
       ],
-      positionals: [
-        ["query", "search text for memory recall"],
-        ["lessonId", "lesson identifier from search results"]
-      ],
+      positionals: [["query", "search text for memory recall"]],
       options: [
         ["--json", "output structured JSON"],
         ["--explain", "include score component breakdown (search command)"],
         ["--top-k <n>", "max returned lessons for search"],
         ["--scope <project|global|project+global>", "memory scope"],
-        ["--vote <up|down>", "feedback vote (for feedback command)"],
-        ["--reason <wrong|stale|unsafe|irrelevant|good>", "feedback reason (optional)"],
-        ["--note <text>", "optional feedback note"],
-        ["--days <n>", "retention days (for prune command)"],
         ["-h, --help", "show help"]
+      ],
+      footer: [
+        "Advanced memory admin commands (inspect/feedback/prune/reindex) are removed from public CLI."
       ]
     })
   );
@@ -228,17 +178,16 @@ function printMemoryHelp() {
 function printMonitorHelp() {
   console.log(
     renderHelp({
-      commands: [
-        ["clawty monitor report", "combined metrics+tuner report (default)"],
-        ["clawty monitor metrics", "metrics report only"],
-        ["clawty monitor tuner", "tuner report only"]
-      ],
+      commands: [["clawty monitor [report]", "combined metrics+tuner report"]],
       options: [
         ["--json", "output JSON"],
         ["--window-hours <n>", "time window in hours (default 24)"],
         ["--watch", "refresh report periodically"],
         ["--interval-ms <n>", "watch refresh interval (default 5000ms)"],
         ["-h, --help", "show help"]
+      ],
+      footer: [
+        "`monitor metrics` / `monitor tuner` have been removed from public CLI."
       ]
     })
   );
@@ -253,40 +202,12 @@ function printMcpServerHelp() {
       ],
       options: [
         ["--workspace <path>", "workspace root for MCP tools"],
-        ["--toolset <name>", "facade toolset: analysis|edit-safe|ops|all (repeatable)"],
-        ["--expose-low-level", "also expose raw index/LSP/monitor tools"],
-        ["--transport <stdio|http>", "transport mode (default from config, fallback stdio)"],
-        ["--host <host>", "HTTP listen host (default 127.0.0.1)"],
         ["--port <n>", "HTTP listen port (implies --transport http if omitted)"],
         ["--log-path <path>", "MCP log file path (default .clawty/logs/mcp-server.log)"],
         ["-h, --help", "show help"]
-      ]
-    })
-  );
-}
-
-function printUpgradeHelp() {
-  console.log(
-    renderHelp({
-      commands: [["clawty upgrade [target]", "upgrade clawty via npm global install"]],
-      positionals: [["target", "optional version/range, default latest"]],
-      options: [
-        ["--dry-run", "print upgrade command without running"],
-        ["-h, --help", "show help"]
-      ]
-    })
-  );
-}
-
-function printUninstallHelp() {
-  console.log(
-    renderHelp({
-      commands: [["clawty uninstall", "uninstall clawty and remove related files"]],
-      options: [
-        ["--yes", "confirm uninstall and execute"],
-        ["--keep-config", "keep ~/.clawty/config.json and related files"],
-        ["--skip-npm", "skip npm uninstall -g clawty"],
-        ["-h, --help", "show help"]
+      ],
+      footer: [
+        "Advanced MCP switches (toolset/expose-low-level/transport/host) are config-first and hidden from quick help."
       ]
     })
   );
@@ -407,288 +328,6 @@ function parseJsonAndHelpFlags(argv = []) {
   return state;
 }
 
-function summarizeChecks(checks) {
-  const summary = {
-    total: checks.length,
-    pass: 0,
-    fail: 0,
-    warn: 0,
-    skip: 0
-  };
-
-  for (const item of checks) {
-    if (item.status === STATUS.PASS) {
-      summary.pass += 1;
-      continue;
-    }
-    if (item.status === STATUS.FAIL) {
-      summary.fail += 1;
-      continue;
-    }
-    if (item.status === STATUS.WARN) {
-      summary.warn += 1;
-      continue;
-    }
-    summary.skip += 1;
-  }
-
-  return summary;
-}
-
-function formatConfigValidateText(report) {
-  const lines = ["Clawty Config Validate", ""];
-  for (const check of report.checks) {
-    const icon = STATUS_ICON[check.status] || check.status;
-    lines.push(`${icon} ${check.title}: ${check.message}`);
-  }
-  lines.push("");
-  lines.push(
-    `${report.summary.pass} passed, ${report.summary.fail} failed, ${report.summary.warn} warnings, ${report.summary.skip} skipped`
-  );
-  return lines.join("\n");
-}
-
-async function runConfigValidate(cwd = process.cwd(), env = process.env) {
-  const startedAt = Date.now();
-  const checks = [];
-
-  let sourceInfo;
-  try {
-    sourceInfo = resolveConfigSources({ cwd, env });
-  } catch (error) {
-    checks.push({
-      id: "config_parse",
-      status: STATUS.FAIL,
-      title: "Config parsing",
-      message: error.message || String(error)
-    });
-    return {
-      ok: false,
-      generated_at: new Date().toISOString(),
-      elapsed_ms: Math.max(0, Date.now() - startedAt),
-      checks,
-      summary: summarizeChecks(checks)
-    };
-  }
-
-  if (sourceInfo.globalConfig.path) {
-    checks.push({
-      id: "global_config",
-      status: STATUS.PASS,
-      title: "Global config",
-      message: sourceInfo.globalConfig.path
-    });
-  } else {
-    checks.push({
-      id: "global_config",
-      status: STATUS.SKIP,
-      title: "Global config",
-      message: "Not found"
-    });
-  }
-
-  if (sourceInfo.projectConfig.path) {
-    checks.push({
-      id: "project_config",
-      status: STATUS.PASS,
-      title: "Project config",
-      message: sourceInfo.projectConfig.path
-    });
-  } else {
-    checks.push({
-      id: "project_config",
-      status: STATUS.SKIP,
-      title: "Project config",
-      message: "Not found"
-    });
-  }
-
-  if (sourceInfo.projectConfig.isLegacyPath) {
-    checks.push({
-      id: "legacy_path",
-      status: STATUS.WARN,
-      title: "Legacy project config path",
-      message: "clawty.config.json is deprecated; move to .clawty/config.json"
-    });
-  } else {
-    checks.push({
-      id: "legacy_path",
-      status: STATUS.PASS,
-      title: "Legacy project config path",
-      message: "Not used"
-    });
-  }
-
-  let config;
-  try {
-    config = loadConfig({
-      cwd,
-      env,
-      allowMissingApiKey: true,
-      homeDir: sourceInfo.homeDir
-    });
-    checks.push({
-      id: "effective_config",
-      status: STATUS.PASS,
-      title: "Effective config",
-      message: "Resolved successfully"
-    });
-  } catch (error) {
-    checks.push({
-      id: "effective_config",
-      status: STATUS.FAIL,
-      title: "Effective config",
-      message: error.message || String(error)
-    });
-  }
-
-  if (config?.apiKey) {
-    checks.push({
-      id: "api_key",
-      status: STATUS.PASS,
-      title: "OpenAI API key",
-      message: "Configured"
-    });
-  } else {
-    checks.push({
-      id: "api_key",
-      status: STATUS.WARN,
-      title: "OpenAI API key",
-      message: "Missing OPENAI_API_KEY"
-    });
-  }
-
-  const summary = summarizeChecks(checks);
-  return {
-    ok: summary.fail === 0,
-    generated_at: new Date().toISOString(),
-    elapsed_ms: Math.max(0, Date.now() - startedAt),
-    checks,
-    summary,
-    sources: {
-      cwd: sourceInfo.cwd,
-      home_dir: sourceInfo.homeDir,
-      global_config: sourceInfo.globalConfig.path,
-      project_config: sourceInfo.projectConfig.path,
-      dot_env: sourceInfo.dotEnv.path
-    }
-  };
-}
-
-function mapShellFromEnv(value) {
-  const shell = String(value || "").toLowerCase();
-  if (shell.includes("zsh")) {
-    return "zsh";
-  }
-  if (shell.includes("fish")) {
-    return "fish";
-  }
-  return "bash";
-}
-
-function generateBashCompletion(binary = "clawty") {
-  return [
-    `_${binary}_completion() {`,
-    "  local cur prev",
-    "  COMPREPLY=()",
-    "  cur=\"${COMP_WORDS[COMP_CWORD]}\"",
-    "  prev=\"${COMP_WORDS[COMP_CWORD-1]}\"",
-    "  local cmds=\"chat run init doctor watch-index config memory monitor mcp-server completion upgrade uninstall help\"",
-    "  local config_sub=\"show path validate\"",
-    "  local memory_sub=\"search stats inspect feedback prune reindex\"",
-    "  case \"$prev\" in",
-    "    config)",
-    "      COMPREPLY=( $(compgen -W \"$config_sub\" -- \"$cur\") )",
-    "      return 0",
-    "      ;;",
-    "    memory)",
-    "      COMPREPLY=( $(compgen -W \"$memory_sub\" -- \"$cur\") )",
-    "      return 0",
-    "      ;;",
-    "    completion)",
-    "      COMPREPLY=( $(compgen -W \"bash zsh fish\" -- \"$cur\") )",
-    "      return 0",
-    "      ;;",
-    "  esac",
-    "  COMPREPLY=( $(compgen -W \"$cmds\" -- \"$cur\") )",
-    "  return 0",
-    "}",
-    `complete -F _${binary}_completion ${binary}`,
-    ""
-  ].join("\n");
-}
-
-function generateZshCompletion(binary = "clawty") {
-  return [
-    `#compdef ${binary}`,
-    "",
-    "local -a commands",
-    "commands=(",
-    "  'chat:start interactive chat mode'",
-    "  'run:run clawty with a message'",
-    "  'init:bootstrap repository analysis'",
-    "  'doctor:run diagnostics and health checks'",
-    "  'watch-index:auto refresh indexes on file changes'",
-    "  'config:manage configuration'",
-    "  'memory:manage long-term memory'",
-    "  'monitor:show runtime metrics and tuner stats'",
-    "  'mcp-server:start MCP server for monitoring and code intelligence'",
-    "  'completion:generate shell completion script'",
-    "  'upgrade:upgrade clawty via npm'",
-    "  'uninstall:uninstall clawty and cleanup files'",
-    ")",
-    "_describe 'command' commands",
-    ""
-  ].join("\n");
-}
-
-function generateFishCompletion(binary = "clawty") {
-  return [
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a chat -d \"start interactive chat mode\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a run -d \"run clawty with a message\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a init -d \"bootstrap repository analysis\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a doctor -d \"run diagnostics and health checks\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a watch-index -d \"auto refresh indexes on file changes\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a config -d \"manage configuration\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a memory -d \"manage long-term memory\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a monitor -d \"show runtime metrics and tuner stats\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a mcp-server -d \"start MCP server for monitoring and code intelligence\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a completion -d \"generate shell completion script\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a upgrade -d \"upgrade clawty via npm\"`,
-    `complete -c ${binary} -f -n \"__fish_use_subcommand\" -a uninstall -d \"uninstall clawty and cleanup files\"`,
-    ""
-  ].join("\n");
-}
-
-function generateCompletionScript(shell, binary = "clawty") {
-  if (shell === "zsh") {
-    return generateZshCompletion(binary);
-  }
-  if (shell === "fish") {
-    return generateFishCompletion(binary);
-  }
-  return generateBashCompletion(binary);
-}
-
-function spawnInherit(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd || process.cwd(),
-      env: options.env || process.env,
-      stdio: "inherit"
-    });
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} exited with code ${code}`));
-    });
-  });
-}
-
 async function handleConfigCommand(argv) {
   const parsed = parseJsonAndHelpFlags(argv);
   const sub = parsed.rest[0] || "show";
@@ -704,52 +343,19 @@ async function handleConfigCommand(argv) {
     return;
   }
 
-  if (sub === "path") {
-    const sources = resolveConfigSources();
-    const payload = {
-      cwd: sources.cwd,
-      home_dir: sources.homeDir,
-      project_config_path: sources.projectConfig.path,
-      global_config_path: sources.globalConfig.path,
-      active_config_path: sources.projectConfig.path || sources.globalConfig.path || null,
-      dot_env_path: sources.dotEnv.path,
-      warnings: sources.warnings
-    };
-
-    if (parsed.format === "json") {
-      console.log(JSON.stringify(payload, null, 2));
-      return;
-    }
-
-    console.log(
-      renderHelp({
-        commands: [
-          ["cwd", payload.cwd],
-          ["home_dir", payload.home_dir],
-          ["project_config", payload.project_config_path || "(none)"],
-          ["global_config", payload.global_config_path || "(none)"],
-          ["active_config", payload.active_config_path || "(none)"],
-          ["dot_env", payload.dot_env_path || "(none)"]
-        ]
-      })
+  if (sub === "path" || sub === "validate") {
+    throw new Error(
+      `\`clawty config ${sub}\` has been removed from public CLI. Use: clawty doctor --json`
     );
+  }
+
+  if (parsed.rest.length === 0) {
+    const config = loadConfig({ allowMissingApiKey: true });
+    console.log(JSON.stringify(redactConfig(config), null, 2));
     return;
   }
 
-  if (sub === "validate") {
-    const report = await runConfigValidate();
-    if (parsed.format === "json") {
-      console.log(JSON.stringify(report, null, 2));
-    } else {
-      console.log(formatConfigValidateText(report));
-    }
-    if (!report.ok) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  throw new Error(`Unknown config command: ${sub}. Use: clawty config <show|path|validate>`);
+  throw new Error(`Unknown config command: ${sub}. Use: clawty config [show]`);
 }
 
 function parseMemoryArgs(argv = []) {
@@ -758,10 +364,6 @@ function parseMemoryArgs(argv = []) {
     format: "text",
     topK: null,
     scope: null,
-    vote: null,
-    reason: null,
-    note: null,
-    days: null,
     explain: false,
     rest: []
   };
@@ -810,58 +412,6 @@ function parseMemoryArgs(argv = []) {
       state.scope = String(arg.slice("--scope=".length)).trim();
       continue;
     }
-    if (arg === "--vote") {
-      const raw = argv[idx + 1];
-      if (!raw) {
-        throw new Error("Missing value for --vote");
-      }
-      state.vote = String(raw).trim();
-      idx += 1;
-      continue;
-    }
-    if (arg.startsWith("--vote=")) {
-      state.vote = String(arg.slice("--vote=".length)).trim();
-      continue;
-    }
-    if (arg === "--reason") {
-      const raw = argv[idx + 1];
-      if (!raw) {
-        throw new Error("Missing value for --reason");
-      }
-      state.reason = String(raw).trim();
-      idx += 1;
-      continue;
-    }
-    if (arg.startsWith("--reason=")) {
-      state.reason = String(arg.slice("--reason=".length)).trim();
-      continue;
-    }
-    if (arg === "--note") {
-      const raw = argv[idx + 1];
-      if (!raw) {
-        throw new Error("Missing value for --note");
-      }
-      state.note = String(raw);
-      idx += 1;
-      continue;
-    }
-    if (arg.startsWith("--note=")) {
-      state.note = String(arg.slice("--note=".length));
-      continue;
-    }
-    if (arg === "--days") {
-      const raw = argv[idx + 1];
-      if (!raw) {
-        throw new Error("Missing value for --days");
-      }
-      state.days = Number(raw);
-      idx += 1;
-      continue;
-    }
-    if (arg.startsWith("--days=")) {
-      state.days = Number(arg.slice("--days=".length));
-      continue;
-    }
     state.rest.push(arg);
   }
 
@@ -888,11 +438,7 @@ async function handleMemoryCommand(argv) {
 
   const {
     searchMemory,
-    getMemoryStats,
-    inspectMemoryLesson,
-    reindexMemory,
-    recordFeedback,
-    pruneMemory
+    getMemoryStats
   } = await import("./memory.js");
 
   if (sub === "search") {
@@ -945,82 +491,23 @@ async function handleMemoryCommand(argv) {
     return;
   }
 
-  if (sub === "inspect") {
-    const lessonId = Number(parsed.rest[1]);
-    if (!Number.isFinite(lessonId) || lessonId <= 0) {
-      throw new Error("Missing lesson id. Example: clawty memory inspect 12");
-    }
-    const result = await inspectMemoryLesson(config.workspaceRoot, lessonId, memoryOptions);
-    if (parsed.format === "json") {
-      console.log(JSON.stringify(result, null, 2));
-      return;
-    }
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  if (sub === "feedback") {
-    const lessonId = Number(parsed.rest[1]);
-    if (!Number.isFinite(lessonId) || lessonId <= 0) {
-      throw new Error("Missing lesson id. Example: clawty memory feedback 12 --vote up");
-    }
-    if (!parsed.vote) {
-      throw new Error("Missing --vote <up|down>");
-    }
-    const result = await recordFeedback(
-      config.workspaceRoot,
-      lessonId,
-      parsed.vote,
-      parsed.note,
-      parsed.reason,
-      memoryOptions
+  if (["inspect", "feedback", "prune", "reindex"].includes(sub)) {
+    throw new Error(
+      `\`clawty memory ${sub}\` has been removed from public CLI. Supported: search, stats`
     );
+  }
+
+  if (parsed.rest.length === 0) {
+    const result = await getMemoryStats(config.workspaceRoot, memoryOptions);
     if (parsed.format === "json") {
       console.log(JSON.stringify(result, null, 2));
       return;
     }
     console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
-      process.exitCode = 1;
-    }
     return;
   }
 
-  if (sub === "prune") {
-    const result = await pruneMemory(config.workspaceRoot, {
-      ...memoryOptions,
-      days: parsed.days
-    });
-    if (parsed.format === "json") {
-      console.log(JSON.stringify(result, null, 2));
-      return;
-    }
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  if (sub === "reindex") {
-    const result = await reindexMemory(config.workspaceRoot, memoryOptions);
-    if (parsed.format === "json") {
-      console.log(JSON.stringify(result, null, 2));
-      return;
-    }
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  throw new Error(
-    `Unknown memory command: ${sub}. Use: clawty memory <search|stats|inspect|feedback|prune|reindex>`
-  );
+  throw new Error(`Unknown memory command: ${sub}. Use: clawty memory <search|stats>`);
 }
 
 function parseMonitorArgs(argv = []) {
@@ -1098,8 +585,13 @@ async function handleMonitorCommand(argv) {
     return;
   }
 
-  if (!["report", "metrics", "tuner"].includes(sub)) {
-    throw new Error(`Unknown monitor command: ${sub}. Use: clawty monitor <report|metrics|tuner>`);
+  if (sub === "metrics" || sub === "tuner") {
+    throw new Error(
+      `\`clawty monitor ${sub}\` has been removed from public CLI. Use: clawty monitor report`
+    );
+  }
+  if (sub !== "report") {
+    throw new Error(`Unknown monitor command: ${sub}. Use: clawty monitor [report]`);
   }
 
   const config = loadConfig({ allowMissingApiKey: true });
@@ -1108,20 +600,6 @@ async function handleMonitorCommand(argv) {
   const { buildTunerReport } = await import("../scripts/tuner-report.mjs");
 
   const buildOnce = async () => {
-    if (sub === "metrics") {
-      return buildReport({
-        workspaceRoot,
-        windowHours: parsed.windowHours,
-        format: "json"
-      });
-    }
-    if (sub === "tuner") {
-      return buildTunerReport({
-        workspaceRoot,
-        windowHours: parsed.windowHours,
-        format: "json"
-      });
-    }
     const [metrics, tuner] = await Promise.all([
       buildReport({
         workspaceRoot,
@@ -1199,114 +677,6 @@ async function handleMcpServerCommand(argv) {
     metrics: config.metrics,
     onlineTuner: config.onlineTuner
   });
-}
-
-async function handleCompletionCommand(argv) {
-  const args = argv.slice();
-  if (args.includes("-h") || args.includes("--help")) {
-    printCompletionHelp();
-    return;
-  }
-
-  const shell = args.find((item) => !item.startsWith("-")) || mapShellFromEnv(process.env.SHELL);
-  if (!["bash", "zsh", "fish"].includes(shell)) {
-    throw new Error(`Unsupported shell: ${shell}. Expected one of: bash, zsh, fish`);
-  }
-
-  console.log(generateCompletionScript(shell, "clawty"));
-}
-
-async function handleUpgradeCommand(argv) {
-  const args = argv.slice();
-  if (args.includes("-h") || args.includes("--help")) {
-    printUpgradeHelp();
-    return;
-  }
-
-  const dryRun = args.includes("--dry-run");
-  const target = args.find((item) => !item.startsWith("-")) || "latest";
-  const npmArgs = ["install", "-g", `clawty@${target}`];
-
-  if (dryRun) {
-    console.log(`npm ${npmArgs.join(" ")}`);
-    return;
-  }
-
-  await spawnInherit("npm", npmArgs);
-  console.log(`Upgraded clawty to ${target}`);
-}
-
-function parseUninstallArgs(argv = []) {
-  const options = {
-    help: false,
-    yes: false,
-    keepConfig: false,
-    skipNpm: false
-  };
-
-  for (const arg of argv) {
-    if (arg === "-h" || arg === "--help") {
-      options.help = true;
-      continue;
-    }
-    if (arg === "--yes") {
-      options.yes = true;
-      continue;
-    }
-    if (arg === "--keep-config") {
-      options.keepConfig = true;
-      continue;
-    }
-    if (arg === "--skip-npm") {
-      options.skipNpm = true;
-      continue;
-    }
-    throw new Error(`Unknown uninstall argument: ${arg}`);
-  }
-
-  return options;
-}
-
-function resolveHomeDirForUninstall(runtimeEnv = process.env) {
-  const fromEnv =
-    (typeof runtimeEnv.HOME === "string" && runtimeEnv.HOME.trim()) ||
-    (typeof runtimeEnv.USERPROFILE === "string" && runtimeEnv.USERPROFILE.trim()) ||
-    null;
-  if (fromEnv) {
-    return path.resolve(fromEnv);
-  }
-  return path.resolve(os.homedir());
-}
-
-async function handleUninstallCommand(argv) {
-  const options = parseUninstallArgs(argv);
-  if (options.help) {
-    printUninstallHelp();
-    return;
-  }
-
-  if (!options.yes) {
-    throw new Error("Uninstall requires explicit confirmation: pass --yes");
-  }
-
-  const homeDir = resolveHomeDirForUninstall();
-  const clawtyHome = path.join(homeDir, ".clawty");
-  const clawtyBinDir = path.join(clawtyHome, "bin");
-
-  if (!options.skipNpm) {
-    try {
-      await spawnInherit("npm", ["uninstall", "-g", "clawty"]);
-    } catch (error) {
-      console.error(`npm uninstall warning: ${error.message || String(error)}`);
-    }
-  }
-
-  await fs.rm(clawtyBinDir, { recursive: true, force: true });
-  if (!options.keepConfig) {
-    await fs.rm(clawtyHome, { recursive: true, force: true });
-  }
-
-  console.log("clawty uninstalled");
 }
 
 async function handleWatchIndexCommand(argv) {
@@ -1389,11 +759,6 @@ async function main() {
     return;
   }
 
-  if (first === "completion") {
-    await handleCompletionCommand(args.slice(1));
-    return;
-  }
-
   if (first === "config") {
     await handleConfigCommand(args.slice(1));
     return;
@@ -1424,13 +789,8 @@ async function main() {
     return;
   }
 
-  if (first === "upgrade") {
-    await handleUpgradeCommand(args.slice(1));
-    return;
-  }
-
-  if (first === "uninstall") {
-    await handleUninstallCommand(args.slice(1));
+  if (first === "completion" || first === "upgrade" || first === "uninstall") {
+    throw new Error(`\`clawty ${first}\` has been removed from public CLI`);
     return;
   }
 

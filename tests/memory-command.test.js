@@ -26,7 +26,7 @@ async function runCli(args, options = {}) {
   });
 }
 
-test("memory search and feedback commands work with json output", async (t) => {
+test("memory search/stats commands work with json output", async (t) => {
   const workspaceRoot = await createWorkspace();
   const fakeHome = path.join(workspaceRoot, "fake-home");
   t.after(async () => {
@@ -96,40 +96,36 @@ test("memory search and feedback commands work with json output", async (t) => {
   assert.ok(explainPayload.items[0].components);
   assert.equal(typeof explainPayload.items[0].components.weights.bm25, "number");
 
-  const targetId = searchPayload.items[0].id;
-  const { stdout: feedbackStdout } = await runCli(
-    ["memory", "feedback", String(targetId), "--vote", "up", "--reason", "good", "--json"],
-    {
-      cwd: workspaceRoot,
-      env: {
-        HOME: fakeHome,
-        USERPROFILE: fakeHome
-      }
-    }
-  );
-  const feedbackPayload = JSON.parse(feedbackStdout);
-  assert.equal(feedbackPayload.ok, true);
-  assert.equal(feedbackPayload.reason, "good");
-
-  const { stdout: inspectStdout } = await runCli(["memory", "inspect", String(targetId), "--json"], {
+  const { stdout: statsStdout } = await runCli(["memory", "stats", "--json"], {
     cwd: workspaceRoot,
     env: {
       HOME: fakeHome,
       USERPROFILE: fakeHome
     }
   });
-  const inspectPayload = JSON.parse(inspectStdout);
-  assert.equal(inspectPayload.ok, true);
-  assert.equal(inspectPayload.lesson.id, targetId);
+  const statsPayload = JSON.parse(statsStdout);
+  assert.equal(statsPayload.ok, true);
+  assert.ok(statsPayload.counts.lessons >= 1);
+});
 
-  const { stdout: reindexStdout } = await runCli(["memory", "reindex", "--json"], {
-    cwd: workspaceRoot,
-    env: {
-      HOME: fakeHome,
-      USERPROFILE: fakeHome
-    }
+test("removed memory admin commands return clear error", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  const fakeHome = path.join(workspaceRoot, "fake-home");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
   });
-  const reindexPayload = JSON.parse(reindexStdout);
-  assert.equal(reindexPayload.ok, true);
-  assert.ok(reindexPayload.scanned_lessons >= 1);
+
+  for (const command of ["inspect", "feedback", "prune", "reindex"]) {
+    await assert.rejects(
+      async () =>
+        runCli(["memory", command, "1"], {
+          cwd: workspaceRoot,
+          env: {
+            HOME: fakeHome,
+            USERPROFILE: fakeHome
+          }
+        }),
+      /removed from public CLI/
+    );
+  }
 });
