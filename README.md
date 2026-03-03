@@ -269,6 +269,7 @@ npm run build:bin:clean
 增量一致性回归位于 `tests/code-index-consistency.test.js`（比较 incremental/event 与 full rebuild 的查询签名）。
 代码索引发布验收清单位于 `docs/code-index-release-checklist.md`。
 语义评测说明位于 `docs/code-index-semantic-evaluation.md`。
+hybrid 回放评测说明位于 `docs/hybrid-replay-evaluation.md`。
 主流方案对齐路线图位于 `docs/code-index-mainstream-roadmap.md`。
 语法索引说明位于 `docs/syntax-index.md`。
 hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
