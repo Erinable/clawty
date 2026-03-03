@@ -238,6 +238,9 @@ npm run build:bin:clean
 - `npm test`：运行全部自动化测试（Node test runner）
 - `npm run test:watch`：监听模式，边改边测
 - `npm run test:coverage`：生成覆盖率报告（实验特性）
+- `npm run lint`：执行 JS 语法门禁（覆盖 `src/`、`tests/`、`scripts/`）
+- `npm run lint:check`：`lint` 别名，便于门禁链路统一命名
+- `npm run typecheck`：执行模块导出契约检查（无外部依赖）
 - `npm run coverage:check`：执行覆盖率硬门禁（全局阈值 + 核心文件阈值）
   - 可选环境变量：`COVERAGE_MIN_LINE` / `COVERAGE_MIN_BRANCH` / `COVERAGE_MIN_FUNCS`
   - 可选核心文件覆盖率覆盖：`COVERAGE_CORE_LINE_THRESHOLDS=\"code-index.js=90,semantic-graph.js=75\"`
