@@ -10,7 +10,7 @@ import {
 } from "./hybrid-ranking.js";
 import { mapSyntaxSeedToSemanticSeed } from "./semantic-fallback.js";
 
-function classifyVectorQueryFailure(error) {
+export function classifyVectorQueryFailure(error) {
   const message = String(error?.message || "");
   const code = String(error?.code || "");
   if (/embedding api key is missing/i.test(message) || /EMBEDDING_API_KEY_MISSING/i.test(code)) {
@@ -19,17 +19,27 @@ function classifyVectorQueryFailure(error) {
   return "VECTOR_QUERY_FAILED";
 }
 
-export async function queryHybridRetrievalSources({
-  workspaceRoot,
-  query,
-  scanTopK,
-  topK,
-  effectiveArgs = {},
-  vectorEnabled = true,
-  embedding = {}
-}) {
+export async function queryHybridRetrievalSourcesWithDeps(
+  {
+    workspaceRoot,
+    query,
+    scanTopK,
+    topK,
+    effectiveArgs = {},
+    vectorEnabled = true,
+    embedding = {}
+  },
+  deps = {}
+) {
+  const {
+    querySemanticGraph: querySemanticGraphFn,
+    querySyntaxIndex: querySyntaxIndexFn,
+    queryCodeIndex: queryCodeIndexFn,
+    queryVectorIndex: queryVectorIndexFn
+  } = deps;
+
   const vectorQueryPromise = vectorEnabled
-    ? queryVectorIndex(
+    ? queryVectorIndexFn(
         workspaceRoot,
         {
           query,
@@ -56,7 +66,7 @@ export async function queryHybridRetrievalSources({
       });
 
   const [semanticResult, syntaxResult, indexResult, vectorResult] = await Promise.all([
-    querySemanticGraph(workspaceRoot, {
+    querySemanticGraphFn(workspaceRoot, {
       query,
       top_k: Math.min(30, scanTopK),
       max_neighbors: effectiveArgs?.max_neighbors,
@@ -65,13 +75,13 @@ export async function queryHybridRetrievalSources({
       edge_type: effectiveArgs?.edge_type,
       path_prefix: effectiveArgs?.path_prefix
     }),
-    querySyntaxIndex(workspaceRoot, {
+    querySyntaxIndexFn(workspaceRoot, {
       query,
       top_k: Math.min(30, scanTopK),
       max_neighbors: effectiveArgs?.max_neighbors,
       path_prefix: effectiveArgs?.path_prefix
     }),
-    queryCodeIndex(workspaceRoot, {
+    queryCodeIndexFn(workspaceRoot, {
       query,
       top_k: Math.min(50, Math.max(scanTopK, 20)),
       path_prefix: effectiveArgs?.path_prefix,
@@ -88,51 +98,90 @@ export async function queryHybridRetrievalSources({
   };
 }
 
-export function collectAndRankHybridCandidates({
-  semanticResult,
-  syntaxResult,
-  indexResult,
-  vectorResult,
-  edgeType,
+export async function queryHybridRetrievalSources({
+  workspaceRoot,
   query,
-  pathPrefix,
-  explain
+  scanTopK,
+  topK,
+  effectiveArgs = {},
+  vectorEnabled = true,
+  embedding = {}
 }) {
+  return queryHybridRetrievalSourcesWithDeps(
+    {
+      workspaceRoot,
+      query,
+      scanTopK,
+      topK,
+      effectiveArgs,
+      vectorEnabled,
+      embedding
+    },
+    {
+      querySemanticGraph,
+      querySyntaxIndex,
+      queryCodeIndex,
+      queryVectorIndex
+    }
+  );
+}
+
+export function collectAndRankHybridCandidatesWithDeps(
+  {
+    semanticResult,
+    syntaxResult,
+    indexResult,
+    vectorResult,
+    edgeType,
+    query,
+    pathPrefix,
+    explain
+  },
+  deps = {}
+) {
+  const {
+    mapSyntaxSeedToSemanticSeed: mapSyntaxSeedToSemanticSeedFn,
+    mapIndexResultToHybridSeed: mapIndexResultToHybridSeedFn,
+    mapVectorResultToHybridSeed: mapVectorResultToHybridSeedFn,
+    addHybridCandidate: addHybridCandidateFn,
+    rankHybridCandidates: rankHybridCandidatesFn
+  } = deps;
+
   const scannedCandidates = [];
   const deduped = new Map();
 
   if (semanticResult?.ok && Array.isArray(semanticResult.seeds)) {
     for (const seed of semanticResult.seeds) {
       scannedCandidates.push(seed);
-      addHybridCandidate(deduped, seed, "semantic");
+      addHybridCandidateFn(deduped, seed, "semantic");
     }
   }
 
   if (syntaxResult?.ok && Array.isArray(syntaxResult.seeds)) {
     for (const seed of syntaxResult.seeds) {
-      const mapped = mapSyntaxSeedToSemanticSeed(seed, edgeType || null);
+      const mapped = mapSyntaxSeedToSemanticSeedFn(seed, edgeType || null);
       scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "syntax");
+      addHybridCandidateFn(deduped, mapped, "syntax");
     }
   }
 
   if (indexResult?.ok && Array.isArray(indexResult.results)) {
     for (const item of indexResult.results) {
-      const mapped = mapIndexResultToHybridSeed(item);
+      const mapped = mapIndexResultToHybridSeedFn(item);
       scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "index");
+      addHybridCandidateFn(deduped, mapped, "index");
     }
   }
 
   if (vectorResult?.ok && Array.isArray(vectorResult.results)) {
     for (const item of vectorResult.results) {
-      const mapped = mapVectorResultToHybridSeed(item);
+      const mapped = mapVectorResultToHybridSeedFn(item);
       scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "vector");
+      addHybridCandidateFn(deduped, mapped, "vector");
     }
   }
 
-  const ranked = rankHybridCandidates(Array.from(deduped.values()), {
+  const ranked = rankHybridCandidatesFn(Array.from(deduped.values()), {
     query,
     path_prefix: pathPrefix,
     explain
@@ -143,4 +192,35 @@ export function collectAndRankHybridCandidates({
     deduped,
     ranked
   };
+}
+
+export function collectAndRankHybridCandidates({
+  semanticResult,
+  syntaxResult,
+  indexResult,
+  vectorResult,
+  edgeType,
+  query,
+  pathPrefix,
+  explain
+}) {
+  return collectAndRankHybridCandidatesWithDeps(
+    {
+      semanticResult,
+      syntaxResult,
+      indexResult,
+      vectorResult,
+      edgeType,
+      query,
+      pathPrefix,
+      explain
+    },
+    {
+      mapSyntaxSeedToSemanticSeed,
+      mapIndexResultToHybridSeed,
+      mapVectorResultToHybridSeed,
+      addHybridCandidate,
+      rankHybridCandidates
+    }
+  );
 }
