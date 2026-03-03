@@ -26,6 +26,9 @@ test("summarizeHybridReplayTask derives top ranks and match flags", () => {
     {
       name: "case_a",
       bucket: "intent:search",
+      language: "typescript",
+      file_type: "test",
+      intent: "rerank",
       args: { query: "token" },
       expected_primary_path: "src/a.ts",
       expected_embedding_status: "EMBEDDING_OK",
@@ -42,6 +45,9 @@ test("summarizeHybridReplayTask derives top ranks and match flags", () => {
 
   assert.equal(row.name, "case_a");
   assert.equal(row.bucket, "intent:search");
+  assert.equal(row.language, "typescript");
+  assert.equal(row.file_type, "test");
+  assert.equal(row.intent, "rerank");
   assert.equal(row.primary_rank, 1);
   assert.equal(row.top1, true);
   assert.equal(row.top3, true);
@@ -93,6 +99,9 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
   const grouped = aggregateHybridReplayByBucket([
     {
       bucket: "language:ts",
+      language: "typescript",
+      file_type: "source",
+      intent: "baseline",
       success: true,
       top1: true,
       top3: true,
@@ -106,6 +115,9 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
     },
     {
       bucket: "language:py",
+      language: "python",
+      file_type: "test",
+      intent: "degrade_timeout",
       success: false,
       top1: false,
       top3: false,
@@ -119,10 +131,16 @@ test("aggregateHybridReplayByBucket groups metrics per bucket", () => {
     }
   ]);
 
-  assert.equal(grouped["language:ts"].task_count, 1);
-  assert.equal(grouped["language:ts"].primary_top1_rate, 1);
-  assert.equal(grouped["language:py"].task_count, 1);
-  assert.equal(grouped["language:py"].primary_top1_rate, 0);
+  assert.equal(grouped.bucket["language:ts"].task_count, 1);
+  assert.equal(grouped.bucket["language:ts"].primary_top1_rate, 1);
+  assert.equal(grouped.bucket["language:py"].task_count, 1);
+  assert.equal(grouped.bucket["language:py"].primary_top1_rate, 0);
+  assert.equal(grouped.language.typescript.task_count, 1);
+  assert.equal(grouped.language.python.task_count, 1);
+  assert.equal(grouped.file_type.source.task_count, 1);
+  assert.equal(grouped.file_type.test.task_count, 1);
+  assert.equal(grouped.intent.baseline.task_count, 1);
+  assert.equal(grouped.intent.degrade_timeout.task_count, 1);
 });
 
 test("sortHybridReplaySummaries ranks by score then quality ties", () => {

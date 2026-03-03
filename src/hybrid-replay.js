@@ -28,6 +28,14 @@ function normalizeBucket(caseDef) {
   return "default";
 }
 
+function normalizeLabel(value, fallback = "unknown") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
 export function mergeHybridReplayArgs(baseArgs, overrideArgs) {
   const base = baseArgs && typeof baseArgs === "object" ? baseArgs : {};
   const override = overrideArgs && typeof overrideArgs === "object" ? overrideArgs : {};
@@ -65,9 +73,16 @@ export function summarizeHybridReplayTask(caseDef, queryResult, queryMs) {
   const queryOk = Boolean(queryResult?.ok);
   const success = Boolean(queryOk && primaryRank === 1 && statusMatch && degradedMatch);
 
+  const language = normalizeLabel(caseDef?.language || caseDef?.args?.language, "unknown");
+  const fileType = normalizeLabel(caseDef?.file_type, "unknown");
+  const intent = normalizeLabel(caseDef?.intent, "unknown");
+
   return {
     name: caseDef?.name || "unknown_case",
     bucket: normalizeBucket(caseDef),
+    language,
+    file_type: fileType,
+    intent,
     query: caseDef?.args?.query || "",
     query_ok: queryOk,
     query_ms: roundMetric(queryMs),
@@ -126,20 +141,30 @@ export function aggregateHybridReplayMetrics(taskResults) {
 
 export function aggregateHybridReplayByBucket(taskResults) {
   const tasks = Array.isArray(taskResults) ? taskResults : [];
-  const bucketMap = new Map();
-  for (const item of tasks) {
-    const bucket = typeof item?.bucket === "string" && item.bucket.trim() ? item.bucket : "default";
-    if (!bucketMap.has(bucket)) {
-      bucketMap.set(bucket, []);
+  const groupBy = (pickKey) => {
+    const map = new Map();
+    for (const item of tasks) {
+      const key = pickKey(item);
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key).push(item);
     }
-    bucketMap.get(bucket).push(item);
-  }
+    const output = {};
+    for (const [key, values] of map.entries()) {
+      output[key] = aggregateHybridReplayMetrics(values);
+    }
+    return output;
+  };
 
-  const output = {};
-  for (const [bucket, values] of bucketMap.entries()) {
-    output[bucket] = aggregateHybridReplayMetrics(values);
-  }
-  return output;
+  return {
+    bucket: groupBy((item) =>
+      typeof item?.bucket === "string" && item.bucket.trim() ? item.bucket : "default"
+    ),
+    language: groupBy((item) => normalizeLabel(item?.language, "unknown")),
+    file_type: groupBy((item) => normalizeLabel(item?.file_type, "unknown")),
+    intent: groupBy((item) => normalizeLabel(item?.intent, "unknown"))
+  };
 }
 
 export function scoreHybridReplayPreset(metrics) {
