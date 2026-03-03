@@ -129,6 +129,8 @@ npm run bench:graph:refresh
 npm run bench:graph:refresh:check
 npm run bench:hybrid
 npm run bench:hybrid:check
+npm run bench:hybrid:replay
+npm run bench:hybrid:replay:check
 npm run metrics:report
 npm run metrics:check
 npm run precise:check
@@ -252,6 +254,9 @@ npm run build:bin:clean
 - `npm run bench:hybrid`：运行 hybrid+embedding 评测（含状态码/降级一致性）
 - `npm run bench:hybrid:check`：按 `tests/bench/hybrid-embedding.baseline.json` 执行 5% 退化门禁
 - `npm run bench:hybrid:baseline`：重写 hybrid+embedding 评测基线
+- `npm run bench:hybrid:replay`：按 `tests/fixtures/hybrid-cases/replay-presets.json` 回放多策略并输出分桶质量对比
+- `npm run bench:hybrid:replay:check`：按 `tests/bench/hybrid-replay.baseline.json` 执行 5% 回放门禁
+- `npm run bench:hybrid:replay:baseline`：重写 hybrid 回放基线
 - `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `embedding_timeout_rate` / `embedding_network_rate` / `embedding_api_rate` / `embedding_unknown_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
 - `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`；支持 `--max-embedding-timeout-rate` / `--max-embedding-network-rate` / `--min-embedding-attempts` / `--runbook-enforce`；memory 阈值可按需通过参数开启）
 - `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）

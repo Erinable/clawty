@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-03-03T11:49:03.016Z",
+  "threshold_percent": 5,
+  "metrics": {
+    "baseline_fixture": {
+      "score": 1,
+      "task_success_rate": 1,
+      "primary_top1_rate": 1,
+      "mean_reciprocal_rank": 1
+    },
+    "embedding_light": {
+      "score": 0.966667,
+      "task_success_rate": 0.666667,
+      "primary_top1_rate": 1,
+      "mean_reciprocal_rank": 1
+    },
+    "freshness_conservative": {
+      "score": 1,
+      "task_success_rate": 1,
+      "primary_top1_rate": 1,
+      "mean_reciprocal_rank": 1
+    },
+    "freshness_aggressive": {
+      "score": 1,
+      "task_success_rate": 1,
+      "primary_top1_rate": 1,
+      "mean_reciprocal_rank": 1
+    }
+  }
+}

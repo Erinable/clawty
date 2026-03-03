@@ -24,6 +24,14 @@
 - 建立统一检索编排层原型（`retrieval-orchestrator`）与结果协议字段标准（来源、置信度、时效、去重键）。
 - 对构建/刷新/查询/降级四链路指标字段做一次命名对齐收敛。
 
+阶段 2 起步（已落地）：
+
+- 新增 hybrid 多策略回放评测 harness：
+  - `tests/bench/hybrid-replay.bench.js`
+  - `tests/fixtures/hybrid-cases/replay-presets.json`
+  - `tests/bench/hybrid-replay.baseline.json`
+- 新增 `bench:hybrid:replay / :check / :baseline` 命令，支持按 preset 回放、分桶指标输出与基线门禁。
+
 ## 当前基线（已落地能力）
 
 基线能力以 `README.md` 已实现清单为准，核心包括：
