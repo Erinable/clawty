@@ -83,36 +83,42 @@ OPENAI_API_KEY=sk-...
 2. 运行 CLI
 
 ```bash
-node src/index.js --help
-node src/index.js init
-node src/index.js chat
-node src/index.js run "读取 package.json 并总结这个项目"
+clawty --help
+clawty init
+clawty chat
+clawty run "读取 package.json 并总结这个项目"
 ```
 
 ## 命令
 
+CLI 命令：
+
 ```bash
-node src/index.js chat
-node src/index.js run "your task"
-node src/index.js init
-node src/index.js init --include-vector
-node src/index.js config show
-node src/index.js memory search "auth retry" --top-k 5
-node src/index.js memory search "auth retry" --top-k 5 --explain
-node src/index.js memory stats
-node src/index.js doctor
-node src/index.js doctor --json
-node src/index.js watch-index
-node src/index.js mcp-server
-node src/index.js mcp-server --port 8765
-node src/index.js --help
-npm run build:bin
-npm run build:bin:clean
-npm run init
-npm run watch:index
+clawty --help
+clawty chat
+clawty run "your task"
+clawty init
+clawty init --include-vector
+clawty config show
+clawty memory search "auth retry" --top-k 5
+clawty memory search "auth retry" --top-k 5 --explain
+clawty memory stats
+clawty doctor
+clawty doctor --json
+clawty watch-index
+clawty mcp-server
+clawty mcp-server --port 8765
+```
+
+项目脚本（npm）：
+
+```bash
 npm test
 npm run test:coverage
 npm run coverage:check
+npm run watch:index
+npm run build:bin
+npm run build:bin:clean
 npm run bench:index
 npm run bench:index:check
 npm run bench:semantic
@@ -148,15 +154,15 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 可选附加向量索引：
 
 ```bash
-node src/index.js init --include-vector
+clawty init --include-vector
 ```
 
 常见参数：
 
 ```bash
-node src/index.js init --max-files 5000 --max-file-size-kb 1024
-node src/index.js init --no-doctor --no-semantic
-node src/index.js init --json
+clawty init --max-files 5000 --max-file-size-kb 1024
+clawty init --no-doctor --no-semantic
+clawty init --json
 ```
 
 ## 长期记忆（memory）
@@ -166,9 +172,9 @@ node src/index.js init --json
 常用命令：
 
 ```bash
-node src/index.js memory search "auth timeout" --top-k 5
-node src/index.js memory search "auth timeout" --top-k 5 --explain
-node src/index.js memory stats
+clawty memory search "auth timeout" --top-k 5
+clawty memory search "auth timeout" --top-k 5 --explain
+clawty memory stats
 ```
 
 作用域参数：
@@ -330,11 +336,11 @@ hybrid 降级处置手册位于 `docs/hybrid-degrade-runbook.md`。
 常用命令：
 
 ```bash
-node src/index.js watch-index
-node src/index.js watch-index --interval-ms 1000 --max-batch-size 200
-node src/index.js watch-index --debounce-ms 500 --hash-init-max-files 3000
-node src/index.js watch-index --include-vector true --vector-layer delta
-node src/index.js watch-index --no-semantic --quiet
+clawty watch-index
+clawty watch-index --interval-ms 1000 --max-batch-size 200
+clawty watch-index --debounce-ms 500 --hash-init-max-files 3000
+clawty watch-index --include-vector true --vector-layer delta
+clawty watch-index --no-semantic --quiet
 npm run watch:index
 ```
 
@@ -480,8 +486,8 @@ LSP 不可用时，工具会自动回退到代码索引检索结果。
 你可以通过下面命令查看最终生效配置与诊断结果（API Key 会脱敏）：
 
 ```bash
-node src/index.js config show
-node src/index.js doctor --json
+clawty config show
+clawty doctor --json
 ```
 
 可参考示例文件：`clawty.config.example.json`。
