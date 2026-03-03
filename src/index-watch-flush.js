@@ -1,3 +1,5 @@
+import { WATCH_FLUSH_EVENT_TYPE } from "./metrics-event-types.js";
+
 export async function flushDirtyQueueWithDeps(
   workspaceRoot,
   config,
@@ -66,7 +68,7 @@ export async function flushDirtyQueueWithDeps(
       );
       await appendWatchMetricEvent(workspaceRoot, config, watchFlushMetricsFile, {
         timestamp: new Date().toISOString(),
-        event_type: "watch_flush",
+        event_type: WATCH_FLUSH_EVENT_TYPE,
         ok: false,
         stage: refreshed.stage || null,
         error: refreshed.error || "refresh failed",
@@ -100,7 +102,7 @@ export async function flushDirtyQueueWithDeps(
     );
     await appendWatchMetricEvent(workspaceRoot, config, watchFlushMetricsFile, {
       timestamp: new Date().toISOString(),
-      event_type: "watch_flush",
+      event_type: WATCH_FLUSH_EVENT_TYPE,
       ok: true,
       stage: "refresh_indexes",
       error: null,

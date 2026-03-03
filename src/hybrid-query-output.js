@@ -4,6 +4,7 @@ import {
   buildHybridMetricSources,
   buildHybridResponseSources
 } from "./hybrid-source-status.js";
+import { HYBRID_QUERY_EVENT_TYPE } from "./metrics-event-types.js";
 
 function buildQueryPreview(query, maxChars) {
   const source = typeof query === "string" ? query.trim() : "";
@@ -67,7 +68,7 @@ export function buildHybridMetricEvent({
 }) {
   return {
     timestamp: new Date().toISOString(),
-    event_type: "hybrid_query",
+    event_type: HYBRID_QUERY_EVENT_TYPE,
     query_preview: buildQueryPreview(query, queryPreviewChars),
     query_chars: query.length,
     query_total_ms: queryTotalMs,

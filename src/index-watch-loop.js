@@ -1,3 +1,5 @@
+import { WATCH_RUN_EVENT_TYPE } from "./metrics-event-types.js";
+
 function createWatchMetrics() {
   return {
     poll_count: 0,
@@ -133,7 +135,7 @@ export async function runIndexWatchLoopWithDeps(workspaceRoot, args = {}, deps =
     formatLoopMessage("watch stopped", config);
     await appendWatchMetricEvent(root, config, watchRunMetricsFile, {
       timestamp: new Date().toISOString(),
-      event_type: "watch_run",
+      event_type: WATCH_RUN_EVENT_TYPE,
       stopped_by_signal: Boolean(stopState.signal),
       signal: stopState.signal || null,
       watch_metrics: {
