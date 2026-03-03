@@ -20,6 +20,7 @@ import {
   normalizeServerOptionsWithDeps,
   normalizeTransport
 } from "./mcp-server-runtime-options.js";
+import { callToolWithDeps } from "./mcp-tool-dispatch.js";
 import {
   findHeaderTerminator,
   parseContentLength,
@@ -1114,34 +1115,15 @@ const FACADE_TOOL_HANDLERS = {
 };
 
 async function callTool(name, args, serverOptions = {}) {
-  const exposedFacadeToolNames =
-    serverOptions.exposedFacadeToolNames instanceof Set
-      ? serverOptions.exposedFacadeToolNames
-      : resolveFacadeToolNamesForToolsets(new Set(DEFAULT_TOOLSETS));
-  if (FACADE_TOOL_NAME_SET.has(name) && !exposedFacadeToolNames.has(name)) {
-    throw new Error(`Tool not exposed by current policy: ${name}`);
-  }
-
-  const facadeHandler = FACADE_TOOL_HANDLERS[name];
-  if (typeof facadeHandler === "function") {
-    return facadeHandler(args, serverOptions);
-  }
-
-  if (MONITOR_TOOL_NAME_SET.has(name)) {
-    if (!serverOptions.exposeLowLevel) {
-      throw new Error(`Tool not exposed by current policy: ${name}`);
-    }
-    return callMonitorTool(name, args, serverOptions);
-  }
-
-  if (LOW_LEVEL_CODE_TOOL_NAME_SET.has(name)) {
-    if (!serverOptions.exposeLowLevel) {
-      throw new Error(`Tool not exposed by current policy: ${name}`);
-    }
-    return callLowLevelCodeTool(name, args, serverOptions);
-  }
-
-  throw new Error(`Unknown tool: ${name}`);
+  return callToolWithDeps(name, args, serverOptions, {
+    facadeToolNameSet: FACADE_TOOL_NAME_SET,
+    facadeToolHandlers: FACADE_TOOL_HANDLERS,
+    monitorToolNameSet: MONITOR_TOOL_NAME_SET,
+    lowLevelCodeToolNameSet: LOW_LEVEL_CODE_TOOL_NAME_SET,
+    resolveDefaultFacadeToolNames: () => resolveFacadeToolNamesForToolsets(new Set(DEFAULT_TOOLSETS)),
+    callMonitorTool,
+    callLowLevelCodeTool
+  });
 }
 
 function normalizeServerOptions(options = {}) {
