@@ -9,6 +9,7 @@ import {
   callImpactAnalysisFacadeWithDeps,
   callTraceCallChainFacadeWithDeps
 } from "./mcp-analysis-facades.js";
+import { createFacadeToolHandlers } from "./mcp-facade-handlers.js";
 import {
   collectPathsFromSearchResult,
   collectPathsFromSemanticResult,
@@ -610,17 +611,17 @@ async function callMonitorTool(name, args, serverOptions = {}) {
   );
 }
 
-const FACADE_TOOL_HANDLERS = {
-  monitor_system: (args, serverOptions) => callMonitorTool("monitor_report", args, serverOptions),
-  search_code: callSearchCodeFacade,
-  go_to_definition: callGoToDefinitionFacade,
-  find_references: callFindReferencesFacade,
-  get_code_context: callCodeContextFacade,
-  reindex_codebase: callReindexCodebaseFacade,
-  explain_code: callExplainCodeFacade,
-  trace_call_chain: callTraceCallChainFacade,
-  impact_analysis: callImpactAnalysisFacade
-};
+const FACADE_TOOL_HANDLERS = createFacadeToolHandlers({
+  callMonitorTool,
+  callSearchCodeFacade,
+  callGoToDefinitionFacade,
+  callFindReferencesFacade,
+  callCodeContextFacade,
+  callReindexCodebaseFacade,
+  callExplainCodeFacade,
+  callTraceCallChainFacade,
+  callImpactAnalysisFacade
+});
 
 async function callTool(name, args, serverOptions = {}) {
   return callToolWithDeps(name, args, serverOptions, {
