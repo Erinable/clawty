@@ -221,12 +221,17 @@ function computeHybridKpis(hybridEvents) {
 
 function computeWatchKpis(watchFlushEvents) {
   const lagValues = [];
+  const refreshValues = [];
   const effectiveDebounceValues = [];
   let backpressureFlushCount = 0;
   for (const event of watchFlushEvents) {
     const lag = Number(event?.index_lag_ms);
     if (Number.isFinite(lag) && lag >= 0) {
       lagValues.push(lag);
+    }
+    const refreshMs = Number(event?.refresh_ms);
+    if (Number.isFinite(refreshMs) && refreshMs >= 0) {
+      refreshValues.push(refreshMs);
     }
     const effectiveDebounce = Number(event?.effective_debounce_ms);
     if (Number.isFinite(effectiveDebounce) && effectiveDebounce >= 0) {
@@ -239,6 +244,12 @@ function computeWatchKpis(watchFlushEvents) {
   return {
     watch_flush_count: watchFlushEvents.length,
     code_index_lag_p95_ms: lagValues.length > 0 ? roundMetric(percentile(lagValues, 95)) : null,
+    watch_refresh_p95_ms:
+      refreshValues.length > 0 ? roundMetric(percentile(refreshValues, 95)) : null,
+    watch_refresh_avg_ms:
+      refreshValues.length > 0
+        ? roundMetric(refreshValues.reduce((sum, value) => sum + value, 0) / refreshValues.length)
+        : null,
     watch_backpressure_flush_rate:
       watchFlushEvents.length > 0
         ? roundMetric(backpressureFlushCount / watchFlushEvents.length, 4)
@@ -256,6 +267,7 @@ function computeWatchKpis(watchFlushEvents) {
         : null,
     sample_sizes: {
       index_lag_samples: lagValues.length,
+      refresh_duration_samples: refreshValues.length,
       backpressure_flush_samples: backpressureFlushCount,
       effective_debounce_samples: effectiveDebounceValues.length
     }
@@ -318,6 +330,8 @@ function printTextReport(report) {
   console.log("");
   console.log("Core KPI");
   console.log(`- code_index_lag_p95_ms: ${formatMetricValue(report.kpi.code_index_lag_p95_ms, "ms")}`);
+  console.log(`- watch_refresh_p95_ms: ${formatMetricValue(report.kpi.watch_refresh_p95_ms, "ms")}`);
+  console.log(`- watch_refresh_avg_ms: ${formatMetricValue(report.kpi.watch_refresh_avg_ms, "ms")}`);
   console.log(
     `- watch_backpressure_flush_rate: ${formatMetricValue(report.kpi.watch_backpressure_flush_rate)}`
   );
@@ -360,6 +374,7 @@ function printTextReport(report) {
     `- embedding_unmapped_status_samples: ${report.sample_sizes.embedding_unmapped_status_samples}`
   );
   console.log(`- index_lag_samples: ${report.sample_sizes.index_lag_samples}`);
+  console.log(`- refresh_duration_samples: ${report.sample_sizes.refresh_duration_samples}`);
   console.log(`- backpressure_flush_samples: ${report.sample_sizes.backpressure_flush_samples}`);
   console.log(`- effective_debounce_samples: ${report.sample_sizes.effective_debounce_samples}`);
   console.log(`- memory_query_duration_samples: ${report.sample_sizes.memory_query_duration_samples}`);
@@ -428,6 +443,8 @@ async function buildReport(options) {
     },
     kpi: {
       code_index_lag_p95_ms: watchKpis.code_index_lag_p95_ms,
+      watch_refresh_p95_ms: watchKpis.watch_refresh_p95_ms,
+      watch_refresh_avg_ms: watchKpis.watch_refresh_avg_ms,
       watch_backpressure_flush_rate: watchKpis.watch_backpressure_flush_rate,
       watch_effective_debounce_avg_ms: watchKpis.watch_effective_debounce_avg_ms,
       watch_effective_debounce_p95_ms: watchKpis.watch_effective_debounce_p95_ms,
@@ -461,6 +478,7 @@ async function buildReport(options) {
       embedding_unmapped_status_samples:
         hybridKpis.sample_sizes.embedding_unmapped_status_samples,
       index_lag_samples: watchKpis.sample_sizes.index_lag_samples,
+      refresh_duration_samples: watchKpis.sample_sizes.refresh_duration_samples,
       backpressure_flush_samples: watchKpis.sample_sizes.backpressure_flush_samples,
       effective_debounce_samples: watchKpis.sample_sizes.effective_debounce_samples,
       memory_query_duration_samples: memoryKpis.sample_sizes.memory_query_duration_samples

@@ -261,7 +261,7 @@ npm run build:bin:clean
 - `npm run bench:hybrid:replay:baseline`：重写 hybrid 回放基线
 - `npm run bench:hybrid:replay:failures`：导出每个 preset 的失败样本清单（默认写入 `tests/fixtures/hybrid-cases/failure-samples.json`）
 - `npm run bench:hybrid:replay:failure:check`：按 `tests/fixtures/hybrid-cases/failure-samples.json` 校验无新增失败样本（允许历史已知失败继续存在）
-- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `watch_backpressure_flush_rate` / `watch_effective_debounce_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `embedding_timeout_rate` / `embedding_network_rate` / `embedding_api_rate` / `embedding_unknown_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
+- `npm run metrics:report`：输出最近 24h 核心指标报告（`code_index_lag_p95_ms` / `watch_refresh_p95_ms` / `watch_backpressure_flush_rate` / `watch_effective_debounce_p95_ms` / `stale_hit_rate_avg` / `query_hybrid_p95_ms` / `degrade_rate` / `embedding_timeout_rate` / `embedding_network_rate` / `embedding_api_rate` / `embedding_unknown_rate` / `memory_query_p95_ms` / `memory_hit_rate` / `memory_fallback_rate`）
 - `npm run metrics:check`：对核心指标执行阈值门禁（默认 `code_index_lag_p95_ms<=2000`、`stale_hit_rate_avg<=0.05`、`query_hybrid_p95_ms<=2000`、`degrade_rate<=0.1`；支持 `--max-watch-backpressure-flush-rate` / `--max-watch-effective-debounce-p95-ms` / `--max-embedding-timeout-rate` / `--max-embedding-network-rate` / `--min-embedding-attempts` / `--runbook-enforce`；memory 阈值可按需通过参数开启）
 - `npm run precise:check`：校验 `artifacts/scip.normalized.json`（文件缺失时跳过，不报错）
 - `npm run precise:check:fixture`：校验内置精确索引夹具格式（CI 强制执行）

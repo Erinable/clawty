@@ -83,21 +83,24 @@ test("metrics-report aggregates hybrid and watch KPI from jsonl files", async (t
       event_type: "watch_flush",
       index_lag_ms: 100,
       backpressure_active: false,
-      effective_debounce_ms: 500
+      effective_debounce_ms: 500,
+      refresh_ms: 40
     },
     {
       timestamp: nowIso,
       event_type: "watch_flush",
       index_lag_ms: 300,
       backpressure_active: true,
-      effective_debounce_ms: 120
+      effective_debounce_ms: 120,
+      refresh_ms: 200
     },
     {
       timestamp: nowIso,
       event_type: "watch_flush",
       index_lag_ms: 200,
       backpressure_active: true,
-      effective_debounce_ms: 100
+      effective_debounce_ms: 100,
+      refresh_ms: 100
     }
   ];
   await fs.writeFile(
@@ -138,6 +141,8 @@ test("metrics-report aggregates hybrid and watch KPI from jsonl files", async (t
   const report = await runMetricsReport(workspaceRoot);
   assert.equal(report.kpi.query_hybrid_p95_ms, 40);
   assert.equal(report.kpi.code_index_lag_p95_ms, 300);
+  assert.equal(report.kpi.watch_refresh_p95_ms, 200);
+  assert.equal(report.kpi.watch_refresh_avg_ms, 113.333);
   assert.equal(report.kpi.watch_backpressure_flush_rate, 0.6667);
   assert.equal(report.kpi.watch_effective_debounce_avg_ms, 240);
   assert.equal(report.kpi.watch_effective_debounce_p95_ms, 500);
@@ -161,6 +166,7 @@ test("metrics-report aggregates hybrid and watch KPI from jsonl files", async (t
   assert.equal(report.sample_sizes.embedding_api_samples, 0);
   assert.equal(report.sample_sizes.embedding_unknown_samples, 0);
   assert.equal(report.sample_sizes.embedding_unmapped_status_samples, 0);
+  assert.equal(report.sample_sizes.refresh_duration_samples, 3);
   assert.equal(report.sample_sizes.backpressure_flush_samples, 2);
   assert.equal(report.sample_sizes.effective_debounce_samples, 3);
   assert.deepEqual(report.runbook.embedding_unmapped_status_codes, []);
@@ -175,6 +181,8 @@ test("metrics-report returns null kpi values when metric files are missing", asy
   const report = await runMetricsReport(workspaceRoot);
   assert.equal(report.kpi.query_hybrid_p95_ms, null);
   assert.equal(report.kpi.code_index_lag_p95_ms, null);
+  assert.equal(report.kpi.watch_refresh_p95_ms, null);
+  assert.equal(report.kpi.watch_refresh_avg_ms, null);
   assert.equal(report.kpi.watch_backpressure_flush_rate, null);
   assert.equal(report.kpi.watch_effective_debounce_avg_ms, null);
   assert.equal(report.kpi.watch_effective_debounce_p95_ms, null);
@@ -193,6 +201,7 @@ test("metrics-report returns null kpi values when metric files are missing", asy
   assert.equal(report.sample_sizes.memory_events, 0);
   assert.equal(report.sample_sizes.embedding_attempt_samples, 0);
   assert.equal(report.sample_sizes.embedding_unmapped_status_samples, 0);
+  assert.equal(report.sample_sizes.refresh_duration_samples, 0);
   assert.equal(report.sample_sizes.backpressure_flush_samples, 0);
   assert.equal(report.sample_sizes.effective_debounce_samples, 0);
   assert.deepEqual(report.runbook.embedding_unmapped_status_codes, []);
