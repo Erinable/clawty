@@ -4,11 +4,18 @@ import { buildCodeIndex, refreshCodeIndex } from "./code-index.js";
 import { buildSyntaxIndex, refreshSyntaxIndex } from "./syntax-index.js";
 import { buildSemanticGraph, refreshSemanticGraph } from "./semantic-graph.js";
 import { buildVectorIndex, refreshVectorIndex } from "./vector-index.js";
+import { flushDirtyQueueWithDeps } from "./index-watch-flush.js";
 import {
   filterChangedPathsByHash as filterChangedPathsByHashWithDeps,
   hashTrackedFile as hashTrackedFileWithDeps,
   seedHashCacheFromSnapshot as seedHashCacheFromSnapshotWithDeps
 } from "./index-watch-hash.js";
+import {
+  appendWatchMetricEvent,
+  roundWatchMetric,
+  WATCH_FLUSH_METRICS_FILE,
+  WATCH_RUN_METRICS_FILE
+} from "./index-watch-metrics.js";
 import {
   createDirtyQueueState,
   enqueueDirtyQueue,
@@ -26,9 +33,6 @@ const MAX_WATCH_MAX_FILES = 50_000;
 const MAX_WATCH_MAX_BATCH_SIZE = 5000;
 const MAX_WATCH_HASH_INIT_MAX_FILES = 100_000;
 const MTIME_EPSILON_MS = 1;
-const METRICS_SUBDIR = path.join(".clawty", "metrics");
-const WATCH_FLUSH_METRICS_FILE = "watch-flush.jsonl";
-const WATCH_RUN_METRICS_FILE = "watch-run.jsonl";
 const DEFAULT_METRICS_ENABLED = true;
 const DEFAULT_METRICS_PERSIST_WATCH = true;
 
@@ -633,33 +637,6 @@ function formatLoopMessage(message, config) {
   console.log(`[watch-index][${stamp}] ${message}`);
 }
 
-function roundWatchMetric(value) {
-  const numeric = Number(value || 0);
-  if (!Number.isFinite(numeric)) {
-    return 0;
-  }
-  return Number(numeric.toFixed(3));
-}
-
-async function appendWatchMetricEvent(workspaceRoot, config, fileName, event) {
-  const metrics = config?.metrics || {};
-  if (!metrics.enabled || !metrics.persist_watch) {
-    return;
-  }
-
-  try {
-    const metricsDir = path.join(workspaceRoot, METRICS_SUBDIR);
-    await fs.mkdir(metricsDir, { recursive: true });
-    await fs.appendFile(
-      path.join(metricsDir, fileName),
-      `${JSON.stringify(event)}\n`,
-      "utf8"
-    );
-  } catch {
-    // Metrics persistence is best-effort and must not block indexing.
-  }
-}
-
 async function sleep(ms) {
   await new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -667,115 +644,17 @@ async function sleep(ms) {
 }
 
 async function flushDirtyQueue(workspaceRoot, config, queueState, metrics, options = {}) {
-  const force = Boolean(options.force);
-  while (
-    shouldFlushDirtyQueue(
-      queueState,
-      Date.now(),
-      config.debounce_ms,
-      config.max_batch_size,
-      force
-    )
-  ) {
-    const batch = takeDirtyQueueBatch(queueState, config.max_batch_size, Date.now());
-    if (batch.batch_size <= 0) {
-      break;
-    }
-
-    metrics.last_batch_size = batch.batch_size;
-    metrics.last_index_lag_ms = batch.index_lag_ms;
-    metrics.queue_depth = batch.queue_depth_after;
-    metrics.max_queue_depth = Math.max(metrics.max_queue_depth, batch.queue_depth_before);
-
-    const refreshStart = Date.now();
-    const refreshed = await refreshIndexesForChanges(workspaceRoot, {
-      ...config,
-      changed_paths: batch.changed_paths,
-      deleted_paths: batch.deleted_paths
-    });
-    const refreshMs = Date.now() - refreshStart;
-
-    if (!refreshed.ok) {
-      metrics.failed_flush_count += 1;
-      enqueueDirtyQueue(
-        queueState,
-        {
-          changed_paths: batch.changed_paths,
-          deleted_paths: batch.deleted_paths
-        },
-        Date.now()
-      );
-      metrics.queue_depth = getDirtyQueueDepth(queueState);
-      formatLoopMessage(
-        [
-          `refresh failed at ${refreshed.stage}: ${refreshed.error || "unknown error"}`,
-          `queue_depth=${metrics.queue_depth}`,
-          `batch_size=${batch.batch_size}`
-        ].join(" "),
-        config
-      );
-      await appendWatchMetricEvent(workspaceRoot, config, WATCH_FLUSH_METRICS_FILE, {
-        timestamp: new Date().toISOString(),
-        event_type: "watch_flush",
-        ok: false,
-        stage: refreshed.stage || null,
-        error: refreshed.error || "refresh failed",
-        batch_size: Number(batch.batch_size || 0),
-        changed_count: Number(batch.changed_paths.length || 0),
-        deleted_count: Number(batch.deleted_paths.length || 0),
-        queue_depth_before: Number(batch.queue_depth_before || 0),
-        queue_depth_after: Number(metrics.queue_depth || 0),
-        index_lag_ms: Number(batch.index_lag_ms || 0),
-        refresh_ms: roundWatchMetric(refreshMs)
-      });
-      break;
-    }
-
-    metrics.flush_count += 1;
-    metrics.last_flush_duration_ms = refreshMs;
-    metrics.refreshed_changed += batch.changed_paths.length;
-    metrics.refreshed_deleted += batch.deleted_paths.length;
-    metrics.queue_depth = batch.queue_depth_after;
-
-    formatLoopMessage(
-      [
-        `refreshed changed=${batch.changed_paths.length}`,
-        `deleted=${batch.deleted_paths.length}`,
-        `queue_depth=${batch.queue_depth_after}`,
-        `batch_size=${batch.batch_size}`,
-        `index_lag_ms=${batch.index_lag_ms}`,
-        `refresh_ms=${refreshMs}`
-      ].join(" "),
-      config
-    );
-    await appendWatchMetricEvent(workspaceRoot, config, WATCH_FLUSH_METRICS_FILE, {
-      timestamp: new Date().toISOString(),
-      event_type: "watch_flush",
-      ok: true,
-      stage: "refresh_indexes",
-      error: null,
-      batch_size: Number(batch.batch_size || 0),
-      changed_count: Number(batch.changed_paths.length || 0),
-      deleted_count: Number(batch.deleted_paths.length || 0),
-      queue_depth_before: Number(batch.queue_depth_before || 0),
-      queue_depth_after: Number(batch.queue_depth_after || 0),
-      index_lag_ms: Number(batch.index_lag_ms || 0),
-      refresh_ms: roundWatchMetric(refreshMs)
-    });
-
-    if (
-      !force &&
-      !shouldFlushDirtyQueue(
-        queueState,
-        Date.now(),
-        config.debounce_ms,
-        config.max_batch_size,
-        false
-      )
-    ) {
-      break;
-    }
-  }
+  return flushDirtyQueueWithDeps(workspaceRoot, config, queueState, metrics, options, {
+    shouldFlushDirtyQueue,
+    takeDirtyQueueBatch,
+    refreshIndexesForChanges,
+    enqueueDirtyQueue,
+    getDirtyQueueDepth,
+    formatLoopMessage,
+    appendWatchMetricEvent,
+    watchFlushMetricsFile: WATCH_FLUSH_METRICS_FILE,
+    roundWatchMetric
+  });
 }
 
 export async function runIndexWatchLoop(workspaceRoot, args = {}) {
