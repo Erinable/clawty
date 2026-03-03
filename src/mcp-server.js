@@ -37,6 +37,13 @@ import { callSearchCodeFacadeWithDeps } from "./mcp-search-facade.js";
 import { callReindexCodebaseFacadeWithDeps } from "./mcp-reindex-facade.js";
 import { callToolWithDeps } from "./mcp-tool-dispatch.js";
 import {
+  DEFAULT_TOOLSETS,
+  parseToolsetTokens,
+  resolveEnabledToolsets,
+  resolveFacadeToolNamesForToolsets,
+  VALID_TOOLSETS
+} from "./mcp-toolset-policy.js";
+import {
   findHeaderTerminator,
   parseContentLength,
   readHttpRequestBody,
@@ -50,11 +57,6 @@ import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 const MCP_SERVER_NAME = "clawty-mcp";
 const MCP_SERVER_VERSION = "0.1.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const TOOLSET_ANALYSIS = "analysis";
-const TOOLSET_EDIT_SAFE = "edit-safe";
-const TOOLSET_OPS = "ops";
-const TOOLSET_ALL = "all";
-const DEFAULT_TOOLSETS = [TOOLSET_ANALYSIS, TOOLSET_OPS];
 
 const FACADE_TOOL_DEFINITIONS = [
   {
@@ -372,25 +374,6 @@ const FACADE_TOOL_DEFINITIONS = [
 ];
 
 const FACADE_TOOL_NAME_SET = new Set(FACADE_TOOL_DEFINITIONS.map((tool) => tool.name));
-const FACADE_TOOLSET_MAP = {
-  [TOOLSET_ANALYSIS]: new Set([
-    "search_code",
-    "go_to_definition",
-    "find_references",
-    "get_code_context",
-    "explain_code",
-    "trace_call_chain",
-    "impact_analysis"
-  ]),
-  [TOOLSET_EDIT_SAFE]: new Set(["reindex_codebase"]),
-  [TOOLSET_OPS]: new Set(["monitor_system"])
-};
-const VALID_TOOLSETS = new Set([
-  TOOLSET_ANALYSIS,
-  TOOLSET_EDIT_SAFE,
-  TOOLSET_OPS,
-  TOOLSET_ALL
-]);
 
 const LOW_LEVEL_CODE_TOOL_NAMES = new Set([
   "read_file",
@@ -440,57 +423,6 @@ function logWith(logger, level, event, fields = {}) {
     return;
   }
   logger[level](event, fields);
-}
-
-function parseToolsetTokens(input) {
-  if (Array.isArray(input)) {
-    return input
-      .flatMap((item) => parseToolsetTokens(item))
-      .filter((item) => typeof item === "string");
-  }
-  if (typeof input !== "string") {
-    return [];
-  }
-  return input
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function resolveEnabledToolsets(toolsetsInput) {
-  const requested = new Set(parseToolsetTokens(toolsetsInput));
-  if (requested.size === 0) {
-    return new Set(DEFAULT_TOOLSETS);
-  }
-  if (requested.has(TOOLSET_ALL)) {
-    return new Set([TOOLSET_ANALYSIS, TOOLSET_EDIT_SAFE, TOOLSET_OPS]);
-  }
-  const enabled = new Set();
-  for (const token of requested) {
-    if (!VALID_TOOLSETS.has(token)) {
-      throw new Error(`Unknown toolset: ${token}. Expected one of: analysis, edit-safe, ops, all`);
-    }
-    enabled.add(token);
-  }
-  if (enabled.size === 0) {
-    return new Set(DEFAULT_TOOLSETS);
-  }
-  return enabled;
-}
-
-function resolveFacadeToolNamesForToolsets(toolsets) {
-  const enabledToolsets = toolsets instanceof Set ? toolsets : new Set(DEFAULT_TOOLSETS);
-  const names = new Set();
-  for (const toolsetName of enabledToolsets) {
-    const mapping = FACADE_TOOLSET_MAP[toolsetName];
-    if (!mapping) {
-      continue;
-    }
-    for (const toolName of mapping) {
-      names.add(toolName);
-    }
-  }
-  return names;
 }
 
 function buildToolDefinitions(serverOptions = {}) {
