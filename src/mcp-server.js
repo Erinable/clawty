@@ -3,21 +3,6 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
 import {
-  callCodeContextFacadeWithDeps,
-  callExplainCodeFacadeWithDeps,
-  callImpactAnalysisFacadeWithDeps,
-  callTraceCallChainFacadeWithDeps
-} from "./mcp-analysis-facades.js";
-import { createFacadeToolHandlers } from "./mcp-facade-handlers.js";
-import {
-  collectPathsFromSearchResult,
-  collectPathsFromSemanticResult,
-  collectReferencePaths,
-  dedupePaths,
-  hasLocationArgs
-} from "./mcp-impact-utils.js";
-import { createCallLowLevelCodeTool } from "./mcp-low-level-tools.js";
-import {
   callMonitorTool as callMonitorToolModule,
   MONITOR_TOOL_DEFINITIONS,
   MONITOR_TOOL_NAME_SET
@@ -33,11 +18,8 @@ import {
   normalizeServerOptionsWithDeps,
   normalizeTransport
 } from "./mcp-server-runtime-options.js";
-import { callSearchCodeFacadeWithDeps } from "./mcp-search-facade.js";
-import { callReindexCodebaseFacadeWithDeps } from "./mcp-reindex-facade.js";
-import { callToolWithDeps } from "./mcp-tool-dispatch.js";
+import { createMcpToolRuntime } from "./mcp-tool-runtime.js";
 import {
-  DEFAULT_TOOLSETS,
   parseToolsetTokens,
   resolveEnabledToolsets,
   resolveFacadeToolNamesForToolsets,
@@ -57,7 +39,7 @@ import {
   writeNoContent
 } from "./mcp-transport-utils.js";
 import { runHttpTransportWithDeps, runStdioTransportWithDeps } from "./mcp-transport-runners.js";
-import { isPlainObject, logWith, toFiniteInteger } from "./mcp-server-utils.js";
+import { isPlainObject, logWith } from "./mcp-server-utils.js";
 import { runMcpServerCliWithDeps } from "./mcp-server-cli.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
@@ -75,114 +57,15 @@ function buildToolDefinitions(serverOptions = {}) {
   });
 }
 
-const callLowLevelCodeTool = createCallLowLevelCodeTool({
+const { callTool } = createMcpToolRuntime({
   runTool,
   resolvePath: path.resolve,
-  isPlainObject
+  facadeToolNameSet: FACADE_TOOL_NAME_SET,
+  monitorToolNameSet: MONITOR_TOOL_NAME_SET,
+  lowLevelCodeToolNameSet: LOW_LEVEL_CODE_TOOL_NAME_SET,
+  resolveFacadeToolNamesForToolsets,
+  callMonitorToolBase: callMonitorToolModule
 });
-
-async function callSearchCodeFacade(args, serverOptions = {}) {
-  return callSearchCodeFacadeWithDeps(args, {
-    isPlainObject,
-    toFiniteInteger,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callGoToDefinitionFacade(args, serverOptions = {}) {
-  return callLowLevelCodeTool("lsp_definition", args, serverOptions);
-}
-
-async function callFindReferencesFacade(args, serverOptions = {}) {
-  return callLowLevelCodeTool("lsp_references", args, serverOptions);
-}
-
-async function callCodeContextFacade(args, serverOptions = {}) {
-  return callCodeContextFacadeWithDeps(args, {
-    isPlainObject,
-    toFiniteInteger,
-    callSearchCodeFacade,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callReindexCodebaseFacade(args, serverOptions = {}) {
-  return callReindexCodebaseFacadeWithDeps(args, {
-    isPlainObject,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callExplainCodeFacade(args, serverOptions = {}) {
-  return callExplainCodeFacadeWithDeps(args, {
-    isPlainObject,
-    toFiniteInteger,
-    callSearchCodeFacade,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callTraceCallChainFacade(args, serverOptions = {}) {
-  return callTraceCallChainFacadeWithDeps(args, {
-    isPlainObject,
-    toFiniteInteger,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callImpactAnalysisFacade(args, serverOptions = {}) {
-  return callImpactAnalysisFacadeWithDeps(args, {
-    isPlainObject,
-    toFiniteInteger,
-    hasLocationArgs,
-    dedupePaths,
-    collectReferencePaths,
-    collectPathsFromSearchResult,
-    collectPathsFromSemanticResult,
-    callGoToDefinitionFacade,
-    callFindReferencesFacade,
-    callSearchCodeFacade,
-    callLowLevelCodeTool,
-    serverOptions
-  });
-}
-
-async function callMonitorTool(name, args, serverOptions = {}) {
-  return callMonitorToolModule(
-    name,
-    args,
-    serverOptions.workspaceRoot
-  );
-}
-
-const FACADE_TOOL_HANDLERS = createFacadeToolHandlers({
-  callMonitorTool,
-  callSearchCodeFacade,
-  callGoToDefinitionFacade,
-  callFindReferencesFacade,
-  callCodeContextFacade,
-  callReindexCodebaseFacade,
-  callExplainCodeFacade,
-  callTraceCallChainFacade,
-  callImpactAnalysisFacade
-});
-
-async function callTool(name, args, serverOptions = {}) {
-  return callToolWithDeps(name, args, serverOptions, {
-    facadeToolNameSet: FACADE_TOOL_NAME_SET,
-    facadeToolHandlers: FACADE_TOOL_HANDLERS,
-    monitorToolNameSet: MONITOR_TOOL_NAME_SET,
-    lowLevelCodeToolNameSet: LOW_LEVEL_CODE_TOOL_NAME_SET,
-    resolveDefaultFacadeToolNames: () => resolveFacadeToolNamesForToolsets(new Set(DEFAULT_TOOLSETS)),
-    callMonitorTool,
-    callLowLevelCodeTool
-  });
-}
 
 function normalizeServerOptions(options = {}) {
   return normalizeServerOptionsWithDeps(options, {
