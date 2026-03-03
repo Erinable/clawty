@@ -4,6 +4,26 @@
 
 本路线图从“已实现能力”出发，升级为按八个维度推进的工程化计划，目标是在大仓库和高频变更场景下，同时提升检索质量、稳定性、可观测性与迭代效率。
 
+## 实施进度（本分支）
+
+当前分支：`code-index-phase1-orchestrator-foundation`
+
+阶段 1（基础治理）已完成项：
+
+- `src/mcp-server.js` 完成拆分，职责下沉到 runtime/cli/toolset policy/dispatch 等模块，主文件已收敛为装配层。
+- `src/index-watch.js` 完成队列、hash、flush/metrics、snapshot/diff、config、loop、path policy 的模块化拆分。
+- `src/tools.js` 完成工具 schema、安全策略、本地工具 handlers、查询工具 handlers 的模块化拆分，主文件由大而全转为组合入口。
+- 新增契约测试覆盖拆分模块：
+  - `tests/mcp-toolset-policy.test.js`
+  - `tests/mcp-tool-dispatch.test.js`
+  - `tests/tool-local-handlers.test.js`
+  - `tests/tool-query-handlers.test.js`
+
+阶段 1 余项（下一步）：
+
+- 建立统一检索编排层原型（`retrieval-orchestrator`）与结果协议字段标准（来源、置信度、时效、去重键）。
+- 对构建/刷新/查询/降级四链路指标字段做一次命名对齐收敛。
+
 ## 当前基线（已落地能力）
 
 基线能力以 `README.md` 已实现清单为准，核心包括：
