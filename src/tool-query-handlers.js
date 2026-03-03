@@ -1,3 +1,9 @@
+import {
+  attachIndexRetrievalProtocol,
+  attachSemanticRetrievalProtocol,
+  attachSyntaxRetrievalProtocol
+} from "./retrieval-adapters.js";
+
 export function createQueryToolHandlers(deps = {}) {
   const {
     buildCodeIndex,
@@ -43,7 +49,8 @@ export function createQueryToolHandlers(deps = {}) {
   }
 
   async function queryCodeIndexTool(args, context) {
-    return queryCodeIndex(context.workspaceRoot, args);
+    const result = await queryCodeIndex(context.workspaceRoot, args);
+    return attachIndexRetrievalProtocol(result);
   }
 
   async function refreshCodeIndexTool(args, context) {
@@ -77,7 +84,8 @@ export function createQueryToolHandlers(deps = {}) {
   }
 
   async function querySemanticGraphTool(args, context) {
-    return querySemanticGraphWithFallback(context.workspaceRoot, args);
+    const result = await querySemanticGraphWithFallback(context.workspaceRoot, args);
+    return attachSemanticRetrievalProtocol(result);
   }
 
   async function queryHybridIndexTool(args, context) {
@@ -103,7 +111,8 @@ export function createQueryToolHandlers(deps = {}) {
   }
 
   async function querySyntaxIndexTool(args, context) {
-    return querySyntaxIndex(context.workspaceRoot, args);
+    const result = await querySyntaxIndex(context.workspaceRoot, args);
+    return attachSyntaxRetrievalProtocol(result);
   }
 
   async function getSyntaxIndexStatsTool(args, context) {

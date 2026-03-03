@@ -114,3 +114,35 @@ test("createQueryToolHandlers passes embedding and lsp context to adapters", asy
     { enabled: true }
   ]);
 });
+
+test("createQueryToolHandlers attaches retrieval protocol to query responses", async () => {
+  const calls = [];
+  const deps = createDeps(calls);
+  deps.queryCodeIndex = async () => ({
+    ok: true,
+    results: [{ path: "src/a.ts", score: 6.5, hit_line: 3 }]
+  });
+  deps.querySyntaxIndex = async () => ({
+    ok: true,
+    seeds: [{ path: "src/a.ts", import_count: 2, call_count: 1 }]
+  });
+  deps.querySemanticGraphWithFallback = async () => ({
+    ok: true,
+    provider: "syntax",
+    seeds: [{ path: "src/a.ts", source: "syntax_fallback", name: "a", kind: "file" }]
+  });
+  const handlers = createQueryToolHandlers(deps);
+  const context = { workspaceRoot: "/repo" };
+
+  const codeResult = await handlers.query_code_index({ query: "a" }, context);
+  assert.equal(typeof codeResult.results[0].retrieval, "object");
+  assert.equal(codeResult.results[0].retrieval.source, "index");
+
+  const syntaxResult = await handlers.query_syntax_index({ query: "a" }, context);
+  assert.equal(typeof syntaxResult.seeds[0].retrieval, "object");
+  assert.equal(syntaxResult.seeds[0].retrieval.source, "syntax");
+
+  const semanticResult = await handlers.query_semantic_graph({ query: "a" }, context);
+  assert.equal(typeof semanticResult.seeds[0].retrieval, "object");
+  assert.equal(semanticResult.seeds[0].retrieval.source, "syntax_fallback");
+});
