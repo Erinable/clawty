@@ -7,6 +7,7 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { loadConfig, resolveConfigSources } from "./config.js";
+import { createRuntimeLogger } from "./logger.js";
 
 const LOGO = "== clawty ==";
 const STATUS = {
@@ -297,11 +298,21 @@ function redactConfig(config) {
 
 async function runTask(config, state, task) {
   shouldAttemptLspCleanup = true;
+  const logger = createRuntimeLogger(config, {
+    component: "cli",
+    context: {
+      command: "run"
+    }
+  });
+  logger.info("cli.run_start", {
+    task_chars: typeof task === "string" ? task.length : 0
+  });
   const runAgentTurn = await getRunAgentTurn();
   await runAgentTurn({
     config,
     state,
     userInput: task,
+    logger: logger.child({ component: "agent-turn" }),
     onText(text) {
       console.log(`\n${text}\n`);
     },
@@ -310,10 +321,18 @@ async function runTask(config, state, task) {
       console.error(`[tool:${name}] ${status}`);
     }
   });
+  logger.info("cli.run_complete");
 }
 
 async function runChat(config) {
+  const logger = createRuntimeLogger(config, {
+    component: "cli",
+    context: {
+      command: "chat"
+    }
+  });
   console.log("Clawty chat mode. Type 'exit' or 'quit' to stop.");
+  logger.info("cli.chat_start");
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -328,9 +347,27 @@ async function runChat(config) {
         continue;
       }
       if (line === "exit" || line === "quit" || line === "/exit" || line === "/quit") {
+        logger.info("cli.chat_exit");
         break;
       }
-      await runTask(config, state, line);
+      logger.debug("cli.chat_turn", {
+        input_chars: line.length
+      });
+      const runAgentTurn = await getRunAgentTurn();
+      shouldAttemptLspCleanup = true;
+      await runAgentTurn({
+        config,
+        state,
+        userInput: line,
+        logger: logger.child({ component: "agent-turn" }),
+        onText(text) {
+          console.log(`\n${text}\n`);
+        },
+        onTool(name, result) {
+          const status = result.ok ? "ok" : "failed";
+          console.error(`[tool:${name}] ${status}`);
+        }
+      });
     }
   } finally {
     rl.close();
@@ -1164,11 +1201,19 @@ async function handleMcpServerCommand(argv) {
   }
 
   const config = loadConfig({ allowMissingApiKey: true });
+  const logger = createRuntimeLogger(config, {
+    component: "mcp-server",
+    consoleStream: process.stderr,
+    context: {
+      entrypoint: "index"
+    }
+  });
   await runMcpServer({
     workspaceRoot: workspaceRoot || config.workspaceRoot,
     exposeLowLevel,
     toolsets,
     toolTimeoutMs: config.toolTimeoutMs,
+    logger,
     lsp: config.lsp,
     embedding: config.embedding,
     metrics: config.metrics,

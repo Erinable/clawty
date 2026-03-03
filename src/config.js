@@ -467,6 +467,30 @@ export function loadConfig(options = {}) {
     )
   };
 
+  const logging = {
+    enabled: readBoolean(
+      env.CLAWTY_LOG_ENABLED ?? deepPick(fileConfig, ["logging", "enabled"]),
+      true
+    ),
+    level: readEnumString(
+      env.CLAWTY_LOG_LEVEL ?? deepPick(fileConfig, ["logging", "level"]),
+      "info",
+      ["debug", "info", "warn", "error", "off"]
+    ),
+    console: readBoolean(
+      env.CLAWTY_LOG_CONSOLE ?? deepPick(fileConfig, ["logging", "console"]),
+      false
+    ),
+    file: readBoolean(
+      env.CLAWTY_LOG_FILE ?? deepPick(fileConfig, ["logging", "file"]),
+      true
+    ),
+    path: readString(
+      env.CLAWTY_LOG_PATH ?? deepPick(fileConfig, ["logging", "path"]),
+      path.join(".clawty", "logs", "runtime.log")
+    )
+  };
+
   const onlineTunerEnabled = readBoolean(
     env.CLAWTY_TUNER_ENABLED ?? deepPick(fileConfig, ["onlineTuner", "enabled"]),
     false
@@ -697,6 +721,7 @@ export function loadConfig(options = {}) {
     embedding,
     agentContext,
     metrics,
+    logging,
     onlineTuner,
     memory,
     sources: {

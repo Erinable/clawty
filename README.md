@@ -60,6 +60,7 @@
 - 实时索引监听：`watch-index` 支持脏队列、debounce、batch、hash-skip 与 code/syntax/semantic/vector 协同刷新。
 - 长期记忆（Memory）：跨会话存储经验（SQLite），按 `project/global` 作用域检索注入，支持反馈学习与保留期清理。
 - 可观测与门禁：hybrid/watch JSONL 指标落盘、`metrics-report`/`metrics-check`、质量回归基准与覆盖率门禁。
+- 结构化日志：运行时 JSONL 日志（默认 `.clawty/logs/runtime.log`），支持 `level/console/file/path` 配置。
 
 当前边界（未实现）：
 

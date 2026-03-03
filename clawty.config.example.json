@@ -46,6 +46,13 @@
     "persistMemory": true,
     "queryPreviewChars": 160
   },
+  "logging": {
+    "enabled": true,
+    "level": "info",
+    "console": false,
+    "file": true,
+    "path": ".clawty/logs/runtime.log"
+  },
   "onlineTuner": {
     "enabled": false,
     "mode": "off",

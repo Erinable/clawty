@@ -38,6 +38,13 @@ const SYSTEM_PROMPT = [
   "When finished, provide a concise summary and any follow-up steps."
 ].join(" ");
 
+function logWith(logger, level, event, fields = {}) {
+  if (!logger || typeof logger[level] !== "function") {
+    return;
+  }
+  logger[level](event, fields);
+}
+
 function clampInt(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < min) {
@@ -478,7 +485,7 @@ function parseArguments(rawArgs) {
   return {};
 }
 
-async function callModel(config, state, input) {
+async function callModel(config, state, input, logger = null) {
   const payload = {
     model: config.model,
     instructions: SYSTEM_PROMPT,
@@ -494,11 +501,12 @@ async function callModel(config, state, input) {
   return createResponse({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
-    payload
+    payload,
+    logger
   });
 }
 
-export async function runAgentTurn({ config, state, userInput, onText, onTool }) {
+export async function runAgentTurn({ config, state, userInput, onText, onTool, logger = null }) {
   let initialInput = userInput;
   const toolCalls = [];
   const textChunks = [];
@@ -508,6 +516,19 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
   if (!state.session_id) {
     state.session_id = randomUUID();
   }
+  const turnLogger = logger?.child
+    ? logger.child({
+        component: "agent",
+        context: {
+          session_id: state.session_id,
+          turn_no: currentTurn
+        }
+      })
+    : logger;
+
+  logWith(turnLogger, "info", "agent.turn_start", {
+    user_input_chars: typeof userInput === "string" ? userInput.length : 0
+  });
 
   if (typeof userInput === "string") {
     try {
@@ -519,6 +540,13 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
       });
       state.incremental_context = incrementalContext;
       initialInput = buildTurnInputWithIncrementalContext(userInput, incrementalContext);
+      logWith(turnLogger, "debug", "agent.incremental_context", {
+        available: incrementalContext.available === true,
+        reason: incrementalContext.reason || null,
+        changed_paths: Array.isArray(incrementalContext.changed_paths)
+          ? incrementalContext.changed_paths.length
+          : 0
+      });
     } catch (error) {
       state.incremental_context = {
         enabled: true,
@@ -527,6 +555,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
         error: error.message || String(error)
       };
       initialInput = userInput;
+      logWith(turnLogger, "warn", "agent.incremental_context_failed", { error });
     }
 
     if (config?.memory?.enabled) {
@@ -544,17 +573,27 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
           maxChars: config?.memory?.maxInjectedChars
         });
         initialInput = appendContextBlock(initialInput, memoryPrompt);
+        logWith(turnLogger, "debug", "agent.memory_context", {
+          ok: memoryContext?.ok !== false,
+          injected_items: Array.isArray(memoryContext?.items) ? memoryContext.items.length : 0
+        });
       } catch (error) {
         state.memory_context = {
           ok: false,
           error: error.message || String(error)
         };
+        logWith(turnLogger, "warn", "agent.memory_context_failed", { error });
       }
     }
   }
 
   try {
-    let response = await callModel(config, state, initialInput);
+    let response = await callModel(
+      config,
+      state,
+      initialInput,
+      turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger
+    );
 
     for (let i = 0; i < config.maxToolIterations; i += 1) {
       const text = extractText(response);
@@ -564,6 +603,12 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
       }
 
       const calls = extractFunctionCalls(response);
+      logWith(turnLogger, "debug", "agent.model_round", {
+        iteration: i + 1,
+        response_id: response?.id || null,
+        tool_calls: calls.length,
+        text_chars: text ? text.length : 0
+      });
       if (calls.length === 0) {
         state.previousResponseId = response.id;
         await persistTurnMemory({
@@ -574,12 +619,17 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
           textChunks,
           outcome: "success"
         });
+        logWith(turnLogger, "info", "agent.turn_complete", {
+          tool_calls: toolCalls.length,
+          text_chunks: textChunks.length
+        });
         return;
       }
 
       const outputs = [];
       for (const call of calls) {
         let result;
+        const toolStartedAt = Date.now();
         try {
           const args = parseArguments(call.arguments);
           result = await runTool(call.name, args, {
@@ -599,6 +649,12 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
             error: error.message || String(error)
           };
         }
+        logWith(turnLogger, result.ok === false ? "warn" : "info", "agent.tool_call", {
+          tool_name: call.name,
+          ok: result.ok !== false,
+          duration_ms: Math.max(0, Date.now() - toolStartedAt),
+          error: result.ok === false ? result.error : null
+        });
         toolCalls.push({
           name: call.name,
           ok: result.ok !== false,
@@ -613,7 +669,12 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
       }
 
       state.previousResponseId = response.id;
-      response = await callModel(config, state, outputs);
+      response = await callModel(
+        config,
+        state,
+        outputs,
+        turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger
+      );
     }
 
     throw new Error(
@@ -628,6 +689,11 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool })
       textChunks,
       outcome: "failed",
       fallbackSummary: error.message || String(error)
+    });
+    logWith(turnLogger, "error", "agent.turn_failed", {
+      tool_calls: toolCalls.length,
+      text_chunks: textChunks.length,
+      error
     });
     throw error;
   }

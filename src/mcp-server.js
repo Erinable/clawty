@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { buildReport } from "../scripts/metrics-report.mjs";
 import { buildTunerReport } from "../scripts/tuner-report.mjs";
 import { loadConfig } from "./config.js";
+import { createRuntimeLogger } from "./logger.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
@@ -464,6 +465,13 @@ function writeMessage(message) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function logWith(logger, level, event, fields = {}) {
+  if (!logger || typeof logger[level] !== "function") {
+    return;
+  }
+  logger[level](event, fields);
 }
 
 function parseToolsetTokens(input) {
@@ -1332,6 +1340,7 @@ function normalizeServerOptions(options = {}) {
     workspaceRoot,
     toolTimeoutMs: Number.isFinite(options.toolTimeoutMs) ? options.toolTimeoutMs : 180_000,
     exposeLowLevel: options.exposeLowLevel === true,
+    logger: options.logger && typeof options.logger === "object" ? options.logger : null,
     enabledToolsets,
     exposedFacadeToolNames,
     lsp: isPlainObject(options.lsp) ? options.lsp : {},
@@ -1343,7 +1352,19 @@ function normalizeServerOptions(options = {}) {
 
 export async function runMcpServer(options = {}) {
   const serverOptions = normalizeServerOptions(options);
+  const logger = serverOptions.logger?.child
+    ? serverOptions.logger.child({
+        component: "mcp-server",
+        context: {
+          workspace_root: serverOptions.workspaceRoot
+        }
+      })
+    : serverOptions.logger;
   const tools = buildToolDefinitions(serverOptions);
+  logWith(logger, "info", "mcp.server_start", {
+    expose_low_level: serverOptions.exposeLowLevel,
+    toolsets: Array.from(serverOptions.enabledToolsets || [])
+  });
   let rawBuffer = Buffer.alloc(0);
   let shouldExit = false;
 
@@ -1358,6 +1379,7 @@ export async function runMcpServer(options = {}) {
       request = JSON.parse(payload);
     } catch {
       writeMessage(buildRpcError(null, -32700, "Parse error"));
+      logWith(logger, "warn", "mcp.parse_error");
       return;
     }
 
@@ -1367,6 +1389,7 @@ export async function runMcpServer(options = {}) {
 
     if (!method || typeof method !== "string") {
       writeMessage(buildRpcError(id, -32600, "Invalid Request"));
+      logWith(logger, "warn", "mcp.invalid_request", { id });
       return;
     }
 
@@ -1385,10 +1408,12 @@ export async function runMcpServer(options = {}) {
 
     if (method === "exit") {
       shouldExit = true;
+      logWith(logger, "info", "mcp.exit");
       return;
     }
 
     if (method === "initialize") {
+      logWith(logger, "info", "mcp.initialize", { id });
       writeMessage({
         jsonrpc: "2.0",
         id: id ?? null,
@@ -1407,6 +1432,7 @@ export async function runMcpServer(options = {}) {
     }
 
     if (method === "tools/list") {
+      logWith(logger, "debug", "mcp.tools_list", { id, tool_count: tools.length });
       writeMessage({
         jsonrpc: "2.0",
         id: id ?? null,
@@ -1422,7 +1448,14 @@ export async function runMcpServer(options = {}) {
         const toolName = typeof params?.name === "string" ? params.name : "";
         const toolArgs =
           params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
+        const toolStartedAt = Date.now();
         const result = await callTool(toolName, toolArgs, serverOptions);
+        logWith(logger, "info", "mcp.tool_call", {
+          id,
+          tool_name: toolName,
+          ok: result?.ok !== false,
+          duration_ms: Math.max(0, Date.now() - toolStartedAt)
+        });
         writeMessage({
           jsonrpc: "2.0",
           id: id ?? null,
@@ -1437,6 +1470,11 @@ export async function runMcpServer(options = {}) {
           }
         });
       } catch (error) {
+        logWith(logger, "error", "mcp.tool_call_failed", {
+          id,
+          tool_name: params?.name || null,
+          error
+        });
         writeMessage(
           buildRpcError(id, -32603, error?.message || "Internal error", {
             tool: params?.name || null
@@ -1446,6 +1484,7 @@ export async function runMcpServer(options = {}) {
       return;
     }
 
+    logWith(logger, "warn", "mcp.method_not_found", { id, method });
     writeMessage(buildRpcError(id, -32601, `Method not found: ${method}`));
   };
 
@@ -1516,6 +1555,7 @@ export async function runMcpServer(options = {}) {
       }
       await handlePayload(payload);
       if (shouldExit) {
+        logWith(logger, "info", "mcp.server_stop");
         return;
       }
     }
@@ -1614,11 +1654,19 @@ async function main() {
     return;
   }
   const config = loadConfig({ allowMissingApiKey: true });
+  const logger = createRuntimeLogger(config, {
+    component: "mcp-server",
+    consoleStream: process.stderr,
+    context: {
+      entrypoint: "mcp-server"
+    }
+  });
   await runMcpServer({
     workspaceRoot: args.workspaceRoot || config.workspaceRoot,
     exposeLowLevel: args.exposeLowLevel,
     toolsets: args.toolsets,
     toolTimeoutMs: config.toolTimeoutMs,
+    logger,
     lsp: config.lsp,
     embedding: config.embedding,
     metrics: config.metrics,

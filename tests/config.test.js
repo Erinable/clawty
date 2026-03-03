@@ -58,6 +58,13 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
           persistMemory: false,
           queryPreviewChars: 120
         },
+        logging: {
+          enabled: true,
+          level: "debug",
+          console: true,
+          file: true,
+          path: ".clawty/logs/custom-runtime.log"
+        },
         onlineTuner: {
           enabled: true,
           mode: "shadow",
@@ -129,6 +136,11 @@ test("loadConfig reads file-based config and resolves workspaceRoot", async (t) 
   assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.persistMemory, false);
   assert.equal(config.metrics.queryPreviewChars, 120);
+  assert.equal(config.logging.enabled, true);
+  assert.equal(config.logging.level, "debug");
+  assert.equal(config.logging.console, true);
+  assert.equal(config.logging.file, true);
+  assert.equal(config.logging.path, ".clawty/logs/custom-runtime.log");
   assert.equal(config.onlineTuner.enabled, true);
   assert.equal(config.onlineTuner.mode, "shadow");
   assert.equal(config.onlineTuner.dbPath, ".clawty/custom-tuner.db");
@@ -203,6 +215,9 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
       CLAWTY_METRICS_PERSIST_WATCH: "false",
       CLAWTY_METRICS_PERSIST_MEMORY: "false",
       CLAWTY_METRICS_QUERY_PREVIEW_CHARS: "220",
+      CLAWTY_LOG_LEVEL: "warn",
+      CLAWTY_LOG_CONSOLE: "true",
+      CLAWTY_LOG_FILE: "false",
       CLAWTY_MEMORY_MIN_LESSON_CHARS: "120",
       CLAWTY_MEMORY_DEDUPE_ENABLED: "false",
       CLAWTY_MEMORY_QUARANTINE_THRESHOLD: "6",
@@ -224,6 +239,9 @@ test("loadConfig applies precedence: env > .env > file > defaults", async (t) =>
   assert.equal(config.metrics.persistWatch, false);
   assert.equal(config.metrics.persistMemory, false);
   assert.equal(config.metrics.queryPreviewChars, 220);
+  assert.equal(config.logging.level, "warn");
+  assert.equal(config.logging.console, true);
+  assert.equal(config.logging.file, false);
   assert.equal(config.memory.minLessonChars, 120);
   assert.equal(config.memory.dedupeEnabled, false);
   assert.equal(config.memory.quarantineThreshold, 6);

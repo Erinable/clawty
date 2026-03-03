@@ -253,6 +253,12 @@ CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=active node src/index.js run "..."
 3. 用 `node src/index.js memory stats --json` 查看当前记忆库条目是否存在。
 4. 如历史经验过多，调大 `--top-k` 或在配置中提高 `maxInjectedItems`。
 
+### Q5：如何查看运行日志？
+
+1. 默认日志路径是 `.clawty/logs/runtime.log`（JSONL）。
+2. 可通过 `CLAWTY_LOG_LEVEL` 调整日志等级（`debug|info|warn|error|off`）。
+3. 可通过 `CLAWTY_LOG_CONSOLE` 控制是否输出到控制台，`CLAWTY_LOG_FILE` 控制是否写文件。
+
 ## 9. 当前边界
 
 1. 已支持 `mcp-server`，默认 toolset 为 `analysis+ops`；`reindex_codebase` 需显式 `--toolset edit-safe`，底层工具需 `--expose-low-level`。
