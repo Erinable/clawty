@@ -4,6 +4,7 @@ import {
   aggregateHybridReplayByBucket,
   aggregateHybridReplayMetrics,
   extractHybridReplayFailures,
+  findUnexpectedHybridReplayFailures,
   mergeHybridReplayArgs,
   scoreHybridReplayPreset,
   sortHybridReplaySummaries,
@@ -210,5 +211,50 @@ test("extractHybridReplayFailures returns failed rows with reason tags", () => {
   assert.deepEqual(failures[0].failure_reasons, [
     "primary_not_top1",
     "embedding_status_mismatch"
+  ]);
+});
+
+test("findUnexpectedHybridReplayFailures detects newly introduced failures", () => {
+  const unexpected = findUnexpectedHybridReplayFailures(
+    [
+      {
+        name: "baseline_fixture",
+        failure_samples: [{ name: "known_case", primary_path: "src/known.ts" }]
+      },
+      {
+        name: "embedding_light",
+        failure_samples: [
+          { name: "known_case", primary_path: "src/known.ts" },
+          {
+            name: "new_case",
+            primary_path: "src/new.ts",
+            failure_reasons: ["embedding_status_mismatch"]
+          }
+        ]
+      }
+    ],
+    {
+      presets: [
+        {
+          name: "embedding_light",
+          failure_samples: [{ name: "known_case", primary_path: "src/known.ts" }]
+        }
+      ]
+    }
+  );
+
+  assert.deepEqual(unexpected, [
+    {
+      preset: "baseline_fixture",
+      name: "known_case",
+      primary_path: "src/known.ts",
+      failure_reasons: []
+    },
+    {
+      preset: "embedding_light",
+      name: "new_case",
+      primary_path: "src/new.ts",
+      failure_reasons: ["embedding_status_mismatch"]
+    }
   ]);
 });

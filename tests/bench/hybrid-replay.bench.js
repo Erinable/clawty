@@ -8,6 +8,7 @@ import {
   aggregateHybridReplayByBucket,
   aggregateHybridReplayMetrics,
   extractHybridReplayFailures,
+  findUnexpectedHybridReplayFailures,
   mergeHybridReplayArgs,
   scoreHybridReplayPreset,
   sortHybridReplaySummaries,
@@ -40,7 +41,9 @@ function parseArgs(argv) {
     queryPatternFilter: null,
     intentFilter: null,
     writeFailures: false,
-    failuresOutputPath: DEFAULT_FAILURES_OUTPUT_PATH
+    failuresOutputPath: DEFAULT_FAILURES_OUTPUT_PATH,
+    checkFailures: false,
+    failuresBaselinePath: DEFAULT_FAILURES_OUTPUT_PATH
   };
 
   for (const arg of argv) {
@@ -72,6 +75,13 @@ function parseArgs(argv) {
       options.failuresOutputPath = path.resolve(
         process.cwd(),
         arg.slice("--failures-output=".length)
+      );
+      continue;
+    }
+    if (arg.startsWith("--failures-baseline=")) {
+      options.failuresBaselinePath = path.resolve(
+        process.cwd(),
+        arg.slice("--failures-baseline=".length)
       );
       continue;
     }
@@ -109,6 +119,10 @@ function parseArgs(argv) {
     }
     if (arg === "--write-failures") {
       options.writeFailures = true;
+      continue;
+    }
+    if (arg === "--check-failures") {
+      options.checkFailures = true;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
@@ -512,6 +526,34 @@ function printComparison(comparison, thresholdPercent) {
   }
 }
 
+function checkFailureBaseline(benchmark, baselineFailures) {
+  const unexpected = findUnexpectedHybridReplayFailures(
+    Array.isArray(benchmark?.presets) ? benchmark.presets : [],
+    baselineFailures
+  );
+  return {
+    ok: unexpected.length === 0,
+    unexpected
+  };
+}
+
+function printFailureBaselineCheck(checkResult, baselinePath) {
+  console.log(
+    `Hybrid replay failure gate: baseline ${path.relative(process.cwd(), baselinePath)}`
+  );
+  if (checkResult.ok) {
+    console.log("- OK no new failure samples");
+    return;
+  }
+  for (const item of checkResult.unexpected) {
+    const reasons = Array.isArray(item.failure_reasons) ? item.failure_reasons.join(",") : "";
+    const location = item.primary_path ? ` (${item.primary_path})` : "";
+    console.log(
+      `- REGRESSION ${item.preset}/${item.name}${location}${reasons ? ` reasons=${reasons}` : ""}`
+    );
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const benchmark = await runReplayBenchmark(options);
@@ -541,6 +583,15 @@ async function main() {
     printComparison(comparison, threshold);
     if (!comparison.ok) {
       throw new Error("Hybrid replay regression detected");
+    }
+  }
+
+  if (options.checkFailures) {
+    const baselineFailures = await readBaseline(options.failuresBaselinePath);
+    const checkResult = checkFailureBaseline(benchmark, baselineFailures);
+    printFailureBaselineCheck(checkResult, options.failuresBaselinePath);
+    if (!checkResult.ok) {
+      throw new Error("Hybrid replay introduced new failure samples");
     }
   }
 }

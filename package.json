@@ -52,6 +52,7 @@
     "bench:hybrid:replay:check": "node tests/bench/hybrid-replay.bench.js --check-baseline --threshold=5",
     "bench:hybrid:replay:baseline": "node tests/bench/hybrid-replay.bench.js --write-baseline",
     "bench:hybrid:replay:failures": "node tests/bench/hybrid-replay.bench.js --write-failures",
+    "bench:hybrid:replay:failure:check": "node tests/bench/hybrid-replay.bench.js --check-failures",
     "metrics:report": "node scripts/metrics-report.mjs",
     "metrics:report:json": "node scripts/metrics-report.mjs --json",
     "metrics:check": "node scripts/metrics-check.mjs",

@@ -278,3 +278,49 @@ export function extractHybridReplayFailures(taskResults) {
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
 }
+
+function buildHybridReplayFailureSampleKey(sample) {
+  const name = normalizeLabel(sample?.name, "unknown_case");
+  const path = normalizeLabel(sample?.primary_path, "");
+  return `${name}::${path}`;
+}
+
+export function findUnexpectedHybridReplayFailures(currentPresets, baselineFailures) {
+  const baselineByPreset = new Map();
+  const baselinePresets = Array.isArray(baselineFailures?.presets) ? baselineFailures.presets : [];
+  for (const preset of baselinePresets) {
+    const presetName = normalizeLabel(preset?.name, "unknown_preset");
+    const samples = Array.isArray(preset?.failure_samples) ? preset.failure_samples : [];
+    baselineByPreset.set(
+      presetName,
+      new Set(samples.map((sample) => buildHybridReplayFailureSampleKey(sample)))
+    );
+  }
+
+  const current = Array.isArray(currentPresets) ? currentPresets : [];
+  const unexpected = [];
+  for (const preset of current) {
+    const presetName = normalizeLabel(preset?.name, "unknown_preset");
+    const baselineKeys = baselineByPreset.get(presetName) || new Set();
+    const samples = Array.isArray(preset?.failure_samples) ? preset.failure_samples : [];
+    for (const sample of samples) {
+      const key = buildHybridReplayFailureSampleKey(sample);
+      if (baselineKeys.has(key)) {
+        continue;
+      }
+      unexpected.push({
+        preset: presetName,
+        name: normalizeLabel(sample?.name, "unknown_case"),
+        primary_path: normalizeLabel(sample?.primary_path, null),
+        failure_reasons: Array.isArray(sample?.failure_reasons) ? sample.failure_reasons : []
+      });
+    }
+  }
+  return unexpected.sort((a, b) => {
+    const presetCompare = String(a.preset || "").localeCompare(String(b.preset || ""));
+    if (presetCompare !== 0) {
+      return presetCompare;
+    }
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+}

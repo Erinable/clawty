@@ -31,6 +31,9 @@
   - `tests/fixtures/hybrid-cases/replay-presets.json`
   - `tests/bench/hybrid-replay.baseline.json`
 - 新增 `bench:hybrid:replay / :check / :baseline` 命令，支持按 preset 回放、分桶指标输出与基线门禁。
+- 新增失败样本闭环：
+  - `bench:hybrid:replay:failures` 导出失败样本集
+  - `bench:hybrid:replay:failure:check` 校验“无新增失败样本”门禁
 
 ## 当前基线（已落地能力）
 

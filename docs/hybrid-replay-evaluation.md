@@ -16,6 +16,7 @@
 npm run bench:hybrid:replay
 npm run bench:hybrid:replay:check
 npm run bench:hybrid:replay:baseline
+npm run bench:hybrid:replay:failure:check
 ```
 
 原始脚本支持附加参数：
@@ -27,6 +28,8 @@ node tests/bench/hybrid-replay.bench.js --query-pattern=cross_file_semantic
 node tests/bench/hybrid-replay.bench.js --intent=rerank,degrade_timeout
 node tests/bench/hybrid-replay.bench.js --write-failures
 node tests/bench/hybrid-replay.bench.js --write-failures --failures-output=/tmp/hybrid-failures.json
+node tests/bench/hybrid-replay.bench.js --check-failures
+node tests/bench/hybrid-replay.bench.js --check-failures --failures-baseline=/tmp/hybrid-failures.json
 node tests/bench/hybrid-replay.bench.js --cases=tests/fixtures/hybrid-cases/expected.json
 node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/replay-presets.json
 ```
@@ -67,3 +70,11 @@ node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/re
 - case 基本信息（`name/language/file_type/intent/query_pattern/query`）
 - 期望与实际（`primary_rank`、embedding status、degraded flag）
 - `failure_reasons` 标签（如 `primary_not_top1`、`embedding_status_mismatch`）
+
+## 新失败门禁
+
+`--check-failures` 会读取 failure baseline（默认 `tests/fixtures/hybrid-cases/failure-samples.json`），并校验当前回放是否出现了 baseline 之外的新失败样本：
+
+- 新失败判定键：`preset + case.name + primary_path`
+- 如果仅有历史已知失败，门禁通过
+- 如果出现新增失败，脚本返回非 0 退出码
