@@ -10,6 +10,11 @@ import {
   parseWatchCliArgs,
   resolveWatchConfig
 } from "./index-watch-config.js";
+import {
+  shouldTrackWatchPath,
+  toPosixPath,
+  WATCH_IGNORED_DIRS
+} from "./index-watch-path-policy.js";
 import { flushDirtyQueueWithDeps } from "./index-watch-flush.js";
 import {
   filterChangedPathsByHash as filterChangedPathsByHashWithDeps,
@@ -51,53 +56,6 @@ export {
 } from "./index-watch-queue.js";
 export { parseWatchCliArgs, resolveWatchConfig };
 
-const IGNORED_DIRS = new Set([
-  ".git",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  ".clawty"
-]);
-
-const CODE_EXTENSIONS = new Set([
-  ".js",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".mts",
-  ".cts",
-  ".jsx",
-  ".tsx",
-  ".json",
-  ".md",
-  ".py",
-  ".go",
-  ".rs",
-  ".java",
-  ".c",
-  ".cc",
-  ".cpp",
-  ".h",
-  ".hpp",
-  ".cs",
-  ".rb",
-  ".php",
-  ".swift",
-  ".kt",
-  ".kts",
-  ".scala",
-  ".sh",
-  ".yml",
-  ".yaml",
-  ".toml",
-  ".ini"
-]);
-
-function toPosixPath(inputPath) {
-  return inputPath.split(path.sep).join("/");
-}
-
 function chunkArray(items, chunkSize) {
   if (!Array.isArray(items) || items.length === 0) {
     return [];
@@ -111,16 +69,7 @@ function chunkArray(items, chunkSize) {
 }
 
 export function shouldTrackPath(relativePath) {
-  if (typeof relativePath !== "string" || relativePath.trim().length === 0) {
-    return false;
-  }
-  const normalized = toPosixPath(relativePath.trim());
-  const parts = normalized.split("/");
-  if (parts.some((part) => IGNORED_DIRS.has(part))) {
-    return false;
-  }
-  const ext = path.extname(normalized).toLowerCase();
-  return CODE_EXTENSIONS.has(ext);
+  return shouldTrackWatchPath(relativePath);
 }
 
 export async function collectTrackedFiles(workspaceRoot, args = {}) {
@@ -130,7 +79,7 @@ export async function collectTrackedFiles(workspaceRoot, args = {}) {
     resolveWatchConfig,
     toPosixPath,
     shouldTrackPath,
-    ignoredDirs: IGNORED_DIRS
+    ignoredDirs: WATCH_IGNORED_DIRS
   });
 }
 
