@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": false,
+    "skipLibCheck": true,
+    "noImplicitAny": false
+  },
+  "files": [
+    "src/agent.js",
+    "src/agent-context.js",
+    "src/agent-prompt.js",
+    "src/agent-tool-exec.js",
+    "src/retrieval-adapters.js",
+    "src/tool-query-handlers.js",
+    "src/mcp-server-rpc.js",
+    "src/trace-context.js",
+    "scripts/typecheck.mjs",
+    "scripts/contract-check.mjs"
+  ]
+}

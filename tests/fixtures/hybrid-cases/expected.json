@@ -2,6 +2,11 @@
   "cases": [
     {
       "name": "baseline_without_embedding",
+      "bucket": "intent:baseline",
+      "language": "typescript",
+      "file_type": "source",
+      "intent": "baseline",
+      "query_pattern": "identifier_exact",
       "embedding_mode": "disabled",
       "args": {
         "query": "hybridBaselineToken",
@@ -14,6 +19,11 @@
     },
     {
       "name": "embedding_rerank_reorders_top1",
+      "bucket": "intent:embedding_rerank",
+      "language": "typescript",
+      "file_type": "test",
+      "intent": "rerank",
+      "query_pattern": "cross_file_semantic",
       "embedding_mode": "ok",
       "args": {
         "query": "hybridEmbedToken",
@@ -28,6 +38,11 @@
     },
     {
       "name": "embedding_timeout_degrades_gracefully",
+      "bucket": "intent:embedding_timeout",
+      "language": "typescript",
+      "file_type": "source",
+      "intent": "degrade_timeout",
+      "query_pattern": "timeout_resilience",
       "embedding_mode": "timeout",
       "args": {
         "query": "hybridEmbedTimeout",

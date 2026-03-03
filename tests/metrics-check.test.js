@@ -318,6 +318,80 @@ test("metrics-check supports embedding thresholds and embedding attempt sample g
   );
 });
 
+test("metrics-check supports watch backpressure thresholds", async (t) => {
+  const workspaceRoot = await createWorkspace("clawty-metrics-check-watch-backpressure-");
+  t.after(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  const nowIso = new Date().toISOString();
+  await writeMetricFiles(workspaceRoot, {
+    hybridEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "hybrid_query",
+        query_total_ms: 100,
+        sources: {
+          freshness: { stale_hit_rate: 0.01 },
+          embedding: { attempted: true, status_code: "EMBEDDING_OK" }
+        },
+        degradation: { degraded: false }
+      }
+    ],
+    watchEvents: [
+      {
+        timestamp: nowIso,
+        event_type: "watch_flush",
+        index_lag_ms: 200,
+        backpressure_active: false,
+        effective_debounce_ms: 500
+      },
+      {
+        timestamp: nowIso,
+        event_type: "watch_flush",
+        index_lag_ms: 300,
+        backpressure_active: true,
+        effective_debounce_ms: 120
+      }
+    ]
+  });
+
+  const { stdout } = await runMetricsCheck(workspaceRoot, [
+    "--max-watch-backpressure-flush-rate=0.6",
+    "--max-watch-effective-debounce-p95-ms=600"
+  ]);
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.evaluation.pass, true);
+
+  await assert.rejects(
+    () => runMetricsCheck(workspaceRoot, ["--max-watch-backpressure-flush-rate=0.4"]),
+    (error) => {
+      const stdoutText = String(error?.stdout || "");
+      const failedPayload = JSON.parse(stdoutText);
+      assert.equal(failedPayload.evaluation.pass, false);
+      assert.match(
+        failedPayload.evaluation.failures.join("\n"),
+        /watch_backpressure_flush_rate=0\.5 exceeds max=0\.4/
+      );
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => runMetricsCheck(workspaceRoot, ["--max-watch-effective-debounce-p95-ms=300"]),
+    (error) => {
+      const stdoutText = String(error?.stdout || "");
+      const failedPayload = JSON.parse(stdoutText);
+      assert.equal(failedPayload.evaluation.pass, false);
+      assert.match(
+        failedPayload.evaluation.failures.join("\n"),
+        /watch_effective_debounce_p95_ms=500 exceeds max=300/
+      );
+      return true;
+    }
+  );
+});
+
 test("metrics-check fails with --runbook-enforce when embedding status is unmapped", async (t) => {
   const workspaceRoot = await createWorkspace("clawty-metrics-check-runbook-");
   t.after(async () => {

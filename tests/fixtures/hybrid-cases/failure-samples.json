@@ -1,0 +1,51 @@
+{
+  "source": {
+    "cases_path": "tests/fixtures/hybrid-cases/expected.json",
+    "presets_path": "tests/fixtures/hybrid-cases/replay-presets.json",
+    "case_count": 3,
+    "preset_count": 4,
+    "query_pattern_filter": [],
+    "intent_filter": []
+  },
+  "presets": [
+    {
+      "name": "baseline_fixture",
+      "failure_count": 0,
+      "failure_samples": []
+    },
+    {
+      "name": "embedding_light",
+      "failure_count": 1,
+      "failure_samples": [
+        {
+          "name": "baseline_without_embedding",
+          "bucket": "intent:baseline",
+          "language": "typescript",
+          "file_type": "source",
+          "intent": "baseline",
+          "query_pattern": "identifier_exact",
+          "query": "hybridBaselineToken",
+          "primary_path": "src/hybrid-baseline.ts",
+          "primary_rank": 1,
+          "expected_embedding_status": "EMBEDDING_DISABLED",
+          "actual_embedding_status": "EMBEDDING_NOT_ATTEMPTED_NO_API_KEY",
+          "expected_degraded": false,
+          "actual_degraded": false,
+          "failure_reasons": [
+            "embedding_status_mismatch"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "freshness_conservative",
+      "failure_count": 0,
+      "failure_samples": []
+    },
+    {
+      "name": "freshness_aggressive",
+      "failure_count": 0,
+      "failure_samples": []
+    }
+  ]
+}

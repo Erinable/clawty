@@ -1,3 +1,5 @@
+import { pickTraceFields } from "./trace-context.js";
+
 async function safeParseJson(response) {
   const text = await response.text();
   try {
@@ -24,10 +26,12 @@ function summarizePayload(payload) {
   };
 }
 
-export async function createResponse({ apiKey, baseUrl, payload, logger = null }) {
+export async function createResponse({ apiKey, baseUrl, payload, logger = null, trace = null }) {
   const startedAt = Date.now();
+  const traceFields = pickTraceFields(trace || {});
   logWith(logger, "debug", "openai.request_start", {
     base_url: baseUrl,
+    ...traceFields,
     ...summarizePayload(payload)
   });
 
@@ -44,6 +48,7 @@ export async function createResponse({ apiKey, baseUrl, payload, logger = null }
   } catch (error) {
     logWith(logger, "error", "openai.network_error", {
       duration_ms: Math.max(0, Date.now() - startedAt),
+      ...traceFields,
       error
     });
     throw new Error(
@@ -56,6 +61,7 @@ export async function createResponse({ apiKey, baseUrl, payload, logger = null }
   if (!response.ok) {
     logWith(logger, "error", "openai.http_error", {
       duration_ms: Math.max(0, Date.now() - startedAt),
+      ...traceFields,
       status: response.status,
       response_body: data
     });
@@ -65,6 +71,7 @@ export async function createResponse({ apiKey, baseUrl, payload, logger = null }
   }
   logWith(logger, "debug", "openai.request_success", {
     duration_ms: Math.max(0, Date.now() - startedAt),
+    ...traceFields,
     status: response.status,
     response_id: typeof data?.id === "string" ? data.id : null
   });

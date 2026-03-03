@@ -1,0 +1,36 @@
+{
+  "presets": [
+    {
+      "name": "baseline_fixture",
+      "description": "Use fixture-provided args without global override.",
+      "args": {}
+    },
+    {
+      "name": "embedding_light",
+      "description": "Enable embedding rerank with moderate weight.",
+      "args": {
+        "enable_embedding": true,
+        "embedding_top_k": 6,
+        "embedding_weight": 0.45
+      }
+    },
+    {
+      "name": "freshness_conservative",
+      "description": "Apply conservative freshness downweight.",
+      "args": {
+        "freshness_weight": 0.08,
+        "freshness_stale_after_ms": 600000,
+        "freshness_vector_stale_penalty": 0.5
+      }
+    },
+    {
+      "name": "freshness_aggressive",
+      "description": "Apply aggressive freshness downweight.",
+      "args": {
+        "freshness_weight": 0.2,
+        "freshness_stale_after_ms": 120000,
+        "freshness_vector_stale_penalty": 0.8
+      }
+    }
+  ]
+}

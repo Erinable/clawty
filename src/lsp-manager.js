@@ -255,12 +255,12 @@ function symbolAtPosition(content, line, column) {
 async function fallbackUsingCodeIndex({
   workspaceRoot,
   mode,
-  path: relativePath,
-  line,
-  column,
-  query,
-  maxResults,
-  reason
+  path: relativePath = "",
+  line = 1,
+  column = 1,
+  query = "",
+  maxResults = 10,
+  reason = "fallback"
 }) {
   let resolvedQuery = typeof query === "string" ? query.trim() : "";
   if (!resolvedQuery && typeof relativePath === "string") {

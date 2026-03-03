@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
+import { createTraceContext } from "./trace-context.js";
 
 const LOGO = "== clawty ==";
 
@@ -226,10 +227,15 @@ function redactConfig(config) {
 
 async function runTask(config, state, task) {
   shouldAttemptLspCleanup = true;
+  const commandTrace = createTraceContext({
+    trace_id: state?.trace_id
+  });
+  state.trace_id = commandTrace.trace_id;
   const logger = createRuntimeLogger(config, {
     component: "cli",
     context: {
-      command: "run"
+      command: "run",
+      trace_id: commandTrace.trace_id
     }
   });
   logger.info("cli.run_start", {
@@ -253,10 +259,16 @@ async function runTask(config, state, task) {
 }
 
 async function runChat(config) {
+  const state = {};
+  const commandTrace = createTraceContext({
+    trace_id: state?.trace_id
+  });
+  state.trace_id = commandTrace.trace_id;
   const logger = createRuntimeLogger(config, {
     component: "cli",
     context: {
-      command: "chat"
+      command: "chat",
+      trace_id: commandTrace.trace_id
     }
   });
   console.log("Clawty chat mode. Type 'exit' or 'quit' to stop.");
@@ -265,7 +277,6 @@ async function runChat(config) {
     input: process.stdin,
     output: process.stdout
   });
-  const state = {};
 
   try {
     while (true) {
@@ -641,41 +652,24 @@ async function handleMonitorCommand(argv) {
 }
 
 async function handleMcpServerCommand(argv) {
-  const { runMcpServer, parseMcpServerArgs, resolveMcpServerRuntimeOptions } = await import(
-    "./mcp-server.js"
-  );
-  const args = parseMcpServerArgs(argv);
-  if (args.help) {
-    printMcpServerHelp();
-    return;
-  }
-
-  const config = loadConfig({ allowMissingApiKey: true });
-  const runtimeOptions = resolveMcpServerRuntimeOptions(args, config);
-  const mcpLogFilePath = path.isAbsolute(runtimeOptions.logPath)
-    ? runtimeOptions.logPath
-    : path.resolve(runtimeOptions.workspaceRoot, runtimeOptions.logPath);
-  const logger = createRuntimeLogger(config, {
-    component: "mcp-server",
-    consoleStream: process.stderr,
-    filePath: mcpLogFilePath,
-    context: {
-      entrypoint: "index"
-    }
-  });
-  await runMcpServer({
-    workspaceRoot: runtimeOptions.workspaceRoot,
-    exposeLowLevel: runtimeOptions.exposeLowLevel,
-    toolsets: runtimeOptions.toolsets,
-    transport: runtimeOptions.transport,
-    host: runtimeOptions.host,
-    port: runtimeOptions.port,
-    toolTimeoutMs: config.toolTimeoutMs,
-    logger,
-    lsp: config.lsp,
-    embedding: config.embedding,
-    metrics: config.metrics,
-    onlineTuner: config.onlineTuner
+  const [
+    { runMcpServer, parseMcpServerArgs, resolveMcpServerRuntimeOptions },
+    { runMcpServerCliWithDeps }
+  ] = await Promise.all([
+    import("./mcp-server.js"),
+    import("./mcp-server-cli.js")
+  ]);
+  await runMcpServerCliWithDeps(argv, {
+    parseMcpServerArgs,
+    resolveMcpServerRuntimeOptions,
+    loadConfig,
+    createRuntimeLogger,
+    runMcpServer,
+    isAbsolutePath: path.isAbsolute,
+    resolvePath: path.resolve,
+    stderr: process.stderr,
+    printHelp: printMcpServerHelp,
+    entrypoint: "index"
   });
 }
 

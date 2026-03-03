@@ -9,6 +9,7 @@ import {
   createDirtyQueueState,
   enqueueDirtyQueue,
   shouldFlushDirtyQueue,
+  resolveWatchBackpressure,
   takeDirtyQueueBatch,
   seedHashCacheFromSnapshot,
   filterChangedPathsByHash,
@@ -55,6 +56,11 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
     "40",
     "--debounce-ms",
     "650",
+    "--backpressure-threshold-ratio",
+    "3",
+    "--backpressure-debounce-ms",
+    "150",
+    "--no-backpressure",
     "--no-hash-skip",
     "--include-vector",
     "true",
@@ -69,12 +75,45 @@ test("parseWatchCliArgs supports scalar and boolean flags", () => {
   assert.equal(parsed.max_files, 100);
   assert.equal(parsed.max_batch_size, 40);
   assert.equal(parsed.debounce_ms, 650);
+  assert.equal(parsed.backpressure_enabled, false);
+  assert.equal(parsed.backpressure_threshold_ratio, 3);
+  assert.equal(parsed.backpressure_debounce_ms, 150);
   assert.equal(parsed.hash_skip_enabled, false);
   assert.equal(parsed.include_vector, true);
   assert.equal(parsed.vector_layer, "base");
   assert.equal(parsed.include_semantic, false);
   assert.equal(parsed.quiet, true);
   assert.equal(parsed.help, true);
+});
+
+test("resolveWatchBackpressure computes pressure threshold and effective debounce", () => {
+  const config = {
+    max_batch_size: 40,
+    debounce_ms: 650,
+    backpressure_enabled: true,
+    backpressure_threshold_ratio: 2,
+    backpressure_debounce_ms: 120
+  };
+
+  const normal = resolveWatchBackpressure(config, 79);
+  assert.equal(normal.active, false);
+  assert.equal(normal.threshold, 80);
+  assert.equal(normal.effective_debounce_ms, 650);
+
+  const pressured = resolveWatchBackpressure(config, 80);
+  assert.equal(pressured.active, true);
+  assert.equal(pressured.threshold, 80);
+  assert.equal(pressured.effective_debounce_ms, 120);
+
+  const disabled = resolveWatchBackpressure(
+    {
+      ...config,
+      backpressure_enabled: false
+    },
+    10_000
+  );
+  assert.equal(disabled.active, false);
+  assert.equal(disabled.effective_debounce_ms, 650);
 });
 
 test("diffTrackedFiles returns sorted changed/deleted path lists", () => {
@@ -120,6 +159,24 @@ test("dirty queue deduplicates paths and flushes by debounce/batch rules", () =>
   assert.ok(batch.index_lag_ms >= 700);
   assert.equal(batch.queue_depth_before, 3);
   assert.equal(batch.queue_depth_after, 0);
+});
+
+test("takeDirtyQueueBatch preserves insertion order without full sort", () => {
+  const queue = createDirtyQueueState();
+  enqueueDirtyQueue(
+    queue,
+    {
+      changed_paths: ["src/z.ts", "src/a.ts", "src/m.ts"],
+      deleted_paths: ["src/d2.ts", "src/d1.ts"]
+    },
+    1000
+  );
+
+  const batch = takeDirtyQueueBatch(queue, 2, 1200);
+  assert.deepEqual(batch.changed_paths, ["src/z.ts", "src/a.ts"]);
+  assert.deepEqual(batch.deleted_paths, ["src/d2.ts", "src/d1.ts"]);
+  assert.equal(batch.queue_depth_before, 5);
+  assert.equal(batch.queue_depth_after, 1);
 });
 
 test("hash skip filters unchanged files after cache seed", async (t) => {

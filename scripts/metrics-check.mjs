@@ -4,6 +4,10 @@ import { buildReport } from "./metrics-report.mjs";
 const DEFAULT_WINDOW_HOURS = 24;
 const DEFAULT_THRESHOLDS = {
   codeIndexLagP95Ms: 2000,
+  watchBackpressureFlushRate: null,
+  watchEffectiveDebounceP95Ms: null,
+  watchDbRetryExhaustedRate: null,
+  watchSlowFlushRate: null,
   staleHitRateAvg: 0.05,
   queryHybridP95Ms: 2000,
   degradeRate: 0.1,
@@ -88,6 +92,42 @@ function parseArgs(argv) {
         "--max-code-index-lag-ms",
         1,
         86_400_000
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-backpressure-flush-rate=")) {
+      options.thresholds.watchBackpressureFlushRate = parsePositiveNumber(
+        arg.slice("--max-watch-backpressure-flush-rate=".length),
+        "--max-watch-backpressure-flush-rate",
+        0,
+        1
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-effective-debounce-p95-ms=")) {
+      options.thresholds.watchEffectiveDebounceP95Ms = parsePositiveNumber(
+        arg.slice("--max-watch-effective-debounce-p95-ms=".length),
+        "--max-watch-effective-debounce-p95-ms",
+        1,
+        86_400_000
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-db-retry-exhausted-rate=")) {
+      options.thresholds.watchDbRetryExhaustedRate = parsePositiveNumber(
+        arg.slice("--max-watch-db-retry-exhausted-rate=".length),
+        "--max-watch-db-retry-exhausted-rate",
+        0,
+        1
+      );
+      continue;
+    }
+    if (arg.startsWith("--max-watch-slow-flush-rate=")) {
+      options.thresholds.watchSlowFlushRate = parsePositiveNumber(
+        arg.slice("--max-watch-slow-flush-rate=".length),
+        "--max-watch-slow-flush-rate",
+        0,
+        1
       );
       continue;
     }
@@ -302,6 +342,34 @@ function evaluateReport(report, options) {
       failures
     ),
     evaluateMaxMetric(
+      "watch_backpressure_flush_rate",
+      report?.kpi?.watch_backpressure_flush_rate,
+      options.thresholds.watchBackpressureFlushRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "watch_effective_debounce_p95_ms",
+      report?.kpi?.watch_effective_debounce_p95_ms,
+      options.thresholds.watchEffectiveDebounceP95Ms,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "watch_db_retry_exhausted_rate",
+      report?.kpi?.watch_db_retry_exhausted_rate,
+      options.thresholds.watchDbRetryExhaustedRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
+      "watch_slow_flush_rate",
+      report?.kpi?.watch_slow_flush_rate,
+      options.thresholds.watchSlowFlushRate,
+      options.allowMissing,
+      failures
+    ),
+    evaluateMaxMetric(
       "query_hybrid_p95_ms",
       report?.kpi?.query_hybrid_p95_ms,
       options.thresholds.queryHybridP95Ms,
@@ -387,7 +455,7 @@ function printTextResult(payload) {
   console.log(`- window: last ${report.window_hours}h`);
   console.log(`- generated_at: ${report.generated_at}`);
   console.log(
-    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}, embedding_timeout_rate<=${thresholds.embeddingTimeoutRate ?? "off"}, embedding_network_rate<=${thresholds.embeddingNetworkRate ?? "off"}, memory_query_p95_ms<=${thresholds.memoryQueryP95Ms ?? "off"}, memory_hit_rate>=${thresholds.minMemoryHitRate ?? "off"}, memory_fallback_rate<=${thresholds.maxMemoryFallbackRate ?? "off"}`
+    `- thresholds: code_index_lag_p95_ms<=${thresholds.codeIndexLagP95Ms}, watch_backpressure_flush_rate<=${thresholds.watchBackpressureFlushRate ?? "off"}, watch_effective_debounce_p95_ms<=${thresholds.watchEffectiveDebounceP95Ms ?? "off"}, stale_hit_rate_avg<=${thresholds.staleHitRateAvg}, query_hybrid_p95_ms<=${thresholds.queryHybridP95Ms}, degrade_rate<=${thresholds.degradeRate}, embedding_timeout_rate<=${thresholds.embeddingTimeoutRate ?? "off"}, embedding_network_rate<=${thresholds.embeddingNetworkRate ?? "off"}, memory_query_p95_ms<=${thresholds.memoryQueryP95Ms ?? "off"}, memory_hit_rate>=${thresholds.minMemoryHitRate ?? "off"}, memory_fallback_rate<=${thresholds.maxMemoryFallbackRate ?? "off"}`
   );
   console.log(
     `- sample_sizes: hybrid_events=${evaluation.sample_sizes.hybrid_events}, watch_flush_events=${evaluation.sample_sizes.watch_flush_events}, memory_events=${evaluation.sample_sizes.memory_events}, embedding_attempt_samples=${evaluation.sample_sizes.embedding_attempt_samples}`
