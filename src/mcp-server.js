@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
+import { createCallLowLevelCodeTool } from "./mcp-low-level-tools.js";
 import {
   callMonitorTool as callMonitorToolModule,
   MONITOR_TOOL_DEFINITIONS,
@@ -493,30 +494,6 @@ function buildToolDefinitions(serverOptions = {}) {
   return exposedFacadeTools;
 }
 
-function splitWorkspaceArg(args, fallbackWorkspace) {
-  const normalizedArgs = isPlainObject(args) ? { ...args } : {};
-  let workspaceRoot = path.resolve(fallbackWorkspace || process.cwd());
-  if (typeof normalizedArgs.workspace === "string" && normalizedArgs.workspace.trim().length > 0) {
-    workspaceRoot = path.resolve(normalizedArgs.workspace.trim());
-  }
-  delete normalizedArgs.workspace;
-  return {
-    workspaceRoot,
-    toolArgs: normalizedArgs
-  };
-}
-
-function createToolContext(workspaceRoot, serverOptions = {}) {
-  return {
-    workspaceRoot,
-    toolTimeoutMs: serverOptions.toolTimeoutMs,
-    lsp: serverOptions.lsp || {},
-    embedding: serverOptions.embedding || {},
-    metrics: serverOptions.metrics || {},
-    onlineTuner: serverOptions.onlineTuner || {}
-  };
-}
-
 function toFiniteInteger(value, fallback, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -578,11 +555,11 @@ function isArrayOfStrings(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-async function callLowLevelCodeTool(name, args, serverOptions = {}) {
-  const { workspaceRoot, toolArgs } = splitWorkspaceArg(args, serverOptions.workspaceRoot);
-  const toolContext = createToolContext(workspaceRoot, serverOptions);
-  return runTool(name, toolArgs, toolContext);
-}
+const callLowLevelCodeTool = createCallLowLevelCodeTool({
+  runTool,
+  resolvePath: path.resolve,
+  isPlainObject
+});
 
 async function runSearchStrategy(strategy, args, serverOptions = {}) {
   if (strategy === "keyword") {
