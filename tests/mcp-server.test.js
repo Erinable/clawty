@@ -15,6 +15,14 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDir, "..");
 const CLI_PATH = path.join(repoRoot, "src", "index.js");
 
+function buildServerChildEnv(extra = {}) {
+  return {
+    ...process.env,
+    CLAWTY_LSP_ENABLED: "false",
+    ...extra
+  };
+}
+
 function createJsonRpcClient(child) {
   let seq = 1;
   const pending = new Map();
@@ -269,7 +277,8 @@ test("mcp-server exposes facade tools by default", async (t) => {
 
   const child = spawn("node", [CLI_PATH, "mcp-server", `--workspace=${workspaceRoot}`], {
     cwd: repoRoot,
-    stdio: ["pipe", "pipe", "pipe"]
+    stdio: ["pipe", "pipe", "pipe"],
+    env: buildServerChildEnv()
   });
 
   t.after(async () => {
@@ -383,7 +392,8 @@ test("mcp-server exposes edit-safe toolset when requested", async (t) => {
     [CLI_PATH, "mcp-server", `--workspace=${workspaceRoot}`, "--toolset", "edit-safe"],
     {
       cwd: repoRoot,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: buildServerChildEnv()
     }
   );
 
@@ -421,7 +431,8 @@ test("mcp-server can expose low-level tools via flag", async (t) => {
     [CLI_PATH, "mcp-server", `--workspace=${workspaceRoot}`, "--expose-low-level"],
     {
       cwd: repoRoot,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: buildServerChildEnv()
     }
   );
 
@@ -469,7 +480,8 @@ test("mcp-server supports HTTP transport with explicit port", async (t) => {
     ],
     {
       cwd: repoRoot,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: buildServerChildEnv()
     }
   );
 
@@ -550,10 +562,15 @@ test("mcp-server can read HTTP host/port from config", async (t) => {
     "utf8"
   );
 
-  const child = spawn("node", [CLI_PATH, "mcp-server"], {
-    cwd: workspaceRoot,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  const child = spawn(
+    "node",
+    [CLI_PATH, "mcp-server"],
+    {
+      cwd: workspaceRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: buildServerChildEnv()
+    }
+  );
 
   t.after(async () => {
     if (child.exitCode === null) {
@@ -602,7 +619,8 @@ test("mcp-server writes logs to dedicated log file", async (t) => {
     [CLI_PATH, "mcp-server", `--workspace=${workspaceRoot}`, "--log-path", logPath],
     {
       cwd: repoRoot,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: buildServerChildEnv()
     }
   );
 

@@ -389,6 +389,13 @@ class LspClient {
 
       child.stdout.on("data", (chunk) => this.onStdout(chunk));
       child.stderr.on("data", (chunk) => this.onStderr(chunk));
+      if (child.stdin) {
+        child.stdin.on("error", (error) => {
+          const message = `lsp stdin error: ${error?.message || String(error)}`;
+          this.lastError = message;
+          this.disposePending(message);
+        });
+      }
       child.on("error", (error) => {
         this.lastError = `spawn error: ${error.message || String(error)}`;
       });
