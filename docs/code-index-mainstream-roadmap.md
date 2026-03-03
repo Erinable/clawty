@@ -13,6 +13,7 @@
 - `src/mcp-server.js` 完成拆分，职责下沉到 runtime/cli/toolset policy/dispatch 等模块，主文件已收敛为装配层。
 - `src/index-watch.js` 完成队列、hash、flush/metrics、snapshot/diff、config、loop、path policy 的模块化拆分。
 - `src/tools.js` 完成工具 schema、安全策略、本地工具 handlers、查询工具 handlers 的模块化拆分，主文件由大而全转为组合入口。
+- 指标命名常量统一抽取到 `src/metrics-event-types.js`，`tools/watch/memory/report` 链路复用统一事件名与指标文件名。
 - 新增契约测试覆盖拆分模块：
   - `tests/mcp-toolset-policy.test.js`
   - `tests/mcp-tool-dispatch.test.js`

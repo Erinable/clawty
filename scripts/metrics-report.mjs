@@ -2,12 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { classifyEmbeddingStatus } from "./hybrid-degrade-runbook.mjs";
+import {
+  HYBRID_QUERY_EVENT_TYPE,
+  HYBRID_QUERY_METRICS_FILE,
+  MEMORY_SEARCH_EVENT_TYPE,
+  MEMORY_SEARCH_METRICS_FILE,
+  METRICS_SUBDIR,
+  WATCH_FLUSH_EVENT_TYPE,
+  WATCH_FLUSH_METRICS_FILE
+} from "../src/metrics-event-types.js";
 
 const DEFAULT_WINDOW_HOURS = 24;
-const METRICS_DIR_RELATIVE = path.join(".clawty", "metrics");
-const DEFAULT_HYBRID_FILE = "hybrid-query.jsonl";
-const DEFAULT_WATCH_FLUSH_FILE = "watch-flush.jsonl";
-const DEFAULT_MEMORY_FILE = "memory.jsonl";
 
 function parseArgs(argv) {
   const options = {
@@ -328,10 +333,10 @@ function printTextReport(report) {
 
 async function buildReport(options) {
   const workspaceRoot = path.resolve(options.workspaceRoot);
-  const metricsDir = path.join(workspaceRoot, METRICS_DIR_RELATIVE);
-  const hybridFilePath = path.join(metricsDir, DEFAULT_HYBRID_FILE);
-  const watchFlushFilePath = path.join(metricsDir, DEFAULT_WATCH_FLUSH_FILE);
-  const memoryFilePath = path.join(metricsDir, DEFAULT_MEMORY_FILE);
+  const metricsDir = path.join(workspaceRoot, METRICS_SUBDIR);
+  const hybridFilePath = path.join(metricsDir, HYBRID_QUERY_METRICS_FILE);
+  const watchFlushFilePath = path.join(metricsDir, WATCH_FLUSH_METRICS_FILE);
+  const memoryFilePath = path.join(metricsDir, MEMORY_SEARCH_METRICS_FILE);
 
   const nowMs = Date.now();
   const windowStartMs = nowMs - options.windowHours * 60 * 60 * 1000;
@@ -343,15 +348,15 @@ async function buildReport(options) {
   ]);
 
   const hybridEvents = filterByWindow(
-    hybridRows.filter((row) => row?.event_type === "hybrid_query"),
+    hybridRows.filter((row) => row?.event_type === HYBRID_QUERY_EVENT_TYPE),
     windowStartMs
   );
   const watchFlushEvents = filterByWindow(
-    watchFlushRows.filter((row) => row?.event_type === "watch_flush"),
+    watchFlushRows.filter((row) => row?.event_type === WATCH_FLUSH_EVENT_TYPE),
     windowStartMs
   );
   const memoryEvents = filterByWindow(
-    memoryRows.filter((row) => row?.event_type === "memory_search"),
+    memoryRows.filter((row) => row?.event_type === MEMORY_SEARCH_EVENT_TYPE),
     windowStartMs
   );
 

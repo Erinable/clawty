@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  METRICS_SUBDIR,
+  WATCH_FLUSH_METRICS_FILE,
+  WATCH_RUN_METRICS_FILE
+} from "./metrics-event-types.js";
 
-export const METRICS_SUBDIR = path.join(".clawty", "metrics");
-export const WATCH_FLUSH_METRICS_FILE = "watch-flush.jsonl";
-export const WATCH_RUN_METRICS_FILE = "watch-run.jsonl";
+export { METRICS_SUBDIR, WATCH_FLUSH_METRICS_FILE, WATCH_RUN_METRICS_FILE };
 
 export function roundWatchMetric(value) {
   const numeric = Number(value || 0);

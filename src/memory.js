@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import {
+  MEMORY_SEARCH_EVENT_TYPE,
+  MEMORY_SEARCH_METRICS_FILE,
+  METRICS_SUBDIR
+} from "./metrics-event-types.js";
 
 const DEFAULT_DB_BASENAME = "memory.db";
 const DEFAULT_SCOPE = "project+global";
@@ -13,8 +18,6 @@ const DEFAULT_MAX_CHARS = 2400;
 const MAX_QUERY_TOKENS = 12;
 const DEFAULT_MIN_LESSON_CHARS = 80;
 const DEFAULT_QUARANTINE_THRESHOLD = 3;
-const METRICS_SUBDIR = path.join(".clawty", "metrics");
-const MEMORY_METRICS_FILE = "memory.jsonl";
 const DEFAULT_MEMORY_METRICS_QUERY_PREVIEW_CHARS = 120;
 const DEFAULT_MEMORY_RANKING = Object.freeze({
   bm25Weight: 0.34,
@@ -358,10 +361,10 @@ async function appendMemoryMetricEvent(workspaceRoot, event, options = {}) {
     const root = normalizeWorkspaceRoot(workspaceRoot);
     const metricsDir = path.join(root, METRICS_SUBDIR);
     await fs.mkdir(metricsDir, { recursive: true });
-    const outputPath = path.join(metricsDir, MEMORY_METRICS_FILE);
+    const outputPath = path.join(metricsDir, MEMORY_SEARCH_METRICS_FILE);
     const payload = {
       timestamp: new Date().toISOString(),
-      event_type: "memory_search",
+      event_type: MEMORY_SEARCH_EVENT_TYPE,
       ...event
     };
     await fs.appendFile(outputPath, `${JSON.stringify(payload)}\n`, "utf8");

@@ -49,6 +49,10 @@ import {
 } from "./tool-guards.js";
 import { createLocalToolHandlers } from "./tool-local-handlers.js";
 import { createQueryToolHandlers } from "./tool-query-handlers.js";
+import {
+  HYBRID_QUERY_METRICS_FILE,
+  METRICS_SUBDIR
+} from "./metrics-event-types.js";
 
 export { TOOL_DEFINITIONS };
 export { resolveRunShellExecutable };
@@ -56,8 +60,6 @@ export { resolveRunShellExecutable };
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_TOOL_TEXT = DEFAULT_MAX_TOOL_TEXT;
-const METRICS_SUBDIR = path.join(".clawty", "metrics");
-const HYBRID_QUERY_METRICS_FILE = "hybrid-query.jsonl";
 const LOCAL_TOOL_HANDLERS = createLocalToolHandlers({
   path,
   fs,
