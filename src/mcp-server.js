@@ -9,6 +9,7 @@ import {
   parseMcpServerArgsWithDeps,
   resolveMcpServerRuntimeOptionsWithDeps
 } from "./mcp-server-options.js";
+import { buildRpcError, handleRpcRequestWithDeps } from "./mcp-server-rpc.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
@@ -1310,18 +1311,6 @@ async function callTool(name, args, serverOptions = {}) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
-function buildRpcError(id, code, message, data = null) {
-  return {
-    jsonrpc: "2.0",
-    id: id ?? null,
-    error: {
-      code,
-      message,
-      ...(data ? { data } : {})
-    }
-  };
-}
-
 function normalizeTransport(value, fallback = "stdio") {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "stdio" || normalized === "http") {
@@ -1389,121 +1378,22 @@ function normalizeServerOptions(options = {}) {
 }
 
 async function handleRpcRequest(request, serverOptions, tools, logger) {
-  const id = request?.id;
-  const method = request?.method;
-  const params = request?.params || {};
-
-  if (!method || typeof method !== "string") {
-    logWith(logger, "warn", "mcp.invalid_request", { id });
-    return {
-      response: buildRpcError(id, -32600, "Invalid Request"),
-      shouldExit: false
-    };
-  }
-
-  if (method === "notifications/initialized") {
-    return { response: null, shouldExit: false };
-  }
-
-  if (method === "shutdown") {
-    return {
-      response: {
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {}
-      },
-      shouldExit: false
-    };
-  }
-
-  if (method === "exit") {
-    logWith(logger, "info", "mcp.exit");
-    return { response: null, shouldExit: true };
-  }
-
-  if (method === "initialize") {
-    logWith(logger, "info", "mcp.initialize", { id });
-    return {
-      response: {
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: MCP_SERVER_NAME,
-            version: MCP_SERVER_VERSION
-          }
-        }
-      },
-      shouldExit: false
-    };
-  }
-
-  if (method === "tools/list") {
-    logWith(logger, "debug", "mcp.tools_list", { id, tool_count: tools.length });
-    return {
-      response: {
-        jsonrpc: "2.0",
-        id: id ?? null,
-        result: {
-          tools
-        }
-      },
-      shouldExit: false
-    };
-  }
-
-  if (method === "tools/call") {
-    try {
-      const toolName = typeof params?.name === "string" ? params.name : "";
-      const toolArgs = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
-      const toolStartedAt = Date.now();
-      const result = await callTool(toolName, toolArgs, serverOptions);
-      logWith(logger, "info", "mcp.tool_call", {
-        id,
-        tool_name: toolName,
-        ok: result?.ok !== false,
-        duration_ms: Math.max(0, Date.now() - toolStartedAt)
-      });
-      return {
-        response: {
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(result, null, 2)
-              }
-            ],
-            structuredContent: result
-          }
-        },
-        shouldExit: false
-      };
-    } catch (error) {
-      logWith(logger, "error", "mcp.tool_call_failed", {
-        id,
-        tool_name: params?.name || null,
-        error
-      });
-      return {
-        response: buildRpcError(id, -32603, error?.message || "Internal error", {
-          tool: params?.name || null
-        }),
-        shouldExit: false
-      };
+  return handleRpcRequestWithDeps(
+    request,
+    {
+      serverOptions,
+      tools,
+      logger
+    },
+    {
+      callTool,
+      logWith,
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      serverName: MCP_SERVER_NAME,
+      serverVersion: MCP_SERVER_VERSION,
+      buildRpcError
     }
-  }
-
-  logWith(logger, "warn", "mcp.method_not_found", { id, method });
-  return {
-    response: buildRpcError(id, -32601, `Method not found: ${method}`),
-    shouldExit: false
-  };
+  );
 }
 
 async function runStdioTransport(serverOptions, tools, logger) {
