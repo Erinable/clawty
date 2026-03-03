@@ -2546,7 +2546,16 @@ async function queryHybridIndexTool(args, context) {
         {
           embedding: context.embedding || {}
         }
-      )
+      ).catch((error) => ({
+        ok: false,
+        skipped: false,
+        error: error?.message || String(error),
+        error_code:
+          /embedding api key is missing/i.test(String(error?.message || "")) ||
+          /EMBEDDING_API_KEY_MISSING/i.test(String(error?.code || ""))
+            ? "EMBEDDING_API_KEY_MISSING"
+            : "VECTOR_QUERY_FAILED"
+      }))
     : Promise.resolve({
         ok: false,
         skipped: true,
