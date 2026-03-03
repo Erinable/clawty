@@ -5,6 +5,7 @@ import {
   buildHybridResponseSources
 } from "./hybrid-source-status.js";
 import { HYBRID_QUERY_EVENT_TYPE } from "./metrics-event-types.js";
+import { pickTraceFields } from "./trace-context.js";
 
 function buildQueryPreview(query, maxChars) {
   const source = typeof query === "string" ? query.trim() : "";
@@ -47,6 +48,7 @@ export function buildHybridDegradationSummary(embeddingSource, freshnessSource) 
 }
 
 export function buildHybridMetricEvent({
+  trace,
   query,
   queryTotalMs,
   topK,
@@ -69,6 +71,7 @@ export function buildHybridMetricEvent({
   return {
     timestamp: new Date().toISOString(),
     event_type: HYBRID_QUERY_EVENT_TYPE,
+    ...pickTraceFields(trace || {}),
     query_preview: buildQueryPreview(query, queryPreviewChars),
     query_chars: query.length,
     query_total_ms: queryTotalMs,
@@ -139,6 +142,7 @@ export async function appendHybridQueryMetricEvent({
 }
 
 export function buildHybridQueryResponse({
+  trace,
   query,
   queryTotalMs,
   effectiveArgs,
@@ -159,6 +163,7 @@ export function buildHybridQueryResponse({
   languageDistribution,
   seeds
 }) {
+  const traceFields = pickTraceFields(trace || {});
   return {
     ok: true,
     provider: "hybrid",
@@ -215,6 +220,11 @@ export function buildHybridQueryResponse({
     }),
     degradation,
     observability: {
+      trace: {
+        trace_id: traceFields.trace_id || null,
+        turn_id: traceFields.turn_id || null,
+        request_id: traceFields.request_id || null
+      },
       metrics_logged: Boolean(metricsWrite.logged),
       metrics_reason: metricsWrite.reason || null,
       metrics_error: metricsWrite.error || null,

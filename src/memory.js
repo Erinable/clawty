@@ -8,6 +8,7 @@ import {
   MEMORY_SEARCH_METRICS_FILE,
   METRICS_SUBDIR
 } from "./metrics-event-types.js";
+import { pickTraceFields } from "./trace-context.js";
 
 const DEFAULT_DB_BASENAME = "memory.db";
 const DEFAULT_SCOPE = "project+global";
@@ -362,9 +363,11 @@ async function appendMemoryMetricEvent(workspaceRoot, event, options = {}) {
     const metricsDir = path.join(root, METRICS_SUBDIR);
     await fs.mkdir(metricsDir, { recursive: true });
     const outputPath = path.join(metricsDir, MEMORY_SEARCH_METRICS_FILE);
+    const traceFields = pickTraceFields(options.trace || {});
     const payload = {
       timestamp: new Date().toISOString(),
       event_type: MEMORY_SEARCH_EVENT_TYPE,
+      ...traceFields,
       ...event
     };
     await fs.appendFile(outputPath, `${JSON.stringify(payload)}\n`, "utf8");

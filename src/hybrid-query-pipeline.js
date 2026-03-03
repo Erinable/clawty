@@ -211,6 +211,7 @@ export async function runHybridQueryPipeline({
   }
   const metricsConfig = resolveMetricsConfig(context);
   const metricsEvent = buildHybridMetricEvent({
+    trace: context?.trace,
     query,
     queryTotalMs,
     topK,
@@ -248,6 +249,7 @@ export async function runHybridQueryPipeline({
   };
 
   return buildHybridQueryResponse({
+    trace: context?.trace,
     query,
     queryTotalMs,
     effectiveArgs,

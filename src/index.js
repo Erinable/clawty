@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
+import { createTraceContext } from "./trace-context.js";
 
 const LOGO = "== clawty ==";
 
@@ -226,10 +227,15 @@ function redactConfig(config) {
 
 async function runTask(config, state, task) {
   shouldAttemptLspCleanup = true;
+  const commandTrace = createTraceContext({
+    trace_id: state?.trace_id
+  });
+  state.trace_id = commandTrace.trace_id;
   const logger = createRuntimeLogger(config, {
     component: "cli",
     context: {
-      command: "run"
+      command: "run",
+      trace_id: commandTrace.trace_id
     }
   });
   logger.info("cli.run_start", {
@@ -253,10 +259,16 @@ async function runTask(config, state, task) {
 }
 
 async function runChat(config) {
+  const state = {};
+  const commandTrace = createTraceContext({
+    trace_id: state?.trace_id
+  });
+  state.trace_id = commandTrace.trace_id;
   const logger = createRuntimeLogger(config, {
     component: "cli",
     context: {
-      command: "chat"
+      command: "chat",
+      trace_id: commandTrace.trace_id
     }
   });
   console.log("Clawty chat mode. Type 'exit' or 'quit' to stop.");
@@ -265,7 +277,6 @@ async function runChat(config) {
     input: process.stdin,
     output: process.stdout
   });
-  const state = {};
 
   try {
     while (true) {

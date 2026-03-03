@@ -4,6 +4,11 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import {
+  createRequestTraceContext,
+  createTurnTraceContext,
+  pickTraceFields
+} from "./trace-context.js";
+import {
   loadMemoryContext,
   formatMemoryContextForPrompt,
   recordEpisode,
@@ -485,7 +490,8 @@ function parseArguments(rawArgs) {
   return {};
 }
 
-async function callModel(config, state, input, logger = null) {
+async function callModel(config, state, input, logger = null, traceContext = {}) {
+  const requestTrace = createRequestTraceContext(traceContext);
   const payload = {
     model: config.model,
     instructions: SYSTEM_PROMPT,
@@ -498,12 +504,17 @@ async function callModel(config, state, input, logger = null) {
     payload.previous_response_id = state.previousResponseId;
   }
 
-  return createResponse({
+  const response = await createResponse({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     payload,
-    logger
+    logger,
+    trace: requestTrace
   });
+  return {
+    response,
+    requestTrace
+  };
 }
 
 export async function runAgentTurn({ config, state, userInput, onText, onTool, logger = null }) {
@@ -513,6 +524,11 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
 
   const currentTurn = clampInt(state.turn_no, 0, 0, 1_000_000) + 1;
   state.turn_no = currentTurn;
+  const turnTrace = createTurnTraceContext({
+    trace_id: state.trace_id
+  });
+  state.trace_id = turnTrace.trace_id;
+  state.turn_id = turnTrace.turn_id;
   if (!state.session_id) {
     state.session_id = randomUUID();
   }
@@ -521,7 +537,10 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
         component: "agent",
         context: {
           session_id: state.session_id,
-          turn_no: currentTurn
+          turn_no: currentTurn,
+          ...pickTraceFields(turnTrace, {
+            includeRequest: false
+          })
         }
       })
     : logger;
@@ -566,7 +585,10 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
           maxItems: config?.memory?.maxInjectedItems,
           maxChars: config?.memory?.maxInjectedChars,
           ranking: config?.memory?.ranking,
-          metrics: config?.metrics
+          metrics: config?.metrics,
+          trace: pickTraceFields(turnTrace, {
+            includeRequest: false
+          })
         });
         state.memory_context = memoryContext;
         const memoryPrompt = formatMemoryContextForPrompt(memoryContext, {
@@ -588,12 +610,15 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
   }
 
   try {
-    let response = await callModel(
+    let modelCall = await callModel(
       config,
       state,
       initialInput,
-      turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger
+      turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger,
+      turnTrace
     );
+    let response = modelCall.response;
+    let requestTrace = modelCall.requestTrace;
 
     for (let i = 0; i < config.maxToolIterations; i += 1) {
       const text = extractText(response);
@@ -606,6 +631,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
       logWith(turnLogger, "debug", "agent.model_round", {
         iteration: i + 1,
         response_id: response?.id || null,
+        ...pickTraceFields(requestTrace),
         tool_calls: calls.length,
         text_chars: text ? text.length : 0
       });
@@ -641,7 +667,12 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
             metrics: config.metrics,
             onlineTuner: config.onlineTuner,
             memory: config.memory,
-            sources: config.sources
+            sources: config.sources,
+            trace: {
+              ...pickTraceFields(requestTrace),
+              tool_call_id: call.call_id || null,
+              tool_name: call.name
+            }
           });
         } catch (error) {
           result = {
@@ -651,6 +682,7 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
         }
         logWith(turnLogger, result.ok === false ? "warn" : "info", "agent.tool_call", {
           tool_name: call.name,
+          ...pickTraceFields(requestTrace),
           ok: result.ok !== false,
           duration_ms: Math.max(0, Date.now() - toolStartedAt),
           error: result.ok === false ? result.error : null
@@ -669,12 +701,15 @@ export async function runAgentTurn({ config, state, userInput, onText, onTool, l
       }
 
       state.previousResponseId = response.id;
-      response = await callModel(
+      modelCall = await callModel(
         config,
         state,
         outputs,
-        turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger
+        turnLogger?.child ? turnLogger.child({ component: "openai" }) : turnLogger,
+        turnTrace
       );
+      response = modelCall.response;
+      requestTrace = modelCall.requestTrace;
     }
 
     throw new Error(
