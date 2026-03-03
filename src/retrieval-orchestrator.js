@@ -8,6 +8,7 @@ import {
   mapVectorResultToHybridSeed,
   rankHybridCandidates
 } from "./hybrid-ranking.js";
+import { mapSyntaxSeedToSemanticSeed } from "./semantic-fallback.js";
 
 function classifyVectorQueryFailure(error) {
   const message = String(error?.message || "");
@@ -95,8 +96,7 @@ export function collectAndRankHybridCandidates({
   edgeType,
   query,
   pathPrefix,
-  explain,
-  mapSyntaxSeedToSemanticSeed
+  explain
 }) {
   const scannedCandidates = [];
   const deduped = new Map();

@@ -24,7 +24,6 @@ import {
   getSyntaxIndexStats
 } from "./syntax-index.js";
 import {
-  mapSyntaxSeedToSemanticSeed,
   querySemanticGraphWithFallback,
   summarizeFallbackSeedLanguages
 } from "./semantic-fallback.js";
@@ -1459,8 +1458,7 @@ async function queryHybridIndexTool(args, context) {
     edgeType: effectiveArgs?.edge_type,
     query,
     pathPrefix: effectiveArgs?.path_prefix,
-    explain: effectiveArgs?.explain,
-    mapSyntaxSeedToSemanticSeed
+    explain: effectiveArgs?.explain
   });
   const embeddingRerank = await rerankHybridCandidatesWithEmbedding({
     ranked,
