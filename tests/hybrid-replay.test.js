@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   aggregateHybridReplayByBucket,
   aggregateHybridReplayMetrics,
+  extractHybridReplayFailures,
   mergeHybridReplayArgs,
   scoreHybridReplayPreset,
   sortHybridReplaySummaries,
@@ -170,4 +171,44 @@ test("sortHybridReplaySummaries ranks by score then quality ties", () => {
 
   assert.deepEqual(sorted.map((item) => item.name), ["preset_c", "preset_a", "preset_b"]);
   assert.ok(scoreHybridReplayPreset(sorted[0].metrics) > 0);
+});
+
+test("extractHybridReplayFailures returns failed rows with reason tags", () => {
+  const failures = extractHybridReplayFailures([
+    {
+      name: "ok_case",
+      success: true,
+      query_ok: true,
+      top1: true,
+      embedding_status_match: true,
+      degraded_match: true
+    },
+    {
+      name: "failed_case",
+      bucket: "intent:embedding_rerank",
+      language: "typescript",
+      file_type: "test",
+      intent: "rerank",
+      query_pattern: "cross_file_semantic",
+      query: "hybridEmbedToken",
+      success: false,
+      query_ok: true,
+      top1: false,
+      primary_rank: 2,
+      embedding_status_match: false,
+      degraded_match: true,
+      expected_embedding_status: "EMBEDDING_OK",
+      actual_embedding_status: "EMBEDDING_NOT_ATTEMPTED_NO_API_KEY",
+      expected_degraded: false,
+      actual_degraded: false
+    }
+  ]);
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].name, "failed_case");
+  assert.equal(failures[0].primary_rank, 2);
+  assert.deepEqual(failures[0].failure_reasons, [
+    "primary_not_top1",
+    "embedding_status_mismatch"
+  ]);
 });

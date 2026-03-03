@@ -225,3 +225,56 @@ export function sortHybridReplaySummaries(summaries) {
   });
   return items;
 }
+
+function buildHybridReplayFailureReasons(taskRow) {
+  const reasons = [];
+  if (!taskRow?.query_ok) {
+    reasons.push("query_failed");
+  }
+  if (!taskRow?.top1) {
+    reasons.push("primary_not_top1");
+  }
+  if (!taskRow?.embedding_status_match) {
+    reasons.push("embedding_status_mismatch");
+  }
+  if (!taskRow?.degraded_match) {
+    reasons.push("degraded_flag_mismatch");
+  }
+  return reasons;
+}
+
+export function extractHybridReplayFailures(taskResults) {
+  const tasks = Array.isArray(taskResults) ? taskResults : [];
+  return tasks
+    .filter((item) => !item?.success)
+    .map((item) => {
+      const reasons = buildHybridReplayFailureReasons(item);
+      return {
+        name: item?.name || "unknown_case",
+        bucket: item?.bucket || "default",
+        language: item?.language || "unknown",
+        file_type: item?.file_type || "unknown",
+        intent: item?.intent || "unknown",
+        query_pattern: item?.query_pattern || "unknown",
+        query: item?.query || "",
+        primary_path: item?.primary_path || null,
+        primary_rank: item?.primary_rank ?? null,
+        expected_embedding_status: item?.expected_embedding_status ?? null,
+        actual_embedding_status: item?.actual_embedding_status ?? null,
+        expected_degraded: item?.expected_degraded ?? null,
+        actual_degraded: item?.actual_degraded ?? null,
+        failure_reasons: reasons
+      };
+    })
+    .sort((a, b) => {
+      if (b.failure_reasons.length !== a.failure_reasons.length) {
+        return b.failure_reasons.length - a.failure_reasons.length;
+      }
+      const rankA = Number.isFinite(Number(a.primary_rank)) ? Number(a.primary_rank) : Number.MAX_SAFE_INTEGER;
+      const rankB = Number.isFinite(Number(b.primary_rank)) ? Number(b.primary_rank) : Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+}

@@ -7,6 +7,7 @@ import { EmbeddingError } from "../../src/embedding-client.js";
 import {
   aggregateHybridReplayByBucket,
   aggregateHybridReplayMetrics,
+  extractHybridReplayFailures,
   mergeHybridReplayArgs,
   scoreHybridReplayPreset,
   sortHybridReplaySummaries,
@@ -21,6 +22,10 @@ const DEFAULT_PRESETS_PATH = path.resolve(
 );
 const DEFAULT_BASELINE_PATH = path.resolve(process.cwd(), "tests/bench/hybrid-replay.baseline.json");
 const INPUT_ROOT = path.resolve(process.cwd(), "tests/fixtures/hybrid-cases/input");
+const DEFAULT_FAILURES_OUTPUT_PATH = path.resolve(
+  process.cwd(),
+  "tests/fixtures/hybrid-cases/failure-samples.json"
+);
 
 function parseArgs(argv) {
   const options = {
@@ -33,7 +38,9 @@ function parseArgs(argv) {
     json: false,
     presetFilter: null,
     queryPatternFilter: null,
-    intentFilter: null
+    intentFilter: null,
+    writeFailures: false,
+    failuresOutputPath: DEFAULT_FAILURES_OUTPUT_PATH
   };
 
   for (const arg of argv) {
@@ -59,6 +66,13 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--baseline=")) {
       options.baselinePath = path.resolve(process.cwd(), arg.slice("--baseline=".length));
+      continue;
+    }
+    if (arg.startsWith("--failures-output=")) {
+      options.failuresOutputPath = path.resolve(
+        process.cwd(),
+        arg.slice("--failures-output=".length)
+      );
       continue;
     }
     if (arg.startsWith("--preset=")) {
@@ -91,6 +105,10 @@ function parseArgs(argv) {
         throw new Error(`Invalid --threshold value: ${arg}`);
       }
       options.thresholdPercent = value;
+      continue;
+    }
+    if (arg === "--write-failures") {
+      options.writeFailures = true;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
@@ -289,6 +307,7 @@ async function runPresetReplay(workspaceRoot, cases, preset) {
     score: scoreHybridReplayPreset(metrics),
     metrics,
     bucket_metrics: aggregateHybridReplayByBucket(taskRows),
+    failure_samples: extractHybridReplayFailures(taskRows),
     tasks: taskRows
   };
 }
@@ -399,6 +418,30 @@ async function writeBaseline(filePath, benchmark, thresholdPercent) {
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
+async function writeFailureSamples(filePath, benchmark) {
+  const payload = {
+    source: {
+      cases_path: benchmark?.dataset?.cases_path || null,
+      presets_path: benchmark?.dataset?.presets_path || null,
+      case_count: Number(benchmark?.dataset?.case_count || 0),
+      preset_count: Number(benchmark?.dataset?.preset_count || 0),
+      query_pattern_filter: Array.isArray(benchmark?.dataset?.query_pattern_filter)
+        ? benchmark.dataset.query_pattern_filter
+        : [],
+      intent_filter: Array.isArray(benchmark?.dataset?.intent_filter)
+        ? benchmark.dataset.intent_filter
+        : []
+    },
+    presets: (Array.isArray(benchmark?.presets) ? benchmark.presets : []).map((preset) => ({
+      name: preset?.name || "unknown_preset",
+      failure_count: Array.isArray(preset?.failure_samples) ? preset.failure_samples.length : 0,
+      failure_samples: Array.isArray(preset?.failure_samples) ? preset.failure_samples : []
+    }))
+  };
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
 async function readBaseline(filePath) {
   const raw = await fs.readFile(filePath, "utf8");
   return JSON.parse(raw);
@@ -482,6 +525,13 @@ async function main() {
   if (options.writeBaseline) {
     await writeBaseline(options.baselinePath, benchmark, options.thresholdPercent);
     console.log(`Wrote replay baseline: ${path.relative(process.cwd(), options.baselinePath)}`);
+  }
+
+  if (options.writeFailures) {
+    await writeFailureSamples(options.failuresOutputPath, benchmark);
+    console.log(
+      `Wrote replay failure samples: ${path.relative(process.cwd(), options.failuresOutputPath)}`
+    );
   }
 
   if (options.checkBaseline) {

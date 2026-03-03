@@ -25,6 +25,8 @@ node tests/bench/hybrid-replay.bench.js --json
 node tests/bench/hybrid-replay.bench.js --preset=baseline_fixture,freshness_aggressive
 node tests/bench/hybrid-replay.bench.js --query-pattern=cross_file_semantic
 node tests/bench/hybrid-replay.bench.js --intent=rerank,degrade_timeout
+node tests/bench/hybrid-replay.bench.js --write-failures
+node tests/bench/hybrid-replay.bench.js --write-failures --failures-output=/tmp/hybrid-failures.json
 node tests/bench/hybrid-replay.bench.js --cases=tests/fixtures/hybrid-cases/expected.json
 node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/replay-presets.json
 ```
@@ -52,3 +54,16 @@ node tests/bench/hybrid-replay.bench.js --presets=tests/fixtures/hybrid-cases/re
 - `mean_reciprocal_rank`
 
 若任一指标回退超过阈值，脚本返回非 0 退出码。
+
+## 失败样本导出
+
+`--write-failures` 会导出每个 preset 的失败样本：
+
+- 默认输出：`tests/fixtures/hybrid-cases/failure-samples.json`
+- 可通过 `--failures-output=<path>` 覆盖输出路径
+
+失败样本会包含：
+
+- case 基本信息（`name/language/file_type/intent/query_pattern/query`）
+- 期望与实际（`primary_rank`、embedding status、degraded flag）
+- `failure_reasons` 标签（如 `primary_not_top1`、`embedding_status_mismatch`）
