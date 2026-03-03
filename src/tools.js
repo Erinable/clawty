@@ -2947,7 +2947,7 @@ async function queryHybridIndexTool(args, context) {
   };
 }
 
-async function getSemanticGraphStatsTool(context) {
+async function getSemanticGraphStatsTool(args, context) {
   return getSemanticGraphStats(context.workspaceRoot);
 }
 
@@ -2985,11 +2985,11 @@ async function queryVectorIndexTool(args, context) {
   });
 }
 
-async function getVectorIndexStatsTool(context) {
+async function getVectorIndexStatsTool(args, context) {
   return getVectorIndexStats(context.workspaceRoot);
 }
 
-async function mergeVectorDeltaTool(context) {
+async function mergeVectorDeltaTool(args, context) {
   return mergeVectorDelta(context.workspaceRoot);
 }
 
@@ -3009,87 +3009,40 @@ async function lspHealthTool(args, context) {
   return lspHealth(context.workspaceRoot, args, context.lsp || {});
 }
 
+const TOOL_HANDLERS = {
+  read_file: readFileTool,
+  write_file: writeFileTool,
+  run_shell: runShellTool,
+  apply_patch: applyPatchTool,
+  build_code_index: buildCodeIndexTool,
+  query_code_index: queryCodeIndexTool,
+  refresh_code_index: refreshCodeIndexTool,
+  get_index_stats: getIndexStatsTool,
+  build_semantic_graph: buildSemanticGraphTool,
+  refresh_semantic_graph: refreshSemanticGraphTool,
+  import_precise_index: importPreciseIndexTool,
+  query_semantic_graph: querySemanticGraphTool,
+  query_hybrid_index: queryHybridIndexTool,
+  get_semantic_graph_stats: getSemanticGraphStatsTool,
+  build_syntax_index: buildSyntaxIndexTool,
+  refresh_syntax_index: refreshSyntaxIndexTool,
+  query_syntax_index: querySyntaxIndexTool,
+  get_syntax_index_stats: getSyntaxIndexStatsTool,
+  build_vector_index: buildVectorIndexTool,
+  refresh_vector_index: refreshVectorIndexTool,
+  query_vector_index: queryVectorIndexTool,
+  get_vector_index_stats: getVectorIndexStatsTool,
+  merge_vector_delta: mergeVectorDeltaTool,
+  lsp_definition: lspDefinitionTool,
+  lsp_references: lspReferencesTool,
+  lsp_workspace_symbols: lspWorkspaceSymbolsTool,
+  lsp_health: lspHealthTool
+};
+
 export async function runTool(name, args, context) {
-  if (name === "read_file") {
-    return readFileTool(args, context);
-  }
-  if (name === "write_file") {
-    return writeFileTool(args, context);
-  }
-  if (name === "run_shell") {
-    return runShellTool(args, context);
-  }
-  if (name === "apply_patch") {
-    return applyPatchTool(args, context);
-  }
-  if (name === "build_code_index") {
-    return buildCodeIndexTool(args, context);
-  }
-  if (name === "query_code_index") {
-    return queryCodeIndexTool(args, context);
-  }
-  if (name === "refresh_code_index") {
-    return refreshCodeIndexTool(args, context);
-  }
-  if (name === "get_index_stats") {
-    return getIndexStatsTool(args, context);
-  }
-  if (name === "build_semantic_graph") {
-    return buildSemanticGraphTool(args, context);
-  }
-  if (name === "refresh_semantic_graph") {
-    return refreshSemanticGraphTool(args, context);
-  }
-  if (name === "import_precise_index") {
-    return importPreciseIndexTool(args, context);
-  }
-  if (name === "query_semantic_graph") {
-    return querySemanticGraphTool(args, context);
-  }
-  if (name === "query_hybrid_index") {
-    return queryHybridIndexTool(args, context);
-  }
-  if (name === "get_semantic_graph_stats") {
-    return getSemanticGraphStatsTool(context);
-  }
-  if (name === "build_syntax_index") {
-    return buildSyntaxIndexTool(args, context);
-  }
-  if (name === "refresh_syntax_index") {
-    return refreshSyntaxIndexTool(args, context);
-  }
-  if (name === "query_syntax_index") {
-    return querySyntaxIndexTool(args, context);
-  }
-  if (name === "get_syntax_index_stats") {
-    return getSyntaxIndexStatsTool(args, context);
-  }
-  if (name === "build_vector_index") {
-    return buildVectorIndexTool(args, context);
-  }
-  if (name === "refresh_vector_index") {
-    return refreshVectorIndexTool(args, context);
-  }
-  if (name === "query_vector_index") {
-    return queryVectorIndexTool(args, context);
-  }
-  if (name === "get_vector_index_stats") {
-    return getVectorIndexStatsTool(context);
-  }
-  if (name === "merge_vector_delta") {
-    return mergeVectorDeltaTool(context);
-  }
-  if (name === "lsp_definition") {
-    return lspDefinitionTool(args, context);
-  }
-  if (name === "lsp_references") {
-    return lspReferencesTool(args, context);
-  }
-  if (name === "lsp_workspace_symbols") {
-    return lspWorkspaceSymbolsTool(args, context);
-  }
-  if (name === "lsp_health") {
-    return lspHealthTool(args, context);
+  const handler = TOOL_HANDLERS[name];
+  if (typeof handler === "function") {
+    return handler(args, context);
   }
   throw new Error(`Unknown tool: ${name}`);
 }
