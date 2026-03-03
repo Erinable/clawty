@@ -13,30 +13,52 @@ const CLI_PATH = path.join(repoRoot, "src", "index.js");
 function createJsonRpcClient(child) {
   let seq = 1;
   const pending = new Map();
-  let buffer = "";
+  let buffer = Buffer.alloc(0);
 
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk;
-    let index = buffer.indexOf("\n");
-    while (index >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line) {
-        let payload = null;
-        try {
-          payload = JSON.parse(line);
-        } catch {
-          payload = null;
-        }
-        if (payload && payload.id !== undefined && pending.has(payload.id)) {
-          const resolver = pending.get(payload.id);
-          pending.delete(payload.id);
-          resolver(payload);
-        }
+  function parseFrames() {
+    while (true) {
+      const headerEnd = buffer.indexOf("\r\n\r\n");
+      if (headerEnd < 0) {
+        return;
       }
-      index = buffer.indexOf("\n");
+      const headerBlock = buffer.slice(0, headerEnd).toString("utf8");
+      const lengthMatch = headerBlock.match(/content-length:\s*(\d+)/i);
+      if (!lengthMatch) {
+        buffer = buffer.slice(headerEnd + 4);
+        continue;
+      }
+      const contentLength = Number(lengthMatch[1]);
+      const bodyStart = headerEnd + 4;
+      const bodyEnd = bodyStart + contentLength;
+      if (buffer.length < bodyEnd) {
+        return;
+      }
+      const payloadText = buffer.slice(bodyStart, bodyEnd).toString("utf8");
+      buffer = buffer.slice(bodyEnd);
+      let payload = null;
+      try {
+        payload = JSON.parse(payloadText);
+      } catch {
+        payload = null;
+      }
+      if (payload && payload.id !== undefined && pending.has(payload.id)) {
+        const resolver = pending.get(payload.id);
+        pending.delete(payload.id);
+        resolver(payload);
+      }
     }
+  }
+
+  function writeJsonRpc(payload) {
+    const body = JSON.stringify(payload);
+    const frame = `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
+    child.stdin.write(frame);
+  }
+
+  child.stdout.on("data", (chunk) => {
+    const normalized = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    buffer = Buffer.concat([buffer, normalized]);
+    parseFrames();
   });
 
   function call(method, params = {}) {
@@ -47,7 +69,7 @@ function createJsonRpcClient(child) {
       method,
       params
     };
-    child.stdin.write(`${JSON.stringify(request)}\n`);
+    writeJsonRpc(request);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         pending.delete(id);
@@ -61,9 +83,7 @@ function createJsonRpcClient(child) {
   }
 
   function notify(method, params = {}) {
-    child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`
-    );
+    writeJsonRpc({ jsonrpc: "2.0", method, params });
   }
 
   return {

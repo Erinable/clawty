@@ -1,4 +1,3 @@
-import readline from "node:readline";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildReport } from "../scripts/metrics-report.mjs";
@@ -18,7 +17,41 @@ function safeStringify(value) {
 }
 
 function writeMessage(message) {
-  process.stdout.write(`${safeStringify(message)}\n`);
+  const payload = safeStringify(message);
+  const byteLength = Buffer.byteLength(payload, "utf8");
+  process.stdout.write(`Content-Length: ${byteLength}\r\n\r\n${payload}`);
+}
+
+function parseContentLength(headerBlock) {
+  const lines = headerBlock.split(/\r?\n/);
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex < 0) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim().toLowerCase();
+    if (key !== "content-length") {
+      continue;
+    }
+    const value = Number(line.slice(separatorIndex + 1).trim());
+    if (Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+    return null;
+  }
+  return null;
+}
+
+function findHeaderTerminator(buffer) {
+  const crlfIndex = buffer.indexOf("\r\n\r\n");
+  if (crlfIndex >= 0) {
+    return { index: crlfIndex, delimiterLength: 4 };
+  }
+  const lfIndex = buffer.indexOf("\n\n");
+  if (lfIndex >= 0) {
+    return { index: lfIndex, delimiterLength: 2 };
+  }
+  return null;
 }
 
 function buildToolDefinitions() {
@@ -161,17 +194,13 @@ function normalizeServerOptions(options = {}) {
 export async function runMcpServer(options = {}) {
   const serverOptions = normalizeServerOptions(options);
   const tools = buildToolDefinitions();
+  let rawBuffer = Buffer.alloc(0);
+  let shouldExit = false;
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: false
-  });
-
-  for await (const line of rl) {
-    const payload = line.trim();
+  const handlePayload = async (payloadText) => {
+    const payload = payloadText.trim();
     if (!payload) {
-      continue;
+      return;
     }
 
     let request;
@@ -179,7 +208,7 @@ export async function runMcpServer(options = {}) {
       request = JSON.parse(payload);
     } catch {
       writeMessage(buildRpcError(null, -32700, "Parse error"));
-      continue;
+      return;
     }
 
     const id = request?.id;
@@ -188,11 +217,11 @@ export async function runMcpServer(options = {}) {
 
     if (!method || typeof method !== "string") {
       writeMessage(buildRpcError(id, -32600, "Invalid Request"));
-      continue;
+      return;
     }
 
     if (method === "notifications/initialized") {
-      continue;
+      return;
     }
 
     if (method === "shutdown") {
@@ -201,12 +230,12 @@ export async function runMcpServer(options = {}) {
         id: id ?? null,
         result: {}
       });
-      continue;
+      return;
     }
 
     if (method === "exit") {
-      rl.close();
-      break;
+      shouldExit = true;
+      return;
     }
 
     if (method === "initialize") {
@@ -224,7 +253,7 @@ export async function runMcpServer(options = {}) {
           }
         }
       });
-      continue;
+      return;
     }
 
     if (method === "tools/list") {
@@ -235,7 +264,7 @@ export async function runMcpServer(options = {}) {
           tools
         }
       });
-      continue;
+      return;
     }
 
     if (method === "tools/call") {
@@ -264,10 +293,82 @@ export async function runMcpServer(options = {}) {
           })
         );
       }
-      continue;
+      return;
     }
 
     writeMessage(buildRpcError(id, -32601, `Method not found: ${method}`));
+  };
+
+  const parseNextPayload = () => {
+    if (rawBuffer.length === 0) {
+      return null;
+    }
+
+    let skip = 0;
+    while (skip < rawBuffer.length) {
+      const code = rawBuffer[skip];
+      if (code !== 0x20 && code !== 0x09 && code !== 0x0d && code !== 0x0a) {
+        break;
+      }
+      skip += 1;
+    }
+    if (skip > 0) {
+      rawBuffer = rawBuffer.slice(skip);
+    }
+    if (rawBuffer.length === 0) {
+      return null;
+    }
+
+    const firstByte = rawBuffer[0];
+    if (firstByte === 0x7b || firstByte === 0x5b) {
+      const newlineIndex = rawBuffer.indexOf("\n");
+      if (newlineIndex < 0) {
+        return null;
+      }
+      const payload = rawBuffer.slice(0, newlineIndex).toString("utf8");
+      rawBuffer = rawBuffer.slice(newlineIndex + 1);
+      return payload;
+    }
+
+    const headerTerminator = findHeaderTerminator(rawBuffer);
+    if (!headerTerminator) {
+      return null;
+    }
+    const headerEnd = headerTerminator.index;
+    const headerBlock = rawBuffer.slice(0, headerEnd).toString("utf8");
+    const contentLength = parseContentLength(headerBlock);
+    if (contentLength === null) {
+      rawBuffer = rawBuffer.slice(headerEnd + headerTerminator.delimiterLength);
+      writeMessage(buildRpcError(null, -32600, "Invalid Content-Length header"));
+      return "";
+    }
+
+    const bodyStart = headerEnd + headerTerminator.delimiterLength;
+    const bodyEnd = bodyStart + contentLength;
+    if (rawBuffer.length < bodyEnd) {
+      return null;
+    }
+    const payload = rawBuffer.slice(bodyStart, bodyEnd).toString("utf8");
+    rawBuffer = rawBuffer.slice(bodyEnd);
+    return payload;
+  };
+
+  for await (const chunk of process.stdin) {
+    rawBuffer = Buffer.concat([
+      rawBuffer,
+      Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    ]);
+
+    while (true) {
+      const payload = parseNextPayload();
+      if (payload === null) {
+        break;
+      }
+      await handlePayload(payload);
+      if (shouldExit) {
+        return;
+      }
+    }
   }
 }
 
