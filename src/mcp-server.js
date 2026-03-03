@@ -1,10 +1,13 @@
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildReport } from "../scripts/metrics-report.mjs";
-import { buildTunerReport } from "../scripts/tuner-report.mjs";
 import { loadConfig } from "./config.js";
 import { createRuntimeLogger } from "./logger.js";
+import {
+  callMonitorTool as callMonitorToolModule,
+  MONITOR_TOOL_DEFINITIONS,
+  MONITOR_TOOL_NAME_SET
+} from "./mcp-monitor-tools.js";
 import {
   parseMcpServerArgsWithDeps,
   resolveMcpServerRuntimeOptionsWithDeps
@@ -23,70 +26,11 @@ import { TOOL_DEFINITIONS, runTool } from "./tools.js";
 const MCP_SERVER_NAME = "clawty-mcp";
 const MCP_SERVER_VERSION = "0.1.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const DEFAULT_WINDOW_HOURS = 24;
-const MAX_WINDOW_HOURS = 24 * 30;
 const TOOLSET_ANALYSIS = "analysis";
 const TOOLSET_EDIT_SAFE = "edit-safe";
 const TOOLSET_OPS = "ops";
 const TOOLSET_ALL = "all";
 const DEFAULT_TOOLSETS = [TOOLSET_ANALYSIS, TOOLSET_OPS];
-
-const MONITOR_TOOL_DEFINITIONS = [
-  {
-    name: "metrics_report",
-    description: "Build clawty metrics report for the workspace.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        workspace: {
-          type: "string",
-          description: "Optional absolute/relative workspace path."
-        },
-        window_hours: {
-          type: "number",
-          description: "Optional report window in hours."
-        }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "tuner_report",
-    description: "Build online tuner report including reward distribution and arm stats.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        workspace: {
-          type: "string",
-          description: "Optional absolute/relative workspace path."
-        },
-        window_hours: {
-          type: "number",
-          description: "Optional report window in hours."
-        }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "monitor_report",
-    description: "Build combined metrics+tuner monitoring report.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        workspace: {
-          type: "string",
-          description: "Optional absolute/relative workspace path."
-        },
-        window_hours: {
-          type: "number",
-          description: "Optional report window in hours."
-        }
-      },
-      additionalProperties: false
-    }
-  }
-];
 
 const FACADE_TOOL_DEFINITIONS = [
   {
@@ -541,20 +485,6 @@ function buildToolDefinitions(serverOptions = {}) {
     ];
   }
   return exposedFacadeTools;
-}
-
-function parseWorkspaceAndWindow(args = {}, fallbackWorkspace) {
-  const normalizedArgs = isPlainObject(args) ? args : {};
-  const workspace =
-    typeof normalizedArgs.workspace === "string" && normalizedArgs.workspace.trim().length > 0
-      ? path.resolve(normalizedArgs.workspace.trim())
-      : path.resolve(fallbackWorkspace || process.cwd());
-  const windowHoursRaw = Number(normalizedArgs.window_hours);
-  const window_hours =
-    Number.isFinite(windowHoursRaw) && windowHoursRaw > 0 && windowHoursRaw <= MAX_WINDOW_HOURS
-      ? windowHoursRaw
-      : DEFAULT_WINDOW_HOURS;
-  return { workspace, window_hours };
 }
 
 function splitWorkspaceArg(args, fallbackWorkspace) {
@@ -1180,54 +1110,12 @@ async function callImpactAnalysisFacade(args, serverOptions = {}) {
   };
 }
 
-const MONITOR_TOOL_HANDLERS = {
-  metrics_report: ({ workspace, window_hours }) =>
-    buildReport({
-      workspaceRoot: workspace,
-      windowHours: window_hours,
-      format: "json"
-    }),
-  tuner_report: ({ workspace, window_hours }) =>
-    buildTunerReport({
-      workspaceRoot: workspace,
-      windowHours: window_hours,
-      format: "json"
-    }),
-  monitor_report: async ({ workspace, window_hours }) => {
-    const [metrics, tuner] = await Promise.all([
-      buildReport({
-        workspaceRoot: workspace,
-        windowHours: window_hours,
-        format: "json"
-      }),
-      buildTunerReport({
-        workspaceRoot: workspace,
-        windowHours: window_hours,
-        format: "json"
-      })
-    ]);
-    return {
-      generated_at: new Date().toISOString(),
-      workspace_root: workspace,
-      window_hours,
-      metrics,
-      tuner
-    };
-  }
-};
-
-const MONITOR_TOOL_NAME_SET = new Set(Object.keys(MONITOR_TOOL_HANDLERS));
-
 async function callMonitorTool(name, args, serverOptions = {}) {
-  const { workspace, window_hours } = parseWorkspaceAndWindow(
+  return callMonitorToolModule(
+    name,
     args,
     serverOptions.workspaceRoot
   );
-  const handler = MONITOR_TOOL_HANDLERS[name];
-  if (typeof handler === "function") {
-    return handler({ workspace, window_hours });
-  }
-  throw new Error(`Unknown tool: ${name}`);
 }
 
 const FACADE_TOOL_HANDLERS = {
