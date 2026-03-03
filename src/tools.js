@@ -31,7 +31,10 @@ import {
   getVectorIndexStats,
   mergeVectorDelta
 } from "./vector-index.js";
-import { queryHybridRetrievalSources } from "./retrieval-orchestrator.js";
+import {
+  collectAndRankHybridCandidates,
+  queryHybridRetrievalSources
+} from "./retrieval-orchestrator.js";
 import {
   lspDefinition,
   lspHealth,
@@ -2620,44 +2623,20 @@ async function queryHybridIndexTool(args, context) {
       embedding: context.embedding || {}
     });
 
-  const scannedCandidates = [];
-  const deduped = new Map();
-
-  if (semanticResult?.ok && Array.isArray(semanticResult.seeds)) {
-    for (const seed of semanticResult.seeds) {
-      scannedCandidates.push(seed);
-      addHybridCandidate(deduped, seed, "semantic");
-    }
-  }
-
-  if (syntaxResult?.ok && Array.isArray(syntaxResult.seeds)) {
-    for (const seed of syntaxResult.seeds) {
-      const mapped = mapSyntaxSeedToSemanticSeed(seed, effectiveArgs?.edge_type || null);
-      scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "syntax");
-    }
-  }
-
-  if (indexResult?.ok && Array.isArray(indexResult.results)) {
-    for (const item of indexResult.results) {
-      const mapped = mapIndexResultToHybridSeed(item);
-      scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "index");
-    }
-  }
-
-  if (vectorResult?.ok && Array.isArray(vectorResult.results)) {
-    for (const item of vectorResult.results) {
-      const mapped = mapVectorResultToHybridSeed(item);
-      scannedCandidates.push(mapped);
-      addHybridCandidate(deduped, mapped, "vector");
-    }
-  }
-
-  const ranked = rankHybridCandidates(Array.from(deduped.values()), {
+  const { scannedCandidates, deduped, ranked } = collectAndRankHybridCandidates({
+    semanticResult,
+    syntaxResult,
+    indexResult,
+    vectorResult,
+    edgeType: effectiveArgs?.edge_type,
     query,
-    path_prefix: effectiveArgs?.path_prefix,
-    explain: effectiveArgs?.explain
+    pathPrefix: effectiveArgs?.path_prefix,
+    explain: effectiveArgs?.explain,
+    mapSyntaxSeedToSemanticSeed,
+    mapIndexResultToHybridSeed,
+    mapVectorResultToHybridSeed,
+    addHybridCandidate,
+    rankHybridCandidates
   });
   const embeddingRerank = await rerankHybridCandidatesWithEmbedding(
     ranked,

@@ -80,3 +80,65 @@ export async function queryHybridRetrievalSources({
     vectorResult
   };
 }
+
+export function collectAndRankHybridCandidates({
+  semanticResult,
+  syntaxResult,
+  indexResult,
+  vectorResult,
+  edgeType,
+  query,
+  pathPrefix,
+  explain,
+  mapSyntaxSeedToSemanticSeed,
+  mapIndexResultToHybridSeed,
+  mapVectorResultToHybridSeed,
+  addHybridCandidate,
+  rankHybridCandidates
+}) {
+  const scannedCandidates = [];
+  const deduped = new Map();
+
+  if (semanticResult?.ok && Array.isArray(semanticResult.seeds)) {
+    for (const seed of semanticResult.seeds) {
+      scannedCandidates.push(seed);
+      addHybridCandidate(deduped, seed, "semantic");
+    }
+  }
+
+  if (syntaxResult?.ok && Array.isArray(syntaxResult.seeds)) {
+    for (const seed of syntaxResult.seeds) {
+      const mapped = mapSyntaxSeedToSemanticSeed(seed, edgeType || null);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "syntax");
+    }
+  }
+
+  if (indexResult?.ok && Array.isArray(indexResult.results)) {
+    for (const item of indexResult.results) {
+      const mapped = mapIndexResultToHybridSeed(item);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "index");
+    }
+  }
+
+  if (vectorResult?.ok && Array.isArray(vectorResult.results)) {
+    for (const item of vectorResult.results) {
+      const mapped = mapVectorResultToHybridSeed(item);
+      scannedCandidates.push(mapped);
+      addHybridCandidate(deduped, mapped, "vector");
+    }
+  }
+
+  const ranked = rankHybridCandidates(Array.from(deduped.values()), {
+    query,
+    path_prefix: pathPrefix,
+    explain
+  });
+
+  return {
+    scannedCandidates,
+    deduped,
+    ranked
+  };
+}
