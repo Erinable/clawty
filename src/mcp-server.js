@@ -1213,26 +1213,20 @@ async function callImpactAnalysisFacade(args, serverOptions = {}) {
   };
 }
 
-async function callMonitorTool(name, args, serverOptions = {}) {
-  const { workspace, window_hours } = parseWorkspaceAndWindow(
-    args,
-    serverOptions.workspaceRoot
-  );
-  if (name === "metrics_report") {
-    return buildReport({
+const MONITOR_TOOL_HANDLERS = {
+  metrics_report: ({ workspace, window_hours }) =>
+    buildReport({
       workspaceRoot: workspace,
       windowHours: window_hours,
       format: "json"
-    });
-  }
-  if (name === "tuner_report") {
-    return buildTunerReport({
+    }),
+  tuner_report: ({ workspace, window_hours }) =>
+    buildTunerReport({
       workspaceRoot: workspace,
       windowHours: window_hours,
       format: "json"
-    });
-  }
-  if (name === "monitor_report") {
+    }),
+  monitor_report: async ({ workspace, window_hours }) => {
     const [metrics, tuner] = await Promise.all([
       buildReport({
         workspaceRoot: workspace,
@@ -1253,8 +1247,33 @@ async function callMonitorTool(name, args, serverOptions = {}) {
       tuner
     };
   }
+};
+
+const MONITOR_TOOL_NAME_SET = new Set(Object.keys(MONITOR_TOOL_HANDLERS));
+
+async function callMonitorTool(name, args, serverOptions = {}) {
+  const { workspace, window_hours } = parseWorkspaceAndWindow(
+    args,
+    serverOptions.workspaceRoot
+  );
+  const handler = MONITOR_TOOL_HANDLERS[name];
+  if (typeof handler === "function") {
+    return handler({ workspace, window_hours });
+  }
   throw new Error(`Unknown tool: ${name}`);
 }
+
+const FACADE_TOOL_HANDLERS = {
+  monitor_system: (args, serverOptions) => callMonitorTool("monitor_report", args, serverOptions),
+  search_code: callSearchCodeFacade,
+  go_to_definition: callGoToDefinitionFacade,
+  find_references: callFindReferencesFacade,
+  get_code_context: callCodeContextFacade,
+  reindex_codebase: callReindexCodebaseFacade,
+  explain_code: callExplainCodeFacade,
+  trace_call_chain: callTraceCallChainFacade,
+  impact_analysis: callImpactAnalysisFacade
+};
 
 async function callTool(name, args, serverOptions = {}) {
   const exposedFacadeToolNames =
@@ -1265,43 +1284,12 @@ async function callTool(name, args, serverOptions = {}) {
     throw new Error(`Tool not exposed by current policy: ${name}`);
   }
 
-  if (name === "monitor_system") {
-    return callMonitorTool("monitor_report", args, serverOptions);
+  const facadeHandler = FACADE_TOOL_HANDLERS[name];
+  if (typeof facadeHandler === "function") {
+    return facadeHandler(args, serverOptions);
   }
 
-  if (name === "search_code") {
-    return callSearchCodeFacade(args, serverOptions);
-  }
-
-  if (name === "go_to_definition") {
-    return callGoToDefinitionFacade(args, serverOptions);
-  }
-
-  if (name === "find_references") {
-    return callFindReferencesFacade(args, serverOptions);
-  }
-
-  if (name === "get_code_context") {
-    return callCodeContextFacade(args, serverOptions);
-  }
-
-  if (name === "reindex_codebase") {
-    return callReindexCodebaseFacade(args, serverOptions);
-  }
-
-  if (name === "explain_code") {
-    return callExplainCodeFacade(args, serverOptions);
-  }
-
-  if (name === "trace_call_chain") {
-    return callTraceCallChainFacade(args, serverOptions);
-  }
-
-  if (name === "impact_analysis") {
-    return callImpactAnalysisFacade(args, serverOptions);
-  }
-
-  if (name === "metrics_report" || name === "tuner_report" || name === "monitor_report") {
+  if (MONITOR_TOOL_NAME_SET.has(name)) {
     if (!serverOptions.exposeLowLevel) {
       throw new Error(`Tool not exposed by current policy: ${name}`);
     }
