@@ -13,17 +13,24 @@
 - `src/mcp-server.js` 完成拆分，职责下沉到 runtime/cli/toolset policy/dispatch 等模块，主文件已收敛为装配层。
 - `src/index-watch.js` 完成队列、hash、flush/metrics、snapshot/diff、config、loop、path policy 的模块化拆分。
 - `src/tools.js` 完成工具 schema、安全策略、本地工具 handlers、查询工具 handlers 的模块化拆分，主文件由大而全转为组合入口。
+- 检索编排层与结果协议已抽取：
+  - `src/retrieval-orchestrator.js`
+  - `src/retrieval-result-protocol.js`
+  - `src/hybrid-source-status.js`
 - 指标命名常量统一抽取到 `src/metrics-event-types.js`，`tools/watch/memory/report` 链路复用统一事件名与指标文件名。
 - 新增契约测试覆盖拆分模块：
   - `tests/mcp-toolset-policy.test.js`
   - `tests/mcp-tool-dispatch.test.js`
   - `tests/tool-local-handlers.test.js`
   - `tests/tool-query-handlers.test.js`
+  - `tests/retrieval-orchestrator.test.js`
+  - `tests/retrieval-result-protocol.test.js`
+  - `tests/hybrid-source-status.test.js`
 
 阶段 1 余项（下一步）：
 
-- 建立统一检索编排层原型（`retrieval-orchestrator`）与结果协议字段标准（来源、置信度、时效、去重键）。
-- 对构建/刷新/查询/降级四链路指标字段做一次命名对齐收敛。
+- 将统一编排层与结果协议继续接入更多查询路径，减少融合层分支判断。
+- 持续完成构建/刷新/查询/降级四链路指标字段命名收敛（当前已完成 watch/memory/hybrid 主链路常量化）。
 
 阶段 2 起步（已落地）：
 
@@ -42,19 +49,31 @@
   - `backpressure_threshold_ratio`
   - `backpressure_debounce_ms`
   - `no-backpressure`
-- `watch_metrics`/`watch-flush` 增加反压观测字段（poll/flush 计数、effective debounce）。
+- `watch_metrics`/`watch-flush` 增加反压观测字段（poll/flush 计数、effective debounce、threshold）。
+- `metrics-report` 增加 watch 反压/时延 KPI：
+  - `watch_backpressure_flush_rate`
+  - `watch_effective_debounce_p95_ms`
+  - `watch_refresh_p95_ms`
+- `metrics-check` 新增可选 watch 门禁参数：
+  - `--max-watch-backpressure-flush-rate`
+  - `--max-watch-effective-debounce-p95-ms`
+
+阶段 3 余项（下一步）：
+
+- 增加 watch 刷新趋势视图（按日/周）与 profile 基线（refresh_ms/index_lag_ms 分桶）。
+- 继续推进队列策略（并发窗口、饥饿保护、反压阈值自动调参）。
 
 ## 当前基线（已落地能力）
 
 基线能力以 `README.md` 已实现清单为准，核心包括：
 
 - 索引链路：`code/syntax/semantic/vector/hybrid` 全链路可用，支持增量刷新与融合检索。
-- 运行链路：`watch-index` 具备脏队列、debounce、batch、hash-skip 协同刷新。
-- 质量链路：hybrid/watch 指标落盘，`metrics-report` 与 `metrics-check` 可执行门禁。
+- 运行链路：`watch-index` 具备脏队列、debounce、batch、hash-skip 与反压协同刷新。
+- 质量链路：hybrid/watch 指标落盘，`metrics-report` 与 `metrics-check` 可执行门禁（含 replay 基线与失败样本门禁）。
 - 稳定链路：LSP 不可用可回退索引，hybrid 具备降级与状态码观测。
 - 安全链路：路径沙箱、危险命令拦截、`apply_patch` 路径校验、MCP 工具分级暴露。
 
-当前缺口：模块边界仍偏重耦合（尤其 `src/tools.js` 和 `src/mcp-server.js`）、评测回放体系不完整、watch 大仓压力治理与降级矩阵尚未形成标准化闭环。
+当前缺口：编排层协议尚未完全覆盖所有查询路径、回放样本规模与分桶仍偏小、watch 大仓 profile 与阈值自动化调参尚未形成闭环、降级矩阵与审计链路仍待完善。
 
 ## 路线图原则
 
@@ -160,9 +179,9 @@
 
 ## 建议优先级（先做这 4 件）
 
-1. 先拆分高复杂模块边界（优先 `src/tools.js`，同步梳理 `src/mcp-server.js`）。
-2. 建立统一评测集与 hybrid 调参回放（含失败样本回归）。
-3. 打通 watch 增量刷新性能瓶颈治理（队列策略 + profile + 缓存策略）。
+1. 推进统一检索编排层/结果协议在更多查询路径落地，继续收敛融合逻辑。
+2. 扩展统一评测集（语言/文件类型/意图/query pattern）并持续 failure-sample 回归。
+3. 完成 watch profile 基线与阈值收敛（队列策略 + refresh/index_lag 趋势 + 门禁策略）。
 4. 完成降级矩阵与查询-索引状态关联追踪（含 runbook 与审计字段）。
 
 ## 执行里程碑（建议）
