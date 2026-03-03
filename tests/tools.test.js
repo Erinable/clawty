@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { runTool } from "../src/tools.js";
+import { resolveRunShellExecutable, runTool } from "../src/tools.js";
 import { EmbeddingError } from "../src/embedding-client.js";
 import {
   createWorkspace,
@@ -89,6 +89,41 @@ test("run_shell executes safe commands", async (t) => {
   assert.equal(output.ok, true);
   assert.equal(output.exit_code, 0);
   assert.match(output.stdout, /clawty-test/);
+});
+
+test("resolveRunShellExecutable selects appropriate shell per platform", () => {
+  const windowsShell = resolveRunShellExecutable({
+    platform: "win32",
+    env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+  });
+  assert.equal(windowsShell, "C:\\Windows\\System32\\cmd.exe");
+
+  const windowsFallback = resolveRunShellExecutable({
+    platform: "win32",
+    env: {}
+  });
+  assert.equal(windowsFallback, "cmd.exe");
+
+  const posixFallback = resolveRunShellExecutable({
+    platform: "linux",
+    env: { SHELL: "/missing/shell" },
+    pathExists: (candidate) => candidate === "/bin/bash"
+  });
+  assert.equal(posixFallback, "/bin/bash");
+
+  const envRelativeShell = resolveRunShellExecutable({
+    platform: "linux",
+    env: { SHELL: "bash" },
+    pathExists: () => false
+  });
+  assert.equal(envRelativeShell, "bash");
+
+  const finalFallback = resolveRunShellExecutable({
+    platform: "linux",
+    env: {},
+    pathExists: () => false
+  });
+  assert.equal(finalFallback, "/bin/sh");
 });
 
 test("apply_patch supports check-only and apply modes", async (t) => {

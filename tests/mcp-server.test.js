@@ -189,6 +189,17 @@ async function waitForHttpReady(port, timeoutMs = 10_000) {
   throw new Error(`mcp http transport did not become ready on port ${port}`);
 }
 
+async function waitForChildClose(child, timeoutMs = 5_000) {
+  if (!child || child.exitCode !== null) {
+    return;
+  }
+
+  await Promise.race([
+    once(child, "close"),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs))
+  ]).catch(() => {});
+}
+
 test("resolveMcpServerRuntimeOptions infers http transport when config provides port", () => {
   const resolved = resolveMcpServerRuntimeOptions(
     {
@@ -263,7 +274,7 @@ test("mcp-server exposes facade tools by default", async (t) => {
 
   t.after(async () => {
     child.kill("SIGTERM");
-    await once(child, "close").catch(() => {});
+    await waitForChildClose(child);
   });
 
   const rpc = createJsonRpcClient(child);
@@ -352,6 +363,7 @@ test("mcp-server exposes facade tools by default", async (t) => {
   assert.ok(impacted.result?.structuredContent?.impacted_paths.includes("src/mcp-indexable.js"));
 
   rpc.notify("exit", {});
+  await waitForChildClose(child);
 });
 
 test("mcp-server exposes edit-safe toolset when requested", async (t) => {
@@ -377,7 +389,7 @@ test("mcp-server exposes edit-safe toolset when requested", async (t) => {
 
   t.after(async () => {
     child.kill("SIGTERM");
-    await once(child, "close").catch(() => {});
+    await waitForChildClose(child);
   });
 
   const rpc = createJsonRpcClient(child);
@@ -395,6 +407,7 @@ test("mcp-server exposes edit-safe toolset when requested", async (t) => {
   assert.equal(reindex.result?.structuredContent?.ok, true);
 
   rpc.notify("exit", {});
+  await waitForChildClose(child);
 });
 
 test("mcp-server can expose low-level tools via flag", async (t) => {
@@ -414,7 +427,7 @@ test("mcp-server can expose low-level tools via flag", async (t) => {
 
   t.after(async () => {
     child.kill("SIGTERM");
-    await once(child, "close").catch(() => {});
+    await waitForChildClose(child);
   });
 
   const rpc = createJsonRpcClient(child);
@@ -427,6 +440,7 @@ test("mcp-server can expose low-level tools via flag", async (t) => {
   assert.ok(toolNames.has("monitor_report"));
 
   rpc.notify("exit", {});
+  await waitForChildClose(child);
 });
 
 test("mcp-server supports HTTP transport with explicit port", async (t) => {
@@ -462,7 +476,7 @@ test("mcp-server supports HTTP transport with explicit port", async (t) => {
   t.after(async () => {
     if (child.exitCode === null) {
       child.kill("SIGTERM");
-      await once(child, "close").catch(() => {});
+      await waitForChildClose(child);
     }
   });
 
@@ -505,7 +519,7 @@ test("mcp-server supports HTTP transport with explicit port", async (t) => {
     }
   });
   assert.equal(exitNotification.statusCode, 204);
-  await once(child, "close");
+  await waitForChildClose(child);
 });
 
 test("mcp-server can read HTTP host/port from config", async (t) => {
@@ -544,7 +558,7 @@ test("mcp-server can read HTTP host/port from config", async (t) => {
   t.after(async () => {
     if (child.exitCode === null) {
       child.kill("SIGTERM");
-      await once(child, "close").catch(() => {});
+      await waitForChildClose(child);
     }
   });
 
@@ -574,7 +588,7 @@ test("mcp-server can read HTTP host/port from config", async (t) => {
     }
   });
   assert.equal(exitNotification.statusCode, 204);
-  await once(child, "close");
+  await waitForChildClose(child);
 });
 
 test("mcp-server writes logs to dedicated log file", async (t) => {
@@ -595,14 +609,14 @@ test("mcp-server writes logs to dedicated log file", async (t) => {
   t.after(async () => {
     if (child.exitCode === null) {
       child.kill("SIGTERM");
-      await once(child, "close").catch(() => {});
+      await waitForChildClose(child);
     }
   });
 
   const rpc = createJsonRpcClient(child);
   await rpc.call("initialize", {});
   rpc.notify("exit", {});
-  await once(child, "close");
+  await waitForChildClose(child);
 
   const content = await fs.readFile(logPath, "utf8");
   assert.match(content, /"event":"mcp\.server_start"/);

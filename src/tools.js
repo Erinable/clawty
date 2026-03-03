@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -83,6 +84,37 @@ function resolveSafePath(workspaceRoot, inputPath) {
 
 function isBlockedCommand(command) {
   return BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+export function resolveRunShellExecutable({
+  platform = process.platform,
+  env = process.env,
+  pathExists = existsSync
+} = {}) {
+  if (platform === "win32") {
+    const comSpec = typeof env?.ComSpec === "string" ? env.ComSpec.trim() : "";
+    return comSpec || "cmd.exe";
+  }
+
+  const candidateShells = [];
+  if (typeof env?.SHELL === "string" && env.SHELL.trim().length > 0) {
+    candidateShells.push(env.SHELL.trim());
+  }
+  candidateShells.push("/bin/zsh", "/bin/bash", "/bin/sh");
+
+  for (const shellPath of candidateShells) {
+    if (!shellPath) {
+      continue;
+    }
+    if (!path.isAbsolute(shellPath)) {
+      return shellPath;
+    }
+    if (pathExists(shellPath)) {
+      return shellPath;
+    }
+  }
+
+  return "/bin/sh";
 }
 
 function normalizePatchPath(rawPath) {
@@ -1214,7 +1246,7 @@ async function runShellTool(args, context) {
       cwd: context.workspaceRoot,
       timeout: args.timeout_ms || context.defaultTimeoutMs,
       maxBuffer: 4 * 1024 * 1024,
-      shell: "/bin/zsh"
+      shell: resolveRunShellExecutable()
     });
     return {
       ok: true,

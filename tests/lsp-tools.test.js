@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runTool } from "../src/tools.js";
+import { shutdownAllLspClients } from "../src/lsp-manager.js";
 import {
   createWorkspace,
   removeWorkspace,
@@ -15,11 +16,16 @@ function createContext(workspaceRoot, lsp = {}) {
   };
 }
 
-test("lsp_health reports disabled state", async (t) => {
-  const workspaceRoot = await createWorkspace();
+function registerCleanup(t, workspaceRoot) {
   t.after(async () => {
+    await shutdownAllLspClients();
     await removeWorkspace(workspaceRoot);
   });
+}
+
+test("lsp_health reports disabled state", async (t) => {
+  const workspaceRoot = await createWorkspace();
+  registerCleanup(t, workspaceRoot);
 
   const context = createContext(workspaceRoot, { enabled: false });
   const health = await runTool("lsp_health", {}, context);
@@ -31,9 +37,7 @@ test("lsp_health reports disabled state", async (t) => {
 
 test("lsp_definition falls back to code index when LSP is disabled", async (t) => {
   const workspaceRoot = await createWorkspace();
-  t.after(async () => {
-    await removeWorkspace(workspaceRoot);
-  });
+  registerCleanup(t, workspaceRoot);
 
   await writeWorkspaceFile(
     workspaceRoot,
@@ -61,9 +65,7 @@ test("lsp_definition falls back to code index when LSP is disabled", async (t) =
 
 test("lsp_workspace_symbols falls back when LSP command is unavailable", async (t) => {
   const workspaceRoot = await createWorkspace();
-  t.after(async () => {
-    await removeWorkspace(workspaceRoot);
-  });
+  registerCleanup(t, workspaceRoot);
 
   await writeWorkspaceFile(
     workspaceRoot,
@@ -95,9 +97,7 @@ test("lsp_workspace_symbols falls back when LSP command is unavailable", async (
 
 test("lsp_definition rejects unsupported file language", async (t) => {
   const workspaceRoot = await createWorkspace();
-  t.after(async () => {
-    await removeWorkspace(workspaceRoot);
-  });
+  registerCleanup(t, workspaceRoot);
 
   await writeWorkspaceFile(workspaceRoot, "notes.txt", "plain text\n");
 
