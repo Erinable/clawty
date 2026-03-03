@@ -2,6 +2,12 @@ import { queryCodeIndex } from "./code-index.js";
 import { querySemanticGraph } from "./semantic-graph.js";
 import { querySyntaxIndex } from "./syntax-index.js";
 import { queryVectorIndex } from "./vector-index.js";
+import {
+  addHybridCandidate,
+  mapIndexResultToHybridSeed,
+  mapVectorResultToHybridSeed,
+  rankHybridCandidates
+} from "./hybrid-ranking.js";
 
 function classifyVectorQueryFailure(error) {
   const message = String(error?.message || "");
@@ -90,11 +96,7 @@ export function collectAndRankHybridCandidates({
   query,
   pathPrefix,
   explain,
-  mapSyntaxSeedToSemanticSeed,
-  mapIndexResultToHybridSeed,
-  mapVectorResultToHybridSeed,
-  addHybridCandidate,
-  rankHybridCandidates
+  mapSyntaxSeedToSemanticSeed
 }) {
   const scannedCandidates = [];
   const deduped = new Map();
