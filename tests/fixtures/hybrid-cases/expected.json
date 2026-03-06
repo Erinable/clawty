@@ -52,6 +52,39 @@
       "expected_primary_path": "src/hybrid-timeout.ts",
       "expected_embedding_status": "EMBEDDING_ERROR_TIMEOUT",
       "expected_degraded": true
+    },
+    {
+      "name": "embed_timeout_fallback_on_embed_token",
+      "bucket": "intent:degrade_timeout",
+      "language": "typescript",
+      "file_type": "source",
+      "intent": "degrade_timeout",
+      "query_pattern": "timeout_resilience",
+      "embedding_mode": "timeout",
+      "args": {
+        "query": "hybridEmbedToken",
+        "top_k": 3,
+        "enable_embedding": true
+      },
+      "expected_primary_path": "src/hybrid-embed.ts",
+      "expected_embedding_status": "EMBEDDING_ERROR_TIMEOUT",
+      "expected_degraded": true
+    },
+    {
+      "name": "python_identifier_lookup",
+      "bucket": "language:python",
+      "language": "python",
+      "file_type": "source",
+      "intent": "baseline",
+      "query_pattern": "cross_language_identifier",
+      "embedding_mode": "disabled",
+      "args": {
+        "query": "hybrid_python_token",
+        "top_k": 3,
+        "enable_embedding": false
+      },
+      "expected_primary_path": "src/hybrid-python.py",
+      "expected_degraded": false
     }
   ]
 }

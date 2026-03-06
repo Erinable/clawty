@@ -58,6 +58,8 @@
     "bench:hybrid:replay:baseline": "node tests/bench/hybrid-replay.bench.js --write-baseline",
     "bench:hybrid:replay:failures": "node tests/bench/hybrid-replay.bench.js --write-failures",
     "bench:hybrid:replay:failure:check": "node tests/bench/hybrid-replay.bench.js --check-failures",
+    "bench:hybrid:replay:coverage": "node scripts/check-hybrid-replay-coverage.mjs",
+    "bench:hybrid:replay:suite": "npm run bench:hybrid:replay:coverage && npm run bench:hybrid:replay:check && npm run bench:hybrid:replay:failure:check",
     "metrics:report": "node scripts/metrics-report.mjs",
     "metrics:report:json": "node scripts/metrics-report.mjs --json",
     "metrics:check": "node scripts/metrics-check.mjs",

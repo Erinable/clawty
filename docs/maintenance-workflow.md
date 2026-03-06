@@ -63,6 +63,7 @@ npm run bench:semantic:check
 npm run bench:graph:check
 npm run bench:graph:refresh:check
 npm run bench:hybrid:check
+npm run bench:hybrid:replay:coverage
 npm run bench:hybrid:replay:check
 npm run bench:hybrid:replay:failure:check
 ```

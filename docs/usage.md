@@ -242,6 +242,7 @@ npm run contract:check
 npm run typecheck
 npm test
 npm run metrics:check
+npm run bench:hybrid:replay:suite
 ```
 
 ## 4. 配置与环境变量

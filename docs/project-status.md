@@ -19,7 +19,7 @@
 - 增量新鲜度链路：`watch-index` 轮询、队列、反压、重试
 - 记忆链路：检索、注入、自动写回、统计
 - MCP 服务：`stdio/http`、toolset 策略、低层能力受控暴露
-- 质量链路：`lint`、`contract:check`、`typecheck`、`test`、`metrics:check`、bench gates
+- 质量链路：`lint`、`contract:check`、`typecheck`、`test`、`metrics:check`、bench gates（含 `hybrid replay` 覆盖门禁）
 
 ## 当前主线
 
@@ -32,6 +32,7 @@
 
 - 扩展 `hybrid replay` 用例和失败样本。
 - 把策略优化固定在“可回放、可比较、可解释”的流程内。
+- 已增加 `hybrid replay` 覆盖门禁，防止样本覆盖深度回退。
 
 ### 3) 发布治理
 

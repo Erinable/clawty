@@ -88,6 +88,9 @@ jobs:
       - name: Run hybrid embedding quality gate
         run: npm run bench:hybrid:check
 
+      - name: Run hybrid replay coverage + regression gates
+        run: npm run bench:hybrid:replay:suite
+
   coverage-gate:
     if: |
       github.event_name == 'schedule' ||

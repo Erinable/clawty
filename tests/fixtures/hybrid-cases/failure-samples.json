@@ -2,7 +2,7 @@
   "source": {
     "cases_path": "tests/fixtures/hybrid-cases/expected.json",
     "presets_path": "tests/fixtures/hybrid-cases/replay-presets.json",
-    "case_count": 3,
+    "case_count": 5,
     "preset_count": 4,
     "query_pattern_filter": [],
     "intent_filter": []

@@ -13,10 +13,12 @@
 
 ```bash
 npm run bench:hybrid:replay
+npm run bench:hybrid:replay:coverage
 npm run bench:hybrid:replay:check
 npm run bench:hybrid:replay:baseline
 npm run bench:hybrid:replay:failures
 npm run bench:hybrid:replay:failure:check
+npm run bench:hybrid:replay:suite
 ```
 
 ## 3. 常见参数（脚本级）
@@ -40,6 +42,12 @@ node tests/bench/hybrid-replay.bench.js --check-failures --failures-baseline=/tm
 
 ## 5. 门禁口径
 
+`bench:hybrid:replay:coverage` 默认校验：
+
+- case 数量与分桶覆盖（`language` / `intent` / `query_pattern` / `file_type`）
+- failure samples 基线数量
+- case/failure schema 完整性和重复键
+
 `--check-baseline` 默认校验：
 
 - `score`
@@ -56,5 +64,12 @@ node tests/bench/hybrid-replay.bench.js --check-failures --failures-baseline=/tm
 推荐流程：
 
 1. 先 `bench:hybrid:replay`
-2. 再 `bench:hybrid:replay:check`
-3. 必要时更新 baseline 与 failure samples，并在 PR 写明原因
+2. 再 `bench:hybrid:replay:coverage`
+3. 再 `bench:hybrid:replay:check` + `bench:hybrid:replay:failure:check`
+4. 必要时更新 baseline 与 failure samples，并在 PR 写明原因
+
+可直接执行：
+
+```bash
+npm run bench:hybrid:replay:suite
+```
