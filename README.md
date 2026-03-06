@@ -2,6 +2,8 @@
 
 一个本地运行的 AI 编程助手 CLI：支持多轮对话、工具调用、代码索引检索、增量刷新、长期记忆和 MCP 服务。
 
+当前项目状态：已进入“功能成型 + 工程化完善”阶段；阶段性判断与下一步重点见 `docs/project-status.md`。
+
 如果你第一次接触本项目，先看“5 分钟上手”，不要先看全部高级参数。
 
 ## 这项目解决什么问题
@@ -210,6 +212,9 @@ npm run metrics:check
 
 ## 文档导航（按需深入）
 
+- 项目当前状态与下一阶段重点：[docs/project-status.md](docs/project-status.md)
+- 维护者架构说明（模块边界与放置规则）：[docs/maintainer-architecture.md](docs/maintainer-architecture.md)
+- 日常维护流程（文档更新、门禁、补测规则）：[docs/maintenance-workflow.md](docs/maintenance-workflow.md)
 - 使用手册（推荐先看）：[docs/usage.md](docs/usage.md)
 - 语法索引说明：[docs/syntax-index.md](docs/syntax-index.md)
 - 精确索引导入：[docs/precise-index-import.md](docs/precise-index-import.md)

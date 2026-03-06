@@ -1,7 +1,7 @@
 {
   "name": "clawty",
   "version": "0.1.0",
-  "description": "MVP CLI AI coding assistant",
+  "description": "Local AI coding assistant with code intelligence, memory, observability, and MCP support",
   "private": true,
   "repository": {
     "type": "git",
