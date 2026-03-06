@@ -1,73 +1,50 @@
 # Code Index Release Checklist
 
-发布代码索引能力前，按本清单逐项确认。默认要求全部通过后再合并到 `main`。
+发布索引相关能力前，按本清单逐项确认。
 
 ## 1. 变更范围确认
 
-- [ ] 说明本次变更类型：`ranking` / `indexing` / `refresh` / `syntax` / `semantic_fallback` / `telemetry` / `tests`。
-- [ ] 在 PR 描述中列出影响 API 字段（如 `candidate_profile`、`query_metrics`）。
-- [ ] 若修改了基准或黄金数据，说明原因和预期收益。
+- [ ] 明确本次改动类型：`indexing` / `refresh` / `ranking` / `syntax` / `semantic` / `telemetry`
+- [ ] 在 PR 中列出影响的输入输出字段或协议变更
+- [ ] 若修改 baseline 或 fixture，说明原因与收益
 
-## 2. 自动化门禁
+## 2. 默认门禁
 
-- [ ] 运行全量测试：`npm test`
-- [ ] 覆盖率门禁：`npm run coverage:check`
-- [ ] 性能门禁：`npm run bench:index:check`
-- [ ] 语义质量门禁：`npm run bench:semantic:check`
-- [ ] 语义图门禁：`npm run bench:graph:check`
-- [ ] 语义图增量门禁：`npm run bench:graph:refresh:check`
-- [ ] 精确索引格式门禁：`npm run precise:check:fixture`
-- [ ] 精确索引产物门禁（可选缺失）：`npm run precise:check`
-- [ ] 结构查询门禁：`node --test tests/syntax-index.test.js`
-- [ ] 回退链路门禁：`node --test tests/tools.test.js`
-- [ ] CI 绿灯（`Node 22/24`）后再合并。
+- [ ] `npm test`
+- [ ] `npm run lint`
+- [ ] `npm run contract:check`
+- [ ] `npm run typecheck`
+- [ ] `npm run coverage:check`
 
-## 3. 回归测试要求
+## 3. 索引专项门禁
 
-- [ ] 质量回归：`tests/code-index-quality.test.js`
-- [ ] 增量一致性回归：`tests/code-index-consistency.test.js`
-- [ ] 边界与缓存回归：`tests/code-index.test.js`
-- [ ] 语法结构回归：`tests/syntax-index.test.js`
-- [ ] 语义图融合回归：`tests/semantic-graph.test.js`
-- [ ] 工具回退回归：`tests/tools.test.js`
-- [ ] 语义任务回归：`npm run bench:semantic:check`
-- [ ] 语义图检索回归：`npm run bench:graph:check`
-- [ ] 语义图增量一致性回归：`npm run bench:graph:refresh:check`
+- [ ] `npm run bench:index:check`
+- [ ] `npm run bench:semantic:check`
+- [ ] `npm run bench:graph:check`
+- [ ] `npm run bench:graph:refresh:check`
+- [ ] `npm run bench:hybrid:check`
+- [ ] `npm run bench:hybrid:replay:check`
+- [ ] `npm run bench:hybrid:replay:failure:check`
+- [ ] `npm run precise:check:fixture`
+- [ ] `npm run precise:check`
 
-如改动触发以下场景，必须补对应用例：
+## 4. 行为回归检查
 
-- [ ] 新过滤条件或排序权重
-- [ ] 候选召回策略（chunk/symbol limit）
-- [ ] 缓存行为（TTL、淘汰、失效）
-- [ ] 刷新流程（incremental/event/full fallback）
-- [ ] 语法查询能力（`query_syntax_index`）
-- [ ] 回退策略（`semantic -> syntax -> index`）
-- [ ] 精确索引导入策略/新鲜度字段（`source_mix` / `precise_freshness`）
-
-## 4. 结果验收基线
-
-- [ ] `code-index.js` 分支覆盖率保持 `>= 80%`。
-- [ ] `bench:index:check` 无回归（阈值 `20%`）。
-- [ ] `bench:semantic:check` 无回归（阈值 `5%`）。
-- [ ] `bench:graph:check` 无回归（阈值 `5%`）。
-- [ ] `bench:graph:refresh:check` 无回归（阈值 `2%`）。
-- [ ] `query_semantic_graph` 回退顺序稳定：`semantic > syntax > index`。
-- [ ] 不允许引入明显不稳定排序（同数据多次查询 top 结果抖动）。
+- [ ] 回退链路稳定（`semantic -> syntax -> index`）
+- [ ] explain 字段完整（source/confidence/timeliness/dedup 等）
+- [ ] watch 增量刷新未引入明显滞后
+- [ ] MCP 暴露策略未越权（默认 toolset 不扩张）
 
 ## 5. 基线更新规则
 
-仅在“有意性能变化”时更新基线：
+仅在“有意策略调整”时更新 baseline：
 
-1. 先运行：`npm run bench:index`
-2. 再写入：`npm run bench:index:baseline`
-3. 在 PR 说明中附上变更前后对比（`build_ms` / `refresh_ms` / `query_p95_ms` / `index_bytes`）
-
-若性能变慢但有合理收益（例如召回率显著提升），需在 PR 中明确 trade-off。
+1. 先执行检查命令确认回归方向。
+2. 再写 baseline（对应 `:baseline` 命令）。
+3. 在 PR 描述附变更前后对比与 trade-off。
 
 ## 6. 发布记录
 
-- [ ] 在 PR 中附上本次执行命令与关键输出摘要。
-- [ ] 标记是否需要同步更新 README（新增字段、行为变化）。
-- [ ] 若涉及结构检索，附上 `query_syntax_index` 样例输出摘要。
-- [ ] 若涉及回退策略，附上 `query_semantic_graph` 回退 provider 结果（`syntax` 或 `index`）。
-- [ ] 合并后观察一轮真实仓库使用反馈，再决定是否调整基线。
+- [ ] PR 中记录已执行命令和关键输出摘要
+- [ ] 标注风险点、回滚方案、观察窗口
+- [ ] 如涉及 runbook，确认同步更新

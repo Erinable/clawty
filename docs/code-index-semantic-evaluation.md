@@ -1,58 +1,61 @@
-# Code Index Semantic Evaluation (Phase 0)
+# Code Index Semantic Evaluation
 
-本文件定义“深度语义推理”路线图的第 0 阶段验收基线：先统一任务集与 KPI，再推进索引能力演进。
+本文定义语义任务评测的目标、数据集和门禁口径，用于避免“性能提升但语义退化”。
 
-## 目标
+## 1. 评测目标
 
-- 用固定语义任务集评估代码索引对多跳代码理解的支持度。
-- 在每次核心索引变更后，量化质量变化，避免“性能提升但语义退化”。
+- 量化代码索引对多跳语义任务的支持度。
+- 在每次检索主链路改动后进行可比对评估。
 
-## 数据集
+## 2. 数据集
 
-- 夹具目录：`tests/fixtures/semantic-cases/`
+- 用例定义：`tests/fixtures/semantic-cases/expected.json`
 - 输入代码：`tests/fixtures/semantic-cases/input/`
-- 任务定义：`tests/fixtures/semantic-cases/expected.json`
-- 当前覆盖的语义链路：
-  - API -> Service -> Gateway 调用链
-  - 配置定义 -> 使用链路
-  - Worker 重试策略链路
-  - 鉴权校验链路
-  - 用户资料写入链路
 
-## 执行命令
+当前覆盖示例：
+
+- API -> Service -> Gateway 调用链
+- 配置定义 -> 使用链路
+- Worker 重试链路
+- 鉴权校验链路
+
+## 3. 执行命令
 
 ```bash
 npm run bench:semantic
 npm run bench:semantic:check
 npm run bench:semantic:baseline
+
 npm run bench:graph
 npm run bench:graph:check
 npm run bench:graph:baseline
+
 npm run bench:graph:refresh
 npm run bench:graph:refresh:check
 npm run bench:graph:refresh:baseline
+```
+
+补充回退链路测试：
+
+```bash
 node --test tests/semantic-graph.test.js
 node --test tests/tools.test.js
 ```
 
-说明：`bench:semantic:*` 评估语义任务质量；`semantic-graph/tools` 测试负责验证
-`semantic -> syntax -> index` 回退链路与结构边接入行为。
-`bench:graph:*` 评估 `query_semantic_graph`（含多跳展开）的检索质量与退化风险。
-`bench:graph:refresh:*` 评估 `refresh_semantic_graph(event)` 与 full rebuild 的查询签名一致性。
+## 4. 核心指标
 
-## 质量指标（越高越好）
+- `task_success_rate`
+- `primary_top1_rate`
+- `primary_top3_rate`
+- `mean_reciprocal_rank`
+- `evidence_recall_at_k`
 
-- `task_success_rate`：任务成功率（主路径 Top3 且证据召回 >= 50%）
-- `primary_top1_rate`：主路径 Top1 命中率
-- `primary_top3_rate`：主路径 Top3 命中率
-- `mean_reciprocal_rank`：主路径 MRR
-- `evidence_recall_at_k`：任务证据路径召回率
+观测项（不作硬门禁）：`query_avg_ms`、`query_p95_ms`、`build_ms`。
 
-附带观测项（不作门禁）：`query_avg_ms`、`query_p95_ms`、`build_ms`。
+## 5. 门禁策略
 
-## 门禁策略
+- `bench:semantic:check` 默认阈值 `5%`
+- `bench:graph:refresh:check` 默认阈值 `2%`
+- 若核心指标低于阈值，命令应返回非 0
 
-- `bench:semantic:check` 默认阈值 `5%`。
-- `bench:graph:refresh:check` 默认阈值 `2%`（`signature_match_rate` / `primary_seed_match_rate` / `path_jaccard_avg`）。
-- 若核心质量指标任一低于基线允许下限，命令返回非零并阻止合并。
-- 有意变更排序/召回策略时，先评估后更新基线。
+仅当有意策略变化时更新 baseline，并在 PR 说明 trade-off。

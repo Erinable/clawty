@@ -1,259 +1,300 @@
-# Clawty 用法文档
+# Clawty 使用手册
 
-面向“日常写代码”的实用手册，按真实使用流程组织。
+这份文档面向“每天要写代码、要排查问题、要保证质量”的使用场景。
 
-## 1. 快速开始（5 分钟）
+## 1. 快速开始
 
-1. 初始化环境变量：
+### 1.1 环境准备
 
 ```bash
+npm install
 cp .env.example .env
-# 编辑 .env，至少配置 OPENAI_API_KEY
 ```
 
-2. 查看帮助：
+在 `.env` 至少设置：
 
 ```bash
-node src/index.js --help
+OPENAI_API_KEY=sk-...
 ```
 
-3. 新仓库一键初始化（推荐）：
+### 1.2 初始化项目分析能力
 
 ```bash
 node src/index.js init
 ```
 
-4. 单次任务执行：
+### 1.3 跑一条任务验证链路
 
 ```bash
-node src/index.js run "读取 package.json 并总结这个项目"
+node src/index.js run "读取 package.json 并总结项目结构"
 ```
 
-5. 进入多轮模式：
+### 1.4 进入多轮模式
 
 ```bash
 node src/index.js chat
 ```
 
-## 2. 常用命令
+## 2. 公共命令（与 CLI 帮助一致）
+
+> 以 `node src/index.js --help` 和各子命令 `--help` 为准。
+
+### 2.1 `chat`
 
 ```bash
-# 交互模式
 node src/index.js chat
+```
 
-# 单次模式
-node src/index.js run "your task"
+- 多轮交互模式。
+- 输入 `exit` / `quit` 可退出。
 
-# 新仓库一键初始化（doctor + code/syntax/semantic）
+### 2.2 `run [message..]`
+
+```bash
+node src/index.js run "修复 monitor 相关失败测试"
+```
+
+- 单次任务模式。
+- 也支持省略 `run`，直接把文本当任务输入：
+
+```bash
+node src/index.js "帮我解释 src/index.js 的命令分发"
+```
+
+### 2.3 `init`
+
+```bash
+node src/index.js init --help
+```
+
+常用：
+
+```bash
 node src/index.js init
 node src/index.js init --include-vector
+node src/index.js init --no-doctor --no-semantic
+node src/index.js init --json
+```
 
-# 查看生效配置（敏感字段脱敏）
-node src/index.js config show
-node src/index.js doctor --json
+可用参数：
 
-# 长期记忆（搜索/统计/解释）
-node src/index.js memory search "auth retry" --top-k 5
-node src/index.js memory search "auth retry" --top-k 5 --explain
-node src/index.js memory stats
+- `--no-doctor`
+- `--no-syntax`
+- `--no-semantic`
+- `--include-vector`
+- `--vector-layer <base|delta>`
+- `--max-files <n>`
+- `--max-file-size-kb <n>`
+- `--semantic-seed-lang-filter <v>`
+- `--json`
 
-# 运行本地健康诊断
+### 2.4 `doctor`
+
+```bash
 node src/index.js doctor
 node src/index.js doctor --json
+```
 
-# 实时索引监听
-node src/index.js watch-index
+- 诊断 Node、API key、工作区、git/LSP/tree-sitter、SQLite 可写性等。
+- `--json` 方便 CI 和脚本消费。
 
-# MCP 服务（默认读取 config）
+### 2.5 `watch-index`
+
+```bash
+node src/index.js watch-index --help
+```
+
+快速参数（help 展示）：
+
+- `--interval-ms <n>`
+- `--no-vector`
+- `--quiet`
+
+高级参数（仍然支持，建议在 `.clawty/config.json` 或 env 中管理）：
+
+- 批量与防抖：`max_batch_size`、`debounce_ms`
+- 反压：`backpressure_enabled`、`backpressure_threshold_ratio`、`backpressure_debounce_ms`
+- DB 重试：`db_retry_budget`、`db_retry_backoff_ms`、`db_retry_backoff_max_ms`
+- hash 去重：`hash_skip_enabled`、`hash_init_max_files`
+- 刷新范围：`include_syntax`、`include_semantic`、`include_vector`、`vector_layer`
+
+示例：
+
+```bash
+node src/index.js watch-index --interval-ms 1000
+node src/index.js watch-index --max-batch-size 200 --debounce-ms 500
+node src/index.js watch-index --backpressure-threshold-ratio 2 --backpressure-debounce-ms 120
+node src/index.js watch-index --include-vector=true --vector-layer=delta
+```
+
+### 2.6 `config show`
+
+```bash
+node src/index.js config show
+node src/index.js config show --json
+```
+
+- 输出生效配置（敏感字段已脱敏）。
+- `config path` / `config validate` 已从公共 CLI 移除，使用 `doctor --json`。
+
+### 2.7 `memory`
+
+```bash
+node src/index.js memory --help
+```
+
+可用子命令：
+
+```bash
+node src/index.js memory search "retry timeout" --top-k 5
+node src/index.js memory search "retry timeout" --top-k 5 --explain
+node src/index.js memory stats
+```
+
+可用参数：
+
+- `--json`
+- `--explain`（仅 `search`）
+- `--top-k <n>`
+- `--scope <project|global|project+global>`
+
+说明：`memory inspect/feedback/prune/reindex` 已从公共 CLI 移除。
+
+### 2.8 `monitor [report]`
+
+```bash
+node src/index.js monitor
+node src/index.js monitor report --window-hours 24 --json
+node src/index.js monitor --watch --interval-ms 5000 --json
+```
+
+可用参数：
+
+- `--json`
+- `--window-hours <n>`（`0 < n <= 720`）
+- `--watch`
+- `--interval-ms <n>`（`500 - 60000`）
+
+说明：`monitor metrics` / `monitor tuner` 已从公共 CLI 移除。
+
+### 2.9 `mcp-server`
+
+```bash
+node src/index.js mcp-server --help
+```
+
+常用：
+
+```bash
+# 默认按配置启动（默认 stdio）
 node src/index.js mcp-server
+
+# 快速 HTTP 调试
 node src/index.js mcp-server --port 8765
-
-# 构建单文件二进制（实验）
-npm run build:bin
 ```
 
-二进制构建前置：
+help 展示参数：
+
+- `--workspace <path>`
+- `--port <n>`
+- `--log-path <path>`
+
+高级参数（支持但隐藏）：
+
+- `--transport <stdio|http>`
+- `--host <host>`
+- `--toolset <analysis|ops|edit-safe|all>`
+- `--expose-low-level`
+
+默认工具集策略：
+
+- 默认：`analysis + ops`
+- `reindex_codebase` 需启用 `edit-safe` 或 `all`
+- 低层工具需显式 `--expose-low-level`
+
+## 3. 推荐工作流
+
+### 工作流 A：第一次接手仓库
 
 ```bash
-npm i -D esbuild postject
+node src/index.js init
+node src/index.js run "梳理项目模块边界并标出核心入口"
+node src/index.js chat
 ```
 
-构建后推荐通过启动器运行（默认抑制 Node ExperimentalWarning）：
+### 工作流 B：高频改动期间保持索引新鲜
 
 ```bash
-./dist/clawty --help
-./dist/clawty doctor
+node src/index.js watch-index --interval-ms 1000
 ```
 
-配置加载优先级（高 -> 低）：
+在另一个终端继续：
+
+```bash
+node src/index.js run "基于当前改动评估回归风险"
+```
+
+### 工作流 C：上线前做最小门禁
+
+```bash
+npm run lint
+npm run contract:check
+npm run typecheck
+npm test
+npm run metrics:check
+```
+
+## 4. 配置与环境变量
+
+配置优先级（高 -> 低）：
 
 1. 系统环境变量
 2. `.env`
-3. 项目配置 `.clawty/config.json`（兼容旧路径 `clawty.config.json`）
-4. 全局配置 `~/.clawty/config.json`
+3. `.clawty/config.json`（兼容旧路径 `clawty.config.json`）
+4. `~/.clawty/config.json`
 5. 内置默认值
 
-## 3. 推荐工作流（最常用）
+配置示例：
 
-### 工作流 A：首次进入仓库，先建立检索能力
+- [clawty.config.example.json](../clawty.config.example.json)
+- [.env.example](../.env.example)
 
-优先直接执行：
+最常用环境变量：
 
-```bash
-node src/index.js init
-```
+- `OPENAI_API_KEY`
+- `CLAWTY_MODEL`
+- `OPENAI_BASE_URL`
+- `CLAWTY_WORKSPACE_ROOT`
+- `CLAWTY_TOOL_TIMEOUT_MS`
+- `CLAWTY_MAX_TOOL_ITERATIONS`
+- `CLAWTY_WATCH_INCLUDE_VECTOR`
+- `CLAWTY_LOG_LEVEL`
+- `CLAWTY_MCP_TRANSPORT` / `CLAWTY_MCP_PORT`
 
-如果需要向量检索底座：
+## 5. 常见问题
 
-```bash
-node src/index.js init --include-vector
-```
-
-然后在 `chat` 模式中输入：
-
-1. “先构建代码索引，再告诉我索引统计信息”
-2. “再构建 syntax index 和 semantic graph”
-3. “查询和支付重试逻辑相关的 Top5 文件”
-
-效果：模型会自动调用 `build_*` / `query_*` 工具，把仓库上下文先搭起来。
-
-### 工作流 B：改完代码后，刷新再分析
-
-在 `chat` 模式中输入：
-
-1. “代码已变更，刷新 code/syntax/semantic 索引”
-2. “用 query_hybrid_index 检索受影响路径并给出风险点”
-3. “运行测试并总结失败原因”
-
-效果：避免模型基于旧上下文推理，减少“改了但没看到”的误判。
-
-### 工作流 C：定位定义、引用与影响面
-
-在 `chat` 模式中输入：
-
-1. “对 `src/tools.js` 第 N 行做 definition 跳转”
-2. “查这个符号的 references（不含声明）”
-3. “给出这个符号变更的影响文件清单”
-
-效果：优先走 LSP；LSP 不可用时自动回退索引检索。
-
-### 工作流 D：把“这次排障经验”沉淀成可复用记忆
-
-1. 用 `memory search` 先查有没有历史经验可复用。
-2. 完成任务后在 `chat/run` 中自动写入一条经验（默认开启）。
-3. 用 `memory search --explain` 检查排序依据是否符合预期。
-4. 用 `memory stats` 观察经验规模和作用域分布。
-
-## 4. 实时索引监听（watch-index）
-
-适合你边改边让 AI 分析的场景。
-
-```bash
-# 默认参数启动
-node src/index.js watch-index
-
-# 高频改动场景建议
-node src/index.js watch-index --interval-ms 1000 --max-batch-size 200 --debounce-ms 500
-node src/index.js watch-index --backpressure-threshold-ratio 2 --backpressure-debounce-ms 120
-
-# 需要向量增量时开启
-node src/index.js watch-index --include-vector true --vector-layer delta
-```
-
-说明：
-
-1. `watch-index` 会自动刷新 `code -> syntax -> semantic`（vector 可选）。
-2. 支持脏队列、batch、debounce、hash skip 与反压模式，减少重复刷新与堆积。
-3. 返回 `watch_metrics`，可用于观察索引滞后与队列深度。
-
-## 5. 高质量提问模板（直接可用）
-
-1. “先构建索引，再查找和 `apply_patch` 相关实现，给我 Top5 并解释排序理由。”
-2. “代码改完后刷新索引，找出和本次改动 `changed_paths` 相关的潜在回归点。”
-3. “用 `query_hybrid_index`（开启 embedding/freshness）查 `xxx`，返回证据链。”
-4. “如果语义图为空，请按 syntax -> index 回退并继续完成分析。”
-
-## 6. 观测与门禁（发布前）
-
-```bash
-# 全量测试
-npm test
-
-# 覆盖率门禁
-npm run coverage:check
-
-# 指标报表（最近 24h）
-npm run metrics:report
-
-# 指标阈值门禁
-npm run metrics:check
-
-# embedding 分流门禁（示例）
-npm run metrics:check -- --max-embedding-timeout-rate=0.05 --max-embedding-network-rate=0.03 --min-embedding-attempts=50 --runbook-enforce
-```
-
-说明：
-
-1. `metrics:report` 会输出 embedding 分流指标（timeout/network/api/unknown）。
-2. `metrics:check` 可按样本量启用 embedding 阈值门禁，避免低样本误报。
-3. `--runbook-enforce` 会在出现未映射 embedding `status_code` 时直接失败，便于及时补 runbook。
-4. runbook 见 `docs/hybrid-degrade-runbook.md`。
-
-## 7. 在线调参（Bandit，阶段化）
-
-建议按 `off -> shadow -> active` 顺序启用：
-
-```bash
-# 仅记录决策/回报，不改参数
-CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=shadow node src/index.js run "..."
-
-# 生效参数（仅在无显式 embedding/freshness 参数时注入）
-CLAWTY_TUNER_ENABLED=true CLAWTY_TUNER_MODE=active node src/index.js run "..."
-```
-
-说明：
-
-1. 状态库默认在 `.clawty/tuner.db`。
-2. 约束由 `CLAWTY_TUNER_MAX_DEGRADE_RATE / MAX_TIMEOUT_RATE / MAX_NETWORK_RATE` 控制。
-3. `query_hybrid_index` 结果会返回 `observability.online_tuner`，可用于观察决策与回报。
-
-## 8. 常见问题
-
-### Q1：为什么回答有时“像没看到最新改动”？
+### Q1：回答像没看到最新改动
 
 优先检查：
 
-1. 是否执行了 `refresh_*` 或开启了 `watch-index`。
-2. 当前 `git diff` 是否过大导致注入被截断。
-3. 是否在不同工作目录运行了 CLI。
+1. 是否执行过 `init`。
+2. 是否在持续改动时开启了 `watch-index`。
+3. 是否在正确的项目根目录运行命令。
 
-### Q2：LSP 不可用怎么办？
+### Q2：LSP 不可用
 
-1. 安装并检查 `typescript-language-server`。
-2. 使用 `lsp_health` 检查服务状态。
-3. 即使 LSP 不可用，也可继续使用索引回退链路。
+- 不会阻塞使用，系统会回退到索引链路。
+- 如需更强定义/引用导航，安装并配置 `typescript-language-server`。
 
-### Q3：向量检索效果不稳定？
+### Q3：MCP 客户端看不到想要的工具
 
-1. 先确认 embedding 配置和 API 可用。
-2. 用 `build_vector_index` 建 base，变更后用 delta 刷新并定期 merge。
-3. 在 `query_hybrid_index` 里配合 freshness，避免 stale 向量干扰。
+- 先看当前 toolset 是否包含该工具。
+- `reindex_codebase` 不是默认工具。
+- 低层原子工具默认不公开，需要 `--expose-low-level`。
 
-### Q4：长期记忆检索不到历史经验？
+## 6. 相关文档
 
-1. 先检查是否开启了 `CLAWTY_MEMORY_ENABLED=true`。
-2. 检查作用域：`--scope project|global|project+global`。
-3. 用 `node src/index.js memory stats --json` 查看当前记忆库条目是否存在。
-4. 如历史经验过多，调大 `--top-k` 或在配置中提高 `maxInjectedItems`。
-
-### Q5：如何查看运行日志？
-
-1. 默认日志路径是 `.clawty/logs/runtime.log`（JSONL）。
-2. 可通过 `CLAWTY_LOG_LEVEL` 调整日志等级（`debug|info|warn|error|off`）。
-3. 可通过 `CLAWTY_LOG_CONSOLE` 控制是否输出到控制台，`CLAWTY_LOG_FILE` 控制是否写文件。
-4. `mcp-server` 默认日志路径是 `.clawty/logs/mcp-server.log`，可用 `--log-path` 或 `CLAWTY_MCP_LOG_PATH` 覆盖。
-
-## 9. 当前边界
-
-1. 已支持 `mcp-server`，默认 toolset 为 `analysis+ops`；支持 `stdio/http`，`--port` 可直接启 HTTP（也可走 config 端口）；`reindex_codebase` 需显式 `--toolset edit-safe`，底层工具需 `--expose-low-level`。
-2. 长期记忆已是 MVP 形态，当前仍需继续优化学习策略与排序质量。
+- 文档总览：[README.md](./README.md)
+- 项目阶段状态：[project-status.md](./project-status.md)
+- 架构边界：[maintainer-architecture.md](./maintainer-architecture.md)
+- 维护流程：[maintenance-workflow.md](./maintenance-workflow.md)

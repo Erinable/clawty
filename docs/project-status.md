@@ -2,62 +2,58 @@
 
 更新时间：2026-03-06
 
-## 当前判断
+## 当前阶段
 
-Clawty 已进入“功能成型 + 工程化完善”阶段，当前重点不是补齐基础命令，而是继续推进产品收口、检索质量稳定、发布治理和维护性提升。
+项目处于“功能成型 + 工程化完善”阶段。
 
-当前公开能力已覆盖：
+这意味着重点不是再扩一级命令，而是：
 
-- 本地 AI 编程助手 CLI（`chat` / `run` / `init` / `doctor`）
-- 多路代码检索（code / syntax / semantic / vector / hybrid / LSP fallback）
-- 增量上下文与 `watch-index` 自动刷新
-- 长期记忆检索与自动写回
-- metrics / monitor / contract / typecheck / test 等质量门禁
-- MCP 服务对外暴露能力
+1. 稳定检索质量和回放基线。
+2. 稳定增量刷新与观测闭环。
+3. 稳定 MCP 暴露边界与对外行为。
 
-## 已稳定能力
+## 已稳定的对外能力
 
-- CLI 主命令集合已稳定，README 与帮助信息均以 `chat`、`run`、`init`、`doctor`、`watch-index`、`memory`、`monitor`、`mcp-server` 为主入口。
-- Agent 主循环已接入增量上下文、工具执行、长期记忆读写，形成多轮协作闭环。
-- 检索能力已形成完整链路：关键词/符号检索、结构关系、语义图、多路融合、向量重排与 LSP 优先导航。
-- 可观测链路已落地：运行日志、metrics、质量报表、阈值检查、回放基线与失败样本门禁。
-- 安全边界已内建：工作区沙箱、危险命令拦截、MCP 工具策略、补丁路径校验。
+- CLI 公开主命令：`chat`、`run`、`init`、`doctor`、`watch-index`、`config show`、`memory`、`monitor`、`mcp-server`
+- 检索主链路：`code/syntax/semantic/vector/hybrid` + LSP 优先导航
+- 增量新鲜度链路：`watch-index` 轮询、队列、反压、重试
+- 记忆链路：检索、注入、自动写回、统计
+- MCP 服务：`stdio/http`、toolset 策略、低层能力受控暴露
+- 质量链路：`lint`、`contract:check`、`typecheck`、`test`、`metrics:check`、bench gates
 
 ## 当前主线
 
 ### 1) 产品收口
 
-- 统一对外表述，避免 README、`package.json`、内部说明之间出现阶段性认知偏差。
-- 控制公开命令面，优先在现有命令与配置体系内扩展，而不是继续增加一级入口。
+- 让 README、usage、help、配置示例保持同一口径。
+- 控制公共 CLI 面，优先在现有命令中增强体验。
 
-### 2) 检索质量与稳定性
+### 2) 检索质量稳定
 
-- 持续强化 retrieval / hybrid / replay 主链路。
-- 把检索质量优化固定为“可回放、可比较、可解释”的工程流程。
-- 强化 `watch-index` 在高频变更场景下的可预测性和一致性。
+- 扩展 `hybrid replay` 用例和失败样本。
+- 把策略优化固定在“可回放、可比较、可解释”的流程内。
 
 ### 3) 发布治理
 
-- 固化发布前默认门禁：`lint`、`contract:check`、`typecheck`、`test`、`metrics:report`、`metrics:check`。
-- 为后续发布准备统一的状态文档、非回归约束和回放基线。
+- 固化默认门禁和专项门禁。
+- 强化 runbook 与 checklist 的执行一致性。
 
-## 主要风险与欠账
+## 主要风险
 
-- 项目描述曾长期停留在 “MVP” 表述，容易低估当前真实成熟度。
-- 模块数量增长较快，`hybrid-*`、`mcp-*`、`index-watch-*` 已形成专题簇，需要持续控制边界。
-- 部分维护流程还未完全制度化，尤其是会话记忆和项目状态沉淀。
-- Node 运行时中的 SQLite 仍带有 experimental 警告，虽然当前不影响测试通过，但属于持续关注项。
+- 文档和实现容易发生漂移（尤其是帮助文案、usage、runbook）。
+- `hybrid-*`、`mcp-*`、`index-watch-*` 持续扩展时，边界容易再次膨胀。
+- 大仓高频变更下，watch 刷新时延和 DB 重试仍需持续观测。
+- Node SQLite experimental warning 仍存在，需要持续关注运行时兼容性。
 
 ## 非回归约束
 
-- 不把项目重新退回为“单体 CLI 工具集”；保持现有分层结构与职责边界。
-- 不随意扩大公开 CLI 一级命令面；优先保证现有命令稳定、好理解、可验证。
-- 不破坏 retrieval protocol 的可解释性字段，包括 source、confidence、timeliness、dedup 等结构化信息。
-- 所有影响索引、检索、watch、memory、MCP 的变更，都应以自动化检查或回放结果验证。
+- 不扩大公共 CLI 一级命令面。
+- 不破坏 retrieval explain 协议核心字段。
+- 不在 MCP 层复制检索实现逻辑。
+- 不让 watch 层承担查询排序职责。
+- 任何影响检索/watch/memory/MCP 的变更，都要有自动化验证。
 
 ## 默认验证命令
-
-建议在影响核心能力的改动后至少执行：
 
 ```bash
 npm run lint
@@ -69,5 +65,6 @@ npm run metrics:check
 
 ## 下一阶段建议
 
-- 扩充 hybrid replay 数据集与 failure samples，使质量回归更容易量化。
-- 将 `docs/project-status.md`、`docs/maintainer-architecture.md` 和维护流程文档纳入“完成定义”，要求关键改动同步更新。
+- 扩展 `hybrid replay` 数据集覆盖语言、意图、查询模式。
+- 增补 watch 指标趋势视图和告警阈值治理。
+- 把文档更新纳入“完成定义”：实现改动完成前同步更新文档。

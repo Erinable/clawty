@@ -1,50 +1,57 @@
 # DB Sync Risk Runbook
 
-## Scope
-- Applies to SQLite-backed indexing flows (`code-index`, `syntax-index`, `semantic-graph`, `vector-index`, `memory`).
-- Focuses on lock contention and main-thread blocking symptoms from synchronous DB access.
+适用范围：SQLite 同步访问引发的 lock contention 与 flush 变慢问题。
 
-## Detection Signals
-- `watch_flush` events show `db_retry_count > 0`.
-- `watch_flush` events show `db_retry_exhausted = true`.
-- `watch_flush` events show `slow_flush = true`.
-- `watch_run.watch_metrics` counters increase:
-  - `db_retry_count`
-  - `db_retry_exhausted_count`
-  - `slow_flush_count`
+## 1. 识别信号
 
-## Immediate Mitigation
-1. Reduce watch pressure:
-   - Increase `CLAWTY_WATCH_INTERVAL_MS`
-   - Decrease `CLAWTY_WATCH_MAX_BATCH_SIZE`
-2. Relax hot-loop pressure:
-   - Increase `CLAWTY_WATCH_DEBOUNCE_MS`
-   - Disable vector refresh temporarily (`CLAWTY_WATCH_INCLUDE_VECTOR=false`)
-3. Tune DB retry controls:
-   - `CLAWTY_WATCH_DB_RETRY_BUDGET` (default `2`)
-   - `CLAWTY_WATCH_DB_RETRY_BACKOFF_MS` (default `120`)
-   - `CLAWTY_WATCH_DB_RETRY_BACKOFF_MAX_MS` (default `1200`)
-4. Raise slow-flush alert threshold if workload is expected to be heavy:
-   - `CLAWTY_WATCH_SLOW_FLUSH_WARN_MS` (default `2500`)
+重点看 `watch_flush` 与 `watch_run` 指标：
 
-## Failure Modes
-- `SQLITE_BUSY` / `database is locked`:
-  - Automatic bounded retry is enabled in watch refresh path.
-  - If retry budget is exhausted, flush fails and queue is re-enqueued.
-- Non-retryable DB errors:
-  - Fail fast, preserve error in flush event.
+- `db_retry_count > 0`
+- `db_retry_exhausted = true`
+- `slow_flush = true`
+- `db_retry_exhausted_count` 持续上升
 
-## Recovery Verification
-1. Confirm `watch_flush` events no longer show `db_retry_exhausted=true`.
-2. Confirm `watch_db_retry_exhausted_rate` returns to `0`.
-3. Confirm `watch_slow_flush_rate` and `watch_refresh_p95_ms` trend down.
-4. Run:
-   - `npm run metrics:report`
-   - `npm run metrics:check`
+## 2. 立即缓解
 
-## Rollback
-- Revert watch retry tuning to defaults:
-  - `CLAWTY_WATCH_DB_RETRY_BUDGET=2`
-  - `CLAWTY_WATCH_DB_RETRY_BACKOFF_MS=120`
-  - `CLAWTY_WATCH_DB_RETRY_BACKOFF_MAX_MS=1200`
-- Re-run baseline checks and compare KPI deltas.
+### 降低 watch 压力
+
+- 增大 `CLAWTY_WATCH_INTERVAL_MS`
+- 降低 `CLAWTY_WATCH_MAX_BATCH_SIZE`
+- 增大 `CLAWTY_WATCH_DEBOUNCE_MS`
+- 临时关闭向量刷新：`CLAWTY_WATCH_INCLUDE_VECTOR=false`
+
+### 调整 DB 重试参数
+
+- `CLAWTY_WATCH_DB_RETRY_BUDGET`（默认 `2`）
+- `CLAWTY_WATCH_DB_RETRY_BACKOFF_MS`（默认 `120`）
+- `CLAWTY_WATCH_DB_RETRY_BACKOFF_MAX_MS`（默认 `1200`）
+- `CLAWTY_WATCH_SLOW_FLUSH_WARN_MS`（默认 `2500`）
+
+## 3. 常见故障模式
+
+- `SQLITE_BUSY` / `database is locked`
+  - watch 刷新路径会做有界重试
+  - 重试耗尽时会失败并重入队列
+
+- 非可重试错误
+  - fail fast，并记录到 flush 事件
+
+## 4. 恢复验证
+
+```bash
+npm run metrics:report
+npm run metrics:check
+```
+
+重点确认：
+
+- `watch_db_retry_exhausted_rate` 回到 `0`
+- `watch_slow_flush_rate` 和 `watch_refresh_p95_ms` 明显下降
+
+## 5. 回滚建议
+
+如临时调参无收益，回滚到默认：
+
+- `CLAWTY_WATCH_DB_RETRY_BUDGET=2`
+- `CLAWTY_WATCH_DB_RETRY_BACKOFF_MS=120`
+- `CLAWTY_WATCH_DB_RETRY_BACKOFF_MAX_MS=1200`
