@@ -60,6 +60,10 @@ export async function runMcpServerCliWithDeps(argv = [], deps = {}) {
       entrypoint
     }
   });
+  if (runtimeOptions.transport === "http" && stderr && typeof stderr.write === "function") {
+    const dashboardUrl = `http://${runtimeOptions.host || "127.0.0.1"}:${runtimeOptions.port || 8765}/dashboard`;
+    stderr.write(`Dashboard: ${dashboardUrl}\n`);
+  }
   await runMcpServer({
     workspaceRoot: runtimeOptions.workspaceRoot,
     exposeLowLevel: runtimeOptions.exposeLowLevel,

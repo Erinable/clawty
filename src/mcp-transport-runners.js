@@ -117,6 +117,15 @@ export async function runStdioTransportWithDeps(
   }
 }
 
+function writeHtmlResponse(res, statusCode, html) {
+  const body = Buffer.from(html, "utf8");
+  res.writeHead(statusCode, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length
+  });
+  res.end(body);
+}
+
 export async function runHttpTransportWithDeps(
   serverOptions,
   tools,
@@ -129,12 +138,27 @@ export async function runHttpTransportWithDeps(
     readHttpRequestBody,
     writeJsonResponse,
     writeNoContent,
-    logWith
+    logWith,
+    renderDashboardPage,
+    createDashboardRouter
   } = deps;
   const host = serverOptions.host;
   const port = serverOptions.port;
   let serverRef = null;
   let closing = false;
+
+  const dashboardRouter =
+    typeof createDashboardRouter === "function"
+      ? createDashboardRouter(serverOptions, tools, logger)
+      : null;
+
+  let cachedDashboardHtml = null;
+  const getDashboardHtml = () => {
+    if (!cachedDashboardHtml && typeof renderDashboardPage === "function") {
+      cachedDashboardHtml = renderDashboardPage();
+    }
+    return cachedDashboardHtml;
+  };
 
   await new Promise((resolve, reject) => {
     const cleanupHandlers = [];
@@ -179,19 +203,43 @@ export async function runHttpTransportWithDeps(
     const server = http.createServer(async (req, res) => {
       try {
         const method = String(req.method || "").toUpperCase();
-        if (method === "GET" && (req.url === "/" || req.url === "/healthz")) {
+        const url = String(req.url || "/");
+
+        if (method === "GET" && (url === "/" || url === "/healthz")) {
           writeJsonResponse(res, 200, {
             ok: true,
             transport: "http",
             host,
-            port
+            port,
+            dashboard: "/dashboard"
           });
           return;
         }
+
+        if (method === "GET" && (url === "/dashboard" || url.startsWith("/dashboard/"))) {
+          const html = getDashboardHtml();
+          if (html) {
+            writeHtmlResponse(res, 200, html);
+          } else {
+            writeJsonResponse(res, 501, { ok: false, error: "Dashboard not available" });
+          }
+          return;
+        }
+
+        if (method === "GET" && url.startsWith("/api/dashboard")) {
+          if (dashboardRouter) {
+            const { statusCode, body } = await dashboardRouter(url);
+            writeJsonResponse(res, statusCode, body);
+          } else {
+            writeJsonResponse(res, 501, { ok: false, error: "Dashboard API not available" });
+          }
+          return;
+        }
+
         if (method !== "POST") {
           writeJsonResponse(res, 405, {
             ok: false,
-            error: "Method not allowed. Use POST for JSON-RPC payloads."
+            error: "Method not allowed. Use POST for JSON-RPC payloads or GET /dashboard for the web UI."
           });
           return;
         }

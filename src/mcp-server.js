@@ -42,6 +42,8 @@ import { runHttpTransportWithDeps, runStdioTransportWithDeps } from "./mcp-trans
 import { isPlainObject, logWith } from "./mcp-server-utils.js";
 import { runMcpServerCliWithDeps } from "./mcp-server-cli.js";
 import { TOOL_DEFINITIONS, runTool } from "./tools.js";
+import { renderDashboardPage } from "./dashboard-html.js";
+import { createDashboardRouter } from "./dashboard-api.js";
 
 const MCP_SERVER_NAME = "clawty-mcp";
 const MCP_SERVER_VERSION = "0.1.0";
@@ -113,7 +115,9 @@ async function runHttpTransport(serverOptions, tools, logger) {
     readHttpRequestBody,
     writeJsonResponse,
     writeNoContent,
-    logWith
+    logWith,
+    renderDashboardPage,
+    createDashboardRouter
   });
 }
 
@@ -133,7 +137,10 @@ export async function runMcpServer(options = {}) {
     host: serverOptions.transport === "http" ? serverOptions.host : null,
     port: serverOptions.transport === "http" ? serverOptions.port : null,
     expose_low_level: serverOptions.exposeLowLevel,
-    toolsets: Array.from(serverOptions.enabledToolsets || [])
+    toolsets: Array.from(serverOptions.enabledToolsets || []),
+    dashboard: serverOptions.transport === "http"
+      ? `http://${serverOptions.host}:${serverOptions.port}/dashboard`
+      : null
   });
 
   if (serverOptions.transport === "http") {
