@@ -236,6 +236,24 @@ export async function runHttpTransportWithDeps(
           return;
         }
 
+        if (method === "POST" && url.startsWith("/api/dashboard")) {
+          if (dashboardRouter) {
+            const rawBody = await readHttpRequestBody(req);
+            let parsed;
+            try {
+              parsed = JSON.parse(rawBody || "{}");
+            } catch {
+              writeJsonResponse(res, 400, { ok: false, error: "Invalid JSON body" });
+              return;
+            }
+            const { statusCode, body } = await dashboardRouter(url, { method: "POST", body: parsed });
+            writeJsonResponse(res, statusCode, body);
+          } else {
+            writeJsonResponse(res, 501, { ok: false, error: "Dashboard API not available" });
+          }
+          return;
+        }
+
         if (method !== "POST") {
           writeJsonResponse(res, 405, {
             ok: false,

@@ -521,6 +521,44 @@ test("mcp-server supports HTTP transport with explicit port", async (t) => {
   assert.ok(toolNames.has("search_code"));
   assert.ok(toolNames.has("monitor_system"));
 
+  const dashboardPage = await httpRequest({
+    method: "GET",
+    port,
+    pathName: "/dashboard"
+  });
+  assert.equal(dashboardPage.statusCode, 200);
+  assert.match(dashboardPage.text, /Clawty Dashboard/);
+
+  const dashboardOverview = await httpRequest({
+    method: "GET",
+    port,
+    pathName: "/api/dashboard/overview"
+  });
+  assert.equal(dashboardOverview.statusCode, 200);
+  assert.equal(typeof dashboardOverview.json?.server?.started_at, "string");
+
+  const dashboardConfigSave = await httpRequest({
+    method: "POST",
+    port,
+    pathName: "/api/dashboard/config-save",
+    body: {
+      data: {
+        metrics: {
+          enabled: false
+        }
+      }
+    }
+  });
+  assert.equal(dashboardConfigSave.statusCode, 200);
+  assert.equal(dashboardConfigSave.json?.ok, true);
+
+  const savedConfigRaw = await fs.readFile(
+    path.join(workspaceRoot, ".clawty", "config.json"),
+    "utf8"
+  );
+  const savedConfig = JSON.parse(savedConfigRaw);
+  assert.equal(savedConfig.metrics?.enabled, false);
+
   const exitNotification = await httpRequest({
     method: "POST",
     port,

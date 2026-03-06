@@ -275,7 +275,27 @@ function resolveWorkspaceRoot(rootDir, fileConfig, env) {
 }
 
 export function loadConfig(options = {}) {
+  return loadConfigFromResolvedSources(resolveConfigSources(options), options);
+}
+
+export function validateProjectConfigData(projectConfigData, options = {}) {
   const sources = resolveConfigSources(options);
+  const normalizedProjectConfig = isPlainObject(projectConfigData) ? projectConfigData : {};
+  return loadConfigFromResolvedSources(
+    {
+      ...sources,
+      projectConfig: {
+        ...sources.projectConfig,
+        data: normalizedProjectConfig,
+        exists: true
+      },
+      mergedFileConfig: deepMerge(sources.globalConfig.data, normalizedProjectConfig)
+    },
+    options
+  );
+}
+
+function loadConfigFromResolvedSources(sources, options = {}) {
   const rootDir = sources.cwd;
   const allowMissingApiKey = Boolean(options.allowMissingApiKey);
   const runtimeEnv = options.env && typeof options.env === "object" ? options.env : process.env;
